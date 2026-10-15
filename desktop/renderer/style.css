@@ -118,10 +118,16 @@ input, select, textarea { outline: none; }
 }
 
 /* ---------------------------------------------- 布局 */
+/* ★ grid-template-rows 必须给死：只写 height:100vh 时，那一行是隐式 auto 尺寸，
+   分组一多就被内容撑到比窗口还高（实测 24 个分组 → 864px 的窗口里行高 1485px），
+   .rail 跟着变高 → .nav 的 flex:1 拿到的是"被撑高的高度"而不是剩余空间 →
+   overflow-y:auto 永不触发，既不出现滚动条，底部栏和「新建分组」也被顶到窗口外。 */
 .app {
   position: relative; z-index: 1;
   display: grid; grid-template-columns: var(--rail-w) 1fr;
+  grid-template-rows: 100%;
   height: 100vh;
+  overflow: hidden;
   box-shadow: inset 0 0 0 1px var(--line);
 }
 
@@ -129,6 +135,7 @@ input, select, textarea { outline: none; }
 .rail {
   display: flex; flex-direction: column; gap: 6px;
   padding: 16px 14px 14px;
+  min-height: 0; overflow: hidden;      /* 让 .nav 有机会滚动，而不是把 .rail-foot 顶出去 */
   background: var(--panel);
   border-right: 1px solid var(--line);
   transition: background .3s var(--ease), border-color .3s var(--ease);
@@ -145,7 +152,17 @@ input, select, textarea { outline: none; }
 .brand-txt b { font-size: 15px; letter-spacing: .2px; }
 .brand-txt span { font-size: 11px; color: var(--text-3); font-weight: 500; }
 
-.nav { display: flex; flex-direction: column; gap: 2px; flex: 1; overflow-y: auto; padding-right: 2px; }
+/* 分组列表：唯一可滚的区域。min-height:0 是 flex 子项能真正收缩的必要条件
+   （默认 min-height:auto 会让它按内容撑开，overflow 形同虚设）。 */
+.nav {
+  display: flex; flex-direction: column; gap: 2px;
+  flex: 1; min-height: 0; overflow-y: auto; padding-right: 2px;
+  overscroll-behavior: contain;
+}
+/* ★ 行不许被压扁：column flex 的子项默认 flex-shrink:1，nav 被限高之后
+   它会去"压缩每一行"而不是"溢出 → 滚动"。实测 28 行 40px 被压成 ~21px，
+   列表看着密密麻麻却还以为内容不多。行高固定 + 溢出滚动才对。 */
+.nav > * { flex: none; }
 .nav-label {
   font-size: 11px; font-weight: 600; color: var(--text-3);
   letter-spacing: .08em; padding: 12px 10px 6px; text-transform: uppercase;
@@ -169,15 +186,27 @@ input, select, textarea { outline: none; }
 .nav-item.active .cnt { background: var(--accent); color: #fff; }
 
 /* 分组行的删除不做行内按钮 —— 只在右键菜单里提供，避免误点视觉噪音 */
-/* 新建分组：虚线框，和普通分组行区分开 */
+/* 新建分组：虚线框，和普通分组行区分开。
+   ★ 吸附在列表底部：分组再多也永远够得着，不用先滚到底。
+     box-shadow（同底色、纯位移）负责盖住上方 2px 的 flex gap，
+     否则滚动的分组行会从那条缝里透出来。 */
 .nav-new {
+  position: sticky; bottom: 0; z-index: 2;
   margin-top: 2px; border: 1px dashed var(--line);
-  background: transparent; color: var(--text-3);
+  background: var(--panel); color: var(--text-3);
+  box-shadow: 0 -3px 0 0 var(--panel);
 }
-.nav-new:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+/* hover 用的是半透明色，直接铺会把滚动内容透出来 —— 先垫一层不透明的 --panel */
+.nav-new:hover {
+  border-color: var(--accent); color: var(--accent);
+  background: linear-gradient(var(--accent-soft), var(--accent-soft)), var(--panel);
+}
 .nav-new .ic { font-size: 14px; font-weight: 700; }
+/* ★ 选中竖条必须画在 padding box 内侧：.nav 是滚动容器，
+   overflow-x 会被 overflow-y:auto 带成 auto，left:-14px 落在裁剪区外，
+   等于一直看不见。改成贴左内缘（.nav-item 左内边距 10px，不会压到图标）。 */
 .nav-item.active::before {
-  content: ""; position: absolute; left: -14px; top: 50%;
+  content: ""; position: absolute; left: 0; top: 50%;
   width: 3px; height: 20px; margin-top: -10px;
   border-radius: 0 3px 3px 0; background: var(--accent);
 }
@@ -186,7 +215,11 @@ input, select, textarea { outline: none; }
   flex: none; box-shadow: 0 0 0 3px color-mix(in srgb, var(--c, var(--accent)) 18%, transparent);
 }
 
-.rail-foot { display: flex; flex-direction: column; gap: 6px; padding-top: 10px; border-top: 1px solid var(--line); }
+/* 底部栏常驻：flex:none 保证它不参与收缩、也不会被列表挤走 */
+.rail-foot {
+  display: flex; flex-direction: column; gap: 6px; flex: none;
+  padding-top: 10px; border-top: 1px solid var(--line);
+}
 .ghost-btn {
   display: flex; align-items: center; gap: 9px; height: 38px; padding: 0 10px;
   border-radius: 11px; color: var(--text-2); font-size: 13px; font-weight: 500;

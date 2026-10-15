@@ -50,6 +50,9 @@ const GROUP_PROBE = process.argv.includes('--group-probe');
 // 开发期自检：--info-probe 打开设置面板，打印「运行环境」文本并截图
 // （验的是数据目录落在哪、三种运行形态标签对不对）
 const INFO_PROBE = process.argv.includes('--info-probe');
+// 开发期自检：--rail-probe 灌一大堆分组，量侧栏几何（溢出/滚动条/底部栏/新建分组是否可见）
+// （只在内存里改 groups，不写盘）
+const RAIL_PROBE = process.argv.includes('--rail-probe');
 
 function probeMenu(kind, payload, tpl) {
   const acts = tpl.filter(i => typeof i.click === 'function').map(i => i.click());
@@ -259,7 +262,7 @@ function createWindow() {
 
   // --drag-probe / --group-probe 共用的截图通道：
   // 由渲染层在准确时刻主动触发（主进程自己掐 setTimeout 会被节流/漂移）
-  if (DRAG_PROBE || GROUP_PROBE || INFO_PROBE) {
+  if (DRAG_PROBE || GROUP_PROBE || INFO_PROBE || RAIL_PROBE) {
     // 打包态下 ROOT 在 asar 内部，写不进去 —— 逐级找一个能写的目录，
     // 免得探针"静默失败"让人以为没问题。
     const shotBase = (() => {
@@ -292,6 +295,17 @@ function createWindow() {
         win.webContents.send('ql:info-probe');
       }, 1200);
       setTimeout(() => quitApp(), 20000);
+    });
+  }
+
+  // --rail-probe：灌一堆分组 → 量侧栏几何（溢出 / 滚动条 / 底部栏 / 新建分组可见性）→ 截图
+  if (RAIL_PROBE) {
+    win.webContents.once('did-finish-load', () => {
+      setTimeout(() => {
+        try { win.setOpacity(0); } catch { /* noop */ }
+        win.webContents.send('ql:rail-probe');
+      }, 1200);
+      setTimeout(() => quitApp(), 25000);
     });
   }
 

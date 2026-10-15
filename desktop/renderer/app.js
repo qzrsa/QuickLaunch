@@ -1749,6 +1749,91 @@ function createMockBridge() {
     console.log('[info-probe] done');
   });
 
+  // 侧栏溢出自检（仅 --rail-probe 时由主进程触发）：
+  // 灌一大堆分组（**只在内存里改 groups，不写盘**），量「侧栏有没有被撑破、
+  // 能不能滚、底部栏和「新建分组」是否还在视野里」。
+  API.on('ql:rail-probe', async () => {
+    state.probeMode = true;
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
+    const $el = s => document.querySelector(s);
+    const inView = el => {
+      if (!el) return false;
+      const r = el.getBoundingClientRect();
+      return r.top >= -0.5 && r.bottom <= innerHeight + 0.5 && r.height > 0;
+    };
+
+    const snapshot = JSON.parse(JSON.stringify(state.config.groups));
+    const N = 24;
+
+    await sleep(300);
+    const nav = $el('#nav'), rail = $el('.rail'), foot = $el('.rail-foot'), app = $el('.app');
+
+    // ★ 窗口内 != 列表里看得见。分组行的裁剪边界是 #nav 的滚动视口，
+    //   拿 innerHeight 去判断会把滚出去的行也算成"可见"（踩过这个坑）。
+    const inNav = el => {
+      const r = el.getBoundingClientRect(), s = nav.getBoundingClientRect();
+      return r.height > 0 && r.top >= s.top - 0.5 && r.bottom <= s.bottom + 0.5;
+    };
+
+    const dump = tag => {
+      const nb = $el('#navNewGroup');
+      const rows = Array.from(nav.querySelectorAll('.nav-item'));
+      console.log(`[rail-probe] --- ${tag} ---`);
+      console.log('[rail-probe]   窗口高        =', innerHeight);
+      console.log('[rail-probe]   .app  高/滚   =', app.clientHeight, '/', app.scrollHeight,
+        '| 撑破窗口 =', app.scrollHeight > app.clientHeight + 1);
+      console.log('[rail-probe]   .rail 高/滚   =', rail.clientHeight, '/', rail.scrollHeight,
+        '| 撑破窗口 =', rail.scrollHeight > rail.clientHeight + 1);
+      console.log('[rail-probe]   #nav  clientHeight=' + nav.clientHeight,
+        'scrollHeight=' + nav.scrollHeight,
+        'scrollTop=' + Math.round(nav.scrollTop),
+        'overflowY=' + getComputedStyle(nav).overflowY,
+        '| 出现滚动条 =', nav.scrollHeight > nav.clientHeight + 1);
+      console.log('[rail-probe]   列表内可见行   =', rows.filter(inNav).length, '/', rows.length,
+        '（裁到 #nav 视口里数）');
+      const h = rows.length ? Math.round(rows[0].getBoundingClientRect().height) : 0;
+      console.log('[rail-probe]   行高          =', h, '（应为 40；被压扁说明 flex-shrink 没关掉）',
+        h === 40 ? 'OK' : '★ 异常');
+      console.log('[rail-probe]   「新建分组」可见 =', inView(nb),
+        '| 在列表视口内 =', inNav(nb),
+        '| top/bottom =', nb ? Math.round(nb.getBoundingClientRect().top) + '/' + Math.round(nb.getBoundingClientRect().bottom) : '-');
+      console.log('[rail-probe]   底部栏可见     =', inView(foot),
+        foot ? '| top/bottom = ' + Math.round(foot.getBoundingClientRect().top) + '/' + Math.round(foot.getBoundingClientRect().bottom) : '');
+      return { nb, foot };
+    };
+
+    console.log('[rail-probe] 起始分组数 =', snapshot.length, '→ 灌到', N);
+    state.config.groups = Array.from({ length: N }, (_, i) => ({
+      id: 'probe-rail-' + i, name: '溢出测试分组 ' + String(i + 1).padStart(2, '0'),
+      color: PALETTE[i % PALETTE.length], icon: '📦', items: [],
+    }));
+    renderNav();
+    await sleep(200);
+    const top0 = nav.scrollTop;
+    dump('灌入 ' + N + ' 个分组，未滚动');
+
+    await sleep(150);
+    await API.probeShot('shot-rail-overflow.png');
+    console.log('[rail-probe] 截图 shot-rail-overflow.png');
+
+    // 滚到底，看「新建分组」能不能露出来
+    nav.scrollTop = nav.scrollHeight;
+    await sleep(200);
+    console.log('[rail-probe] 滚动生效 =', nav.scrollTop > top0, '(', top0, '->', Math.round(nav.scrollTop), ')');
+    dump('滚到底之后');
+    await sleep(150);
+    await API.probeShot('shot-rail-scrolled.png');
+    console.log('[rail-probe] 截图 shot-rail-scrolled.png');
+
+    // 还原（内存还原 + 重绘，磁盘上从来没动过）
+    state.config.groups = snapshot;
+    renderNav();
+    await sleep(200);
+    console.log('[rail-probe] 已还原分组数 =', state.config.groups.length,
+      '| 侧栏行数 =', nav.querySelectorAll('.nav-item').length);
+    console.log('[rail-probe] done');
+  });
+
   // 分组增删自检（仅 --group-probe 时由主进程触发）：
   // 合成「点 ＋ 新建分组 → 填名 → 确定 → 重名再试 → 点该组 ✕ → 确认删除」，
   // **真的走 saveConfig**（只动 dev 的 .tmpdata/userData），验证侧栏增删整条链路。

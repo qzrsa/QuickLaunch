@@ -8,7 +8,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 let webUtils = null;
 try { webUtils = require('electron').webUtils; } catch { /* 老版本或沙箱禁用时降级 */ }
 
-const EVENTS = ['ql:win-state', 'ql:focus-search', 'ql:config-changed', 'ql:settings-changed', 'ql:menu-probe', 'ql:import-probe', 'ql:drag-probe', 'ql:group-probe', 'ql:info-probe'];
+const EVENTS = ['ql:win-state', 'ql:focus-search', 'ql:config-changed', 'ql:settings-changed', 'ql:menu-probe', 'ql:import-probe', 'ql:drag-probe', 'ql:group-probe', 'ql:info-probe', 'ql:rail-probe'];
 
 contextBridge.exposeInMainWorld('ql', {
   /* 配置 */

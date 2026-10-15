@@ -385,6 +385,31 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
   ok(datadir.migrateLegacyConfig(migTarget, path.join(TMP, 'nope')) === false,
     '旧位置没有配置时什么也不做');
 
+  /* ---- 侧栏布局不变量：分组多了要能滚、底部栏与「新建分组」常驻 ----
+     这些是 UI 几何的关键约束，回归成本低，直接扫 style.css 文本。 */
+  section('侧栏布局不变量');
+  const css = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'style.css'), 'utf8');
+  const rule = sel => {
+    const m = css.match(new RegExp(sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*\\{([^}]*)\\}'));
+    return m ? m[1] : '';
+  };
+  ok(/grid-template-rows:\s*100%/.test(rule('.app')),
+    '.app 行高写死 100%（否则隐式 auto 行被内容撑破窗口）');
+  ok(/overflow:\s*hidden/.test(rule('.app')), '.app 自身不溢出');
+  ok(/min-height:\s*0/.test(rule('.rail')) && /overflow:\s*hidden/.test(rule('.rail')),
+    '.rail min-height:0 + overflow:hidden');
+  ok(/min-height:\s*0/.test(rule('.nav')), '.nav min-height:0（否则 flex 子项撑开不滚）');
+  ok(/flex:\s*none/.test(css.match(/\.nav\s*>\s*\*\s*\{([^}]*)\}/)[1]),
+    '.nav > * flex:none（否则行被压扁而不是滚动）');
+  ok(/flex:\s*none/.test(rule('.rail-foot')), '.rail-foot flex:none（底部栏常驻）');
+  ok(/position:\s*sticky/.test(rule('.nav-new')) && /bottom:\s*0/.test(rule('.nav-new')),
+    '「新建分组」吸附列表底部');
+  ok(/background:\s*var\(--panel\)/.test(rule('.nav-new')),
+    '吸附按钮底色不透明（避免滚动内容透出来）');
+  ok(/left:\s*0\b/.test(rule('.nav-item.active::before')) &&
+    !/left:\s*-14px/.test(rule('.nav-item.active::before')),
+    '选中竖条画在可视区内（left:0，而非会被裁剪的 -14px）');
+
   section('结果');
   console.log(`  \x1b[32m通过 ${pass}\x1b[0m${fail ? ` / \x1b[31m失败 ${fail}\x1b[0m` : ''}`);
   fs.rmSync(TMP, { recursive: true, force: true });
