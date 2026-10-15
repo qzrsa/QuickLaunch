@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="ql-token" content="__QL_TOKEN__">
+<title>快速启动 · QuickLaunch</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🚀</text></svg>">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<div class="bg"><i class="blob b1"></i><i class="blob b2"></i><i class="blob b3"></i></div>
+
+<div class="app">
+  <!-- ===================== 左侧栏 ===================== -->
+  <aside class="rail">
+    <div class="brand">
+      <div class="logo">🚀</div>
+      <div class="brand-txt"><b>快速启动</b><span>QuickLaunch</span></div>
+    </div>
+
+    <nav class="nav" id="nav"></nav>
+
+    <div class="rail-foot">
+      <button class="ghost-btn" id="btnScan">🔍<span>扫描本机软件</span></button>
+      <button class="ghost-btn" id="btnTheme">🌙<span>深色模式</span></button>
+      <button class="ghost-btn" id="btnQuit">⏻<span>退出服务</span></button>
+      <div class="conn" id="conn"><i></i><span>连接中…</span></div>
+    </div>
+  </aside>
+
+  <!-- ===================== 主区 ===================== -->
+  <main class="main">
+    <header class="topbar">
+      <div class="title">
+        <h1 id="groupTitle">全部</h1>
+        <p id="groupSub">加载中…</p>
+      </div>
+      <div class="spacer"></div>
+      <label class="search">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+             stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+        <input id="q" type="text" placeholder="搜索名称、路径或描述…" autocomplete="off" spellcheck="false">
+        <kbd>/</kbd>
+      </label>
+      <select class="mini-select" id="sort">
+        <option value="custom">自定义顺序</option>
+        <option value="recent">最近使用</option>
+        <option value="uses">使用最多</option>
+        <option value="name">按名称</option>
+      </select>
+      <button class="btn primary" id="btnAdd">＋ 新建</button>
+    </header>
+
+    <div class="content" id="content">
+      <div class="grid" id="grid"></div>
+
+      <div class="kbd-hint" id="kbdHint">
+        <span><b>/</b> 搜索</span>
+        <span><b>↑ ↓</b> 选择</span>
+        <span><b>Enter</b> 启动</span>
+        <span><b>N</b> 新建</span>
+        <span><b>Esc</b> 取消</span>
+      </div>
+
+      <div class="empty" id="empty" hidden>
+        <div class="big" id="emptyIcon">🗂️</div>
+        <h2 id="emptyTitle">这里还没有内容</h2>
+        <p id="emptyText">点击右上角「新建」添加第一个启动项，或使用「扫描本机软件」自动导入已安装的程序。</p>
+      </div>
+    </div>
+  </main>
+</div>
+
+<!-- ===================== 新建 / 编辑 ===================== -->
+<div class="overlay" id="editOverlay" hidden>
+  <div class="modal">
+    <div class="modal-head">
+      <div class="mh-ic" id="editIc">＋</div>
+      <div>
+        <h2 id="editTitle">新建启动项</h2>
+        <p id="editSub">配置名称、类型与目标路径</p>
+      </div>
+      <div class="spacer"></div>
+      <button class="x-btn" data-close>✕</button>
+    </div>
+
+    <div class="modal-body">
+      <div class="form">
+        <div class="row2">
+          <div class="field">
+            <label>名称</label>
+            <input type="text" id="fName" placeholder="例如：VS Code">
+          </div>
+          <div class="field">
+            <label>所属分组</label>
+            <select id="fGroup"></select>
+          </div>
+        </div>
+
+        <div class="field" id="newGroupField" hidden>
+          <label>新分组名称 <span class="hint">将同时创建</span></label>
+          <input type="text" id="fNewGroup" placeholder="例如：游戏">
+        </div>
+
+        <div class="field">
+          <label>类型</label>
+          <div class="types" id="fTypes"></div>
+        </div>
+
+        <div class="field">
+          <label>目标路径 <span class="hint" id="fPathHint"></span></label>
+          <div class="path-row">
+            <input type="text" id="fPath" placeholder="C:\Program Files\App\App.exe">
+            <button class="btn sm" id="btnBrowse">浏览…</button>
+          </div>
+        </div>
+
+        <div class="row2">
+          <div class="field">
+            <label>启动参数 <span class="hint">可选</span></label>
+            <input type="text" id="fArgs" placeholder="--flag value">
+          </div>
+          <div class="field">
+            <label>工作目录 <span class="hint">可选</span></label>
+            <input type="text" id="fCwd" placeholder="默认跟随程序所在目录">
+          </div>
+        </div>
+
+        <div class="field">
+          <label>描述 <span class="hint">可选，显示在卡片上</span></label>
+          <input type="text" id="fDesc" placeholder="一句话说明">
+        </div>
+
+        <div class="field">
+          <label>图标</label>
+          <div class="icons" id="fIcons"></div>
+        </div>
+
+        <div class="switch-row">
+          <label class="switch">
+            <input type="checkbox" id="fElevate"><span class="track"></span>以管理员身份运行
+          </label>
+          <label class="switch">
+            <input type="checkbox" id="fConsole"><span class="track"></span>显示命令行窗口
+          </label>
+        </div>
+
+        <div class="tip" id="typeTip"></div>
+      </div>
+    </div>
+
+    <div class="modal-foot">
+      <button class="btn sm" id="btnTest">▶ 测试运行</button>
+      <div class="spacer"></div>
+      <button class="btn sm" data-close>取消</button>
+      <button class="btn primary sm" id="btnSave">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== 扫描结果 ===================== -->
+<div class="overlay" id="scanOverlay" hidden>
+  <div class="modal wide">
+    <div class="modal-head">
+      <div class="mh-ic">🔍</div>
+      <div>
+        <h2>扫描到的软件</h2>
+        <p id="scanSub">读取开始菜单快捷方式与注册表安装信息</p>
+      </div>
+      <div class="spacer"></div>
+      <button class="x-btn" data-close>✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="scan-bar">
+        <input type="text" id="scanQ" placeholder="筛选…">
+        <button class="btn sm" id="btnScanAll">全选</button>
+        <button class="btn sm" id="btnScanNone">全不选</button>
+      </div>
+      <div class="scan-list" id="scanList"></div>
+    </div>
+    <div class="modal-foot">
+      <span id="scanCount" style="font-size:12.5px;color:var(--text-3)">已选 0 项</span>
+      <div class="spacer"></div>
+      <button class="btn sm" data-close>取消</button>
+      <button class="btn primary sm" id="btnScanImport">导入到分组</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== 确认框 ===================== -->
+<div class="overlay" id="confirmOverlay" hidden>
+  <div class="modal confirm">
+    <div class="modal-body">
+      <div class="c-ic" id="cfIc">🗑️</div>
+      <h2 id="cfTitle">确认删除？</h2>
+      <p id="cfText"></p>
+    </div>
+    <div class="modal-foot">
+      <div class="spacer"></div>
+      <button class="btn sm" id="cfNo">取消</button>
+      <button class="btn danger sm" id="cfYes">删除</button>
+    </div>
+  </div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+
+<script src="/app.js"></script>
+</body>
+</html>

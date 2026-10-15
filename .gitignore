@@ -1,0 +1,43 @@
+# ---------------------------------------------------------------- Node / Electron
+node_modules/
+desktop/node_modules/
+desktop/.tmpdata/
+desktop/.tmpdata-run.log
+desktop/.dbg.log
+desktop/.hotkey.log
+npm-debug.log*
+yarn-error.log*
+.npm/
+.cache/
+electron-builder.env
+
+# ---------------------------------------------------------------- 构建产物（走 Release，不进仓库）
+dist/
+release/
+*.exe
+*.msi
+*.nupkg
+*.blockmap
+
+# ---------------------------------------------------------------- Python 遗留版
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# ---------------------------------------------------------------- 编辑器 / 系统
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---------------------------------------------------------------- WorkBuddy 工作区元数据
+.workbuddy/
+
+# ---------------------------------------------------------------- 本地临时
+tmp/
+.tmp/
+*~

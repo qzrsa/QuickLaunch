@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'">
+<title>快速启动 · QuickLaunch</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="bg"><i class="blob b1"></i><i class="blob b2"></i><i class="blob b3"></i></div>
+
+<div class="app">
+  <!-- ===================== 左侧栏 ===================== -->
+  <aside class="rail">
+    <div class="brand drag">
+      <div class="logo">🚀</div>
+      <div class="brand-txt"><b>快速启动</b><span>QuickLaunch</span></div>
+    </div>
+
+    <nav class="nav" id="nav"></nav>
+
+    <div class="rail-foot">
+      <button class="ghost-btn" id="btnScan">🔍<span>扫描本机软件</span></button>
+      <button class="ghost-btn" id="btnTheme">🌙<span>深色模式</span></button>
+      <button class="ghost-btn" id="btnSettings">⚙️<span>设置</span></button>
+      <div class="conn" id="conn"><i></i><span>初始化…</span></div>
+    </div>
+  </aside>
+
+  <!-- ===================== 主区 ===================== -->
+  <main class="main">
+    <header class="topbar drag">
+      <div class="title">
+        <h1 id="groupTitle">全部</h1>
+        <p id="groupSub">加载中…</p>
+      </div>
+      <div class="spacer"></div>
+
+      <label class="search nodrag">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+             stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+        <input id="q" type="text" placeholder="搜索名称、路径或描述…" autocomplete="off" spellcheck="false">
+        <kbd>/</kbd>
+      </label>
+
+      <select class="mini-select nodrag" id="sort">
+        <option value="custom">自定义顺序</option>
+        <option value="recent">最近使用</option>
+        <option value="uses">使用最多</option>
+        <option value="name">按名称</option>
+      </select>
+
+      <button class="btn primary nodrag" id="btnAdd">＋ 新建</button>
+
+      <!-- 窗口控制（自绘）
+           ★ 图标用内联 SVG 而不是 ─ / ☐ / ❐ 这类字体符号：
+             制表符和方框符号的宽度、粗细、垂直基位完全取决于系统字体回退，
+             13px 下 U+2500 只剩一条又细又偏上的短线，看起来就像空白按钮。
+             SVG 用 currentColor 描边，位置和粗细都是确定的，且自动跟随主题。 -->
+      <div class="win-ctrls nodrag">
+        <button class="wc" id="wcMin" title="最小化">
+          <svg class="ic" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 6h8"/></svg>
+        </button>
+        <button class="wc" id="wcMax" title="最大化">
+          <svg class="ic i-max" viewBox="0 0 12 12" aria-hidden="true"><rect x="2.5" y="2.5" width="7" height="7" rx="1.2"/></svg>
+          <svg class="ic i-restore" viewBox="0 0 12 12" aria-hidden="true">
+            <!-- 前：右下小方框；后：左上被遮的方框只画顶边 + 左边。
+                 错位量要够大（2.2 单位），12px 下两个方框才不会糊成一坨。 -->
+            <path d="M7.7 2.3H2.3V7.7"/><rect x="4.5" y="4.5" width="5.4" height="5.4" rx="1.1"/>
+          </svg>
+        </button>
+        <button class="wc close" id="wcClose" title="关闭到托盘">
+          <svg class="ic" viewBox="0 0 12 12" aria-hidden="true"><path d="M2.6 2.6l6.8 6.8M9.4 2.6l-6.8 6.8"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <div class="content" id="content">
+      <div class="grid-host" id="gridHost"></div>
+
+      <div class="kbd-hint" id="kbdHint">
+        <span><b>右键</b> 更多操作</span>
+        <span><b>拖入</b> 快捷方式导入</span>
+        <span><b>/</b> 搜索</span>
+        <span><b>↑ ↓</b> 选择</span>
+        <span><b>Enter</b> 启动</span>
+        <span><b>N</b> 新建</span>
+        <span><b>F</b> 收藏</span>
+        <span><b>Esc</b> 取消</span>
+      </div>
+
+      <div class="empty" id="empty" hidden>
+        <div class="big" id="emptyIcon">🗂️</div>
+        <h2 id="emptyTitle">这里还没有内容</h2>
+        <p id="emptyText">点击右上角「新建」添加第一个启动项，或用左侧「扫描本机软件」自动导入已安装的程序。</p>
+      </div>
+    </div>
+  </main>
+</div>
+
+<!-- ===================== 新建 / 编辑 ===================== -->
+<div class="overlay" id="editOverlay" hidden>
+  <div class="modal">
+    <div class="modal-head">
+      <div class="mh-ic" id="editIc">＋</div>
+      <div>
+        <h2 id="editTitle">新建启动项</h2>
+        <p id="editSub">配置名称、类型与目标路径</p>
+      </div>
+      <div class="spacer"></div>
+      <button class="x-btn" data-close>✕</button>
+    </div>
+
+    <div class="modal-body">
+      <div class="form">
+        <div class="row2">
+          <div class="field">
+            <label>名称</label>
+            <input type="text" id="fName" placeholder="例如：VS Code">
+          </div>
+          <div class="field">
+            <label>所属分组</label>
+            <select id="fGroup"></select>
+          </div>
+        </div>
+
+        <div class="field" id="newGroupField" hidden>
+          <label>新分组名称 <span class="hint">将同时创建</span></label>
+          <input type="text" id="fNewGroup" placeholder="例如：游戏">
+        </div>
+
+        <div class="field">
+          <label>类型</label>
+          <div class="types" id="fTypes"></div>
+        </div>
+
+        <div class="field">
+          <label>目标路径 <span class="hint" id="fPathHint"></span></label>
+          <div class="path-row">
+            <input type="text" id="fPath" placeholder="C:\Program Files\App\App.exe">
+            <button class="btn sm" id="btnBrowse">浏览…</button>
+          </div>
+        </div>
+
+        <div class="row2">
+          <div class="field">
+            <label>启动参数 <span class="hint">可选</span></label>
+            <input type="text" id="fArgs" placeholder="--flag value">
+          </div>
+          <div class="field">
+            <label>工作目录 <span class="hint">可选</span></label>
+            <input type="text" id="fCwd" placeholder="默认跟随程序所在目录">
+          </div>
+        </div>
+
+        <div class="field">
+          <label>描述 <span class="hint">可选，显示在卡片上</span></label>
+          <input type="text" id="fDesc" placeholder="一句话说明">
+        </div>
+
+        <div class="field">
+          <label>图标</label>
+          <div class="icons" id="fIcons"></div>
+        </div>
+
+        <div class="switch-row">
+          <label class="switch">
+            <input type="checkbox" id="fElevate"><span class="track"></span>以管理员身份运行
+          </label>
+          <label class="switch">
+            <input type="checkbox" id="fConsole"><span class="track"></span>显示命令行窗口
+          </label>
+          <label class="switch">
+            <input type="checkbox" id="fFav"><span class="track"></span>加入托盘收藏
+          </label>
+        </div>
+
+        <div class="tip" id="typeTip"></div>
+      </div>
+    </div>
+
+    <div class="modal-foot">
+      <button class="btn sm" id="btnTest">▶ 测试运行</button>
+      <div class="spacer"></div>
+      <button class="btn sm" data-close>取消</button>
+      <button class="btn primary sm" id="btnSave">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== 扫描结果 ===================== -->
+<div class="overlay" id="scanOverlay" hidden>
+  <div class="modal wide">
+    <div class="modal-head">
+      <div class="mh-ic">🔍</div>
+      <div>
+        <h2>扫描到的软件</h2>
+        <p id="scanSub">读取开始菜单快捷方式与注册表安装信息</p>
+      </div>
+      <div class="spacer"></div>
+      <button class="x-btn" data-close>✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="scan-bar">
+        <input type="text" id="scanQ" placeholder="筛选…">
+        <button class="btn sm" id="btnScanAll">全选</button>
+        <button class="btn sm" id="btnScanNone">全不选</button>
+      </div>
+      <div class="scan-list" id="scanList"></div>
+    </div>
+    <div class="modal-foot">
+      <span id="scanCount" class="muted-note">已选 0 项</span>
+      <div class="spacer"></div>
+      <button class="btn sm" data-close>取消</button>
+      <button class="btn primary sm" id="btnScanImport">导入到分组</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== 设置 ===================== -->
+<div class="overlay" id="setOverlay" hidden>
+  <div class="modal">
+    <div class="modal-head">
+      <div class="mh-ic">⚙️</div>
+      <div>
+        <h2>设置</h2>
+        <p>热键、托盘与启动行为</p>
+      </div>
+      <div class="spacer"></div>
+      <button class="x-btn" data-close>✕</button>
+    </div>
+
+    <div class="modal-body">
+      <div class="form">
+        <div class="field">
+          <label>全局热键 <span class="hint">点击输入框后直接按下组合键</span></label>
+          <div class="path-row">
+            <input type="text" id="sHotkey" readonly placeholder="按下组合键…" style="cursor:pointer">
+            <button class="btn sm" id="btnHotkeyClear">清除</button>
+          </div>
+          <p class="hint-line" id="hotkeyMsg"></p>
+        </div>
+
+        <div class="switch-row">
+          <label class="switch">
+            <input type="checkbox" id="sHotkeyOn"><span class="track"></span>启用全局热键
+          </label>
+          <label class="switch">
+            <input type="checkbox" id="sAutostart"><span class="track"></span>开机自动启动（静默到托盘）
+          </label>
+          <label class="switch">
+            <input type="checkbox" id="sHoverActs"><span class="track"></span>鼠标悬停显示卡片快捷按钮
+          </label>
+        </div>
+
+        <div class="row2">
+          <div class="field">
+            <label>点击关闭按钮时</label>
+            <select id="sCloseAction">
+              <option value="tray">最小化到托盘（推荐）</option>
+              <option value="quit">直接退出程序</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>托盘的「快速启动」菜单</label>
+            <select id="sTrayQuick">
+              <option value="top">显示使用最多的 10 项</option>
+              <option value="favorites">只显示收藏项</option>
+              <option value="none">不显示</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="tip">
+          <div>
+            <b>右键</b>：在卡片上右键可启动 / 提权 / 打开所在位置 / 收藏 / 编辑 / 删除；在左侧分组上右键可新建 / 重命名 / 换色 / 删除分组；在空白处右键可新建或扫描。<br>
+            <b>托盘</b>：单击托盘图标显示 / 隐藏窗口，右键可快速启动与退出，关闭窗口不会退出程序。<br>
+            <b>热键</b>：默认 <b>Ctrl+Alt+Space</b> 呼出，再按一次隐藏。若被其他程序占用，这里会提示注册失败。<br>
+            <b>开机自启</b>：写入当前可执行文件路径，便携版移动位置后请重新勾选一次。
+          </div>
+        </div>
+
+        <div class="field">
+          <label>运行环境</label>
+          <div class="env-box" id="envBox">读取中…</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-foot">
+      <button class="btn sm" id="btnOpenCfg">打开配置目录</button>
+      <div class="spacer"></div>
+      <button class="btn sm" data-close>关闭</button>
+      <button class="btn primary sm" id="btnSetSave">保存设置</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== 输入框（重命名等） ===================== -->
+<div class="overlay" id="promptOverlay" hidden>
+  <div class="modal confirm">
+    <div class="modal-head">
+      <div class="mh-ic" id="pmIc">✎</div>
+      <div>
+        <h2 id="pmTitle">重命名</h2>
+        <p id="pmSub"></p>
+      </div>
+      <div class="spacer"></div>
+      <button class="x-btn" data-close>✕</button>
+    </div>
+    <div class="modal-body" style="text-align:left">
+      <div class="field">
+        <label id="pmLabel">名称</label>
+        <input type="text" id="pmInput" placeholder="">
+      </div>
+    </div>
+    <div class="modal-foot">
+      <div class="spacer"></div>
+      <button class="btn sm" data-close>取消</button>
+      <button class="btn primary sm" id="pmOk">确定</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== 确认框 ===================== -->
+<div class="overlay" id="confirmOverlay" hidden>
+  <div class="modal confirm">
+    <div class="modal-body">
+      <div class="c-ic" id="cfIc">🗑️</div>
+      <h2 id="cfTitle">确认删除？</h2>
+      <p id="cfText"></p>
+    </div>
+    <div class="modal-foot">
+      <div class="spacer"></div>
+      <button class="btn sm" id="cfNo">取消</button>
+      <button class="btn danger sm" id="cfYes">删除</button>
+    </div>
+  </div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+
+<!-- ===================== 拖入导入提示 ===================== -->
+<div class="drop-veil" id="dropVeil" hidden>
+  <div class="drop-card">
+    <div class="dv-ic" id="dropIc">📥</div>
+    <b id="dropTitle">松开即可导入</b>
+    <span id="dropSub">支持快捷方式、程序、文件夹与网址</span>
+  </div>
+</div>
+
+<!-- ===================== 拖动排序 / 删除垃圾桶 ===================== -->
+<div class="trash" id="trash" hidden>
+  <span class="ti">🗑</span>
+  <span id="trashTxt">拖到这里删除</span>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

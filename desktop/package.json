@@ -1,0 +1,80 @@
+{
+  "name": "quicklaunch",
+  "productName": "QuickLaunch",
+  "version": "1.0.0",
+  "description": "快速启动 · QuickLaunch — 桌面版启动器",
+  "main": "src/main.js",
+  "author": "QZRS",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "start:visible": "electron . --dev",
+    "check": "node --check src/main.js && node --check src/preload.js && node --check src/lib/menus.js && node --check renderer/app.js && node --check scripts/pack-green.mjs && node --check scripts/lint-workflow.mjs && node scripts/lint-workflow.mjs",
+    "test": "node test/smoke.js",
+    "dist": "electron-builder --win nsis portable dir --x64 --publish never",
+    "dist:nsis": "electron-builder --win nsis --x64 --publish never",
+    "dist:portable": "electron-builder --win portable --x64 --publish never",
+    "dist:dir": "electron-builder --win dir --x64 --publish never",
+    "pack:green": "node scripts/pack-green.mjs --src ../dist/win-unpacked --need QuickLaunch.exe,resources/app.asar,resources/icon.ico",
+    "release": "npm run check && npm run test && npm run dist && npm run pack:green"
+  },
+  "build": {
+    "appId": "cn.qzrs.quicklaunch",
+    "productName": "QuickLaunch",
+    "copyright": "Copyright © 2026 QZRS",
+    "directories": {
+      "output": "../dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "src/**/*",
+      "renderer/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "build/icon.ico",
+        "to": "icon.ico"
+      },
+      {
+        "from": "build/icon.png",
+        "to": "icon.png"
+      }
+    ],
+    "win": {
+      "target": [
+        { "target": "nsis", "arch": ["x64"] },
+        { "target": "portable", "arch": ["x64"] },
+        { "target": "dir", "arch": ["x64"] }
+      ],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "artifactName": "QuickLaunch-Setup-${version}.${ext}",
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": true,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "快速启动",
+      "uninstallDisplayName": "快速启动 QuickLaunch",
+      "deleteAppDataOnUninstall": false
+    },
+    "portable": {
+      "artifactName": "QuickLaunch-Portable-${version}.${ext}"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "qzrsa",
+      "repo": "QuickLaunch"
+    },
+    "compression": "normal",
+    "asar": true
+  },
+  "devDependencies": {
+    "electron": "^44.7.2",
+    "electron-builder": "^26.15.3"
+  }
+}

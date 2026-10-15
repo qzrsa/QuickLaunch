@@ -1,0 +1,132 @@
+name: Build & Release
+
+# ⚠️ branches 与 tags 必须写在**同一个** push 键下；
+#    写两个 `push:` 后者会静默覆盖前者。
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write          # 发 Release 需要
+
+jobs:
+  build:
+    name: 打包（安装版 / 便携版 / 绿色版）
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: desktop
+
+    steps:
+      - name: 检出
+        uses: actions/checkout@v5
+
+      - name: 装 Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: 装依赖
+        shell: bash
+        env:
+          ELECTRON_MIRROR: https://npmmirror.com/mirrors/electron/
+        run: npm ci
+
+      # 干净机器上 electron 的 postinstall 可能被 npm 的 allow-scripts 门控跳过，
+      # 于是 build.electronDist 指向的目录根本不存在 → electron-builder 直接报
+      # "The specified electronDist does not exist"。这一步幂等，已装过会秒退。
+      - name: 补齐 Electron 运行时（electronDist）
+        shell: bash
+        env:
+          ELECTRON_MIRROR: https://npmmirror.com/mirrors/electron/
+        run: |
+          if [ -f node_modules/electron/dist/electron.exe ]; then
+            echo "electron/dist 已存在，跳过"
+          else
+            node node_modules/electron/install.js
+          fi
+          test -f node_modules/electron/dist/electron.exe \
+            || { echo "::error::electronDist 下载后仍不存在，请检查 ELECTRON_MIRROR"; exit 1; }
+
+      - name: 静态自检（语法 + 主进程逻辑）
+        shell: bash
+        run: |
+          npm run check
+          npm run test
+
+      - name: 打包
+        shell: bash
+        env:
+          ELECTRON_BUILDER_CACHE: ${{ runner.temp }}\electron-builder-cache
+        run: npx electron-builder --win nsis portable dir --x64 --publish never
+
+      - name: 压绿色版 zip
+        shell: bash
+        run: |
+          node scripts/pack-green.mjs \
+            --src ../dist/win-unpacked \
+            --need QuickLaunch.exe,resources/app.asar,resources/icon.ico
+
+      # action 的 path 里**绝对不能有 `..`**：@actions/glob 的 fixupPattern
+      # 只要见到 `..` 就断言失败。也不能用 $(pwd)（Git Bash 给的是 MSYS 风格 /d/a/...）。
+      # cygpath -w -a 一步拿到原生 Windows 路径并消掉 `..`。
+      - name: 计算产物路径 + 防回归断言
+        shell: bash
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          cd ../dist
+          RELEASE_DIR="$(cygpath -w -a "$(pwd)")"
+
+          case "$RELEASE_DIR" in
+            *".."*)            echo "::error::RELEASE_DIR 仍含 ..：$RELEASE_DIR"; exit 1 ;;
+            [A-Za-z]:\\*)      ;;
+            *)                 echo "::error::RELEASE_DIR 不是原生 Windows 路径：$RELEASE_DIR"; exit 1 ;;
+          esac
+
+          SETUP="QuickLaunch-Setup-${VERSION}.exe"
+          PORTABLE="QuickLaunch-Portable-${VERSION}.exe"
+          GREEN="QuickLaunch-Green-${VERSION}.zip"
+
+          # 文件名不得含空格：GitHub 会把 Release 资产名里的空格换成点，从 action 侧治不了
+          for f in "$SETUP" "$PORTABLE" "$GREEN"; do
+            case "$f" in *" "*) echo "::error::资产名含空格：$f"; exit 1 ;; esac
+            test -f "$f" || { echo "::error::产物缺失：$RELEASE_DIR\\$f"; exit 1; }
+          done
+
+          {
+            echo "VERSION=$VERSION"
+            echo "RELEASE_DIR=$RELEASE_DIR"
+            echo "SETUP=$SETUP"
+            echo "PORTABLE=$PORTABLE"
+            echo "GREEN=$GREEN"
+          } >> "$GITHUB_ENV"
+
+          echo "=== 产物清单 ==="
+          ls -la QuickLaunch-*
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: QuickLaunch-${{ env.VERSION }}
+          if-no-files-found: error
+          path: |
+            ${{ env.RELEASE_DIR }}\${{ env.SETUP }}
+            ${{ env.RELEASE_DIR }}\${{ env.PORTABLE }}
+            ${{ env.RELEASE_DIR }}\${{ env.GREEN }}
+
+      # 推 main 不会顺带推 tag。要发版必须：git tag -a v1.0.1 -m "..." && git push origin v1.0.1
+      - name: 发布到 GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v3
+        with:
+          generate_release_notes: true
+          files: |
+            ${{ env.RELEASE_DIR }}\${{ env.SETUP }}
+            ${{ env.RELEASE_DIR }}\${{ env.PORTABLE }}
+            ${{ env.RELEASE_DIR }}\${{ env.GREEN }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
