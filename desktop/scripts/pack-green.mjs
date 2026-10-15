@@ -15,7 +15,7 @@
  *
  * 用法：
  *   node scripts/pack-green.mjs --src ../dist/win-unpacked \
- *        --out ../dist/QuickLaunch-Green-1.0.0.zip \
+ *        --out ../dist/QuickLaunch-Green-<版本>.zip \
  *        --need QuickLaunch.exe,resources/app.asar,resources/icon.ico
  */
 import fs from 'node:fs';
@@ -30,6 +30,15 @@ const arg = (name, def = null) => {
 };
 const SRC = arg('--src');
 const NEED = (arg('--need', '') || '').split(',').map(s => s.trim()).filter(Boolean);
+
+/**
+ * 运行时目录，绝不允许进发布包。
+ * win-unpacked 是「程序目录」，一旦有人在本机原地跑过一次绿色版，
+ * 用户的 config.json（可能含路径、备注等私人信息）就会躺在 <程序目录>/data/ 里；
+ * 此时再打包就会把私人配置随 Release 发出去。同样的问题也出在探针截图目录上。
+ * 所以这里按顶层目录名整棵剪掉，并且事后做一次硬校验。
+ */
+const SKIP_TOP = new Set(['data', '.probe-shot', '.tmpdata']);
 
 if (!SRC) {
   console.error('用法: node scripts/pack-green.mjs --src <目录> [--out <zip>] [--need a,b,c]');
@@ -76,6 +85,10 @@ function walk(dir, base = '') {
   for (const e of fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1))) {
     const abs = path.join(dir, e.name);
     const rel = base ? `${base}/${e.name}` : e.name;   // zip 里一律正斜杠
+    if (!base && SKIP_TOP.has(e.name)) {
+      console.warn(`[绿色版] ⚠ 已排除运行时目录: ${rel}/ （不进发布包，避免带上本机数据）`);
+      continue;
+    }
     if (e.isDirectory()) out.push(...walk(abs, rel));
     else if (e.isFile()) out.push({ abs, rel });
     else console.warn(`[绿色版] 跳过非普通文件: ${rel}`);
@@ -189,6 +202,23 @@ const names = [];
 }
 const missing = NEED.filter(x => !names.includes(x));
 if (missing.length) throw new Error(`zip 缺少必需条目: ${missing.join(', ')}`);
+
+// 硬校验：独立数一遍源目录里确实存在的运行时目录，断言它们一个都没进 zip。
+// 不从 `files` 反推 —— 那样只能证明 walk 按预期过滤，证不了"磁盘上真有东西且没漏"。
+const onDisk = [];
+for (const top of SKIP_TOP) {
+  const d = path.join(SRC, top);
+  if (fs.existsSync(d) && fs.statSync(d).isDirectory()) {
+    for (const f of walk(d, top)) onDisk.push(f.rel);   // top 非空 → 不过滤
+  }
+}
+const leaked = onDisk.filter(n => names.includes(n));
+if (leaked.length) {
+  throw new Error(`zip 混入了运行时数据，已中止: ${leaked.slice(0, 5).join(', ')}${leaked.length > 5 ? ` …共 ${leaked.length} 条` : ''}`);
+}
+if (onDisk.length) {
+  console.log(`          已排除 ${onDisk.length} 个运行时文件（data/ 等，未进包）`);
+}
 
 const mb = (ver.length / 1048576).toFixed(1);
 console.log(`[绿色版] ${OUT}`);

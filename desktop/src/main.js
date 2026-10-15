@@ -47,6 +47,9 @@ const DRAG_PROBE = !!DRAG_PROBE_ARG;
 const DRAG_PROBE_REAL = DRAG_PROBE_ARG === '--drag-probe=real';
 // 开发期自检：--group-probe 合成「新建分组 → 重名拦截 → 删除分组」，验证侧栏增删链路（会写 dev 配置）
 const GROUP_PROBE = process.argv.includes('--group-probe');
+// 开发期自检：--info-probe 打开设置面板，打印「运行环境」文本并截图
+// （验的是数据目录落在哪、三种运行形态标签对不对）
+const INFO_PROBE = process.argv.includes('--info-probe');
 
 function probeMenu(kind, payload, tpl) {
   const acts = tpl.filter(i => typeof i.click === 'function').map(i => i.click());
@@ -89,13 +92,62 @@ let quitting = false;
 let hotkeyFail = '';
 let lastBounds = null;
 
-/* 开发态把 userData 放到项目内：一是避免污染真实配置，
-   二是 %APPDATA% 在受限环境下不可写时会导致单实例锁创建失败而直接退出。
-   打包后 isPackaged=true，走 Electron 默认的 %APPDATA%\QuickLaunch。 */
-if (!app.isPackaged) {
-  const devData = path.join(ROOT, '.tmpdata', 'userData');
-  try { fs.mkdirSync(devData, { recursive: true }); } catch { /* noop */ }
-  try { app.setPath('userData', devData); } catch { /* noop */ }
+/* ------------------------------------------------------------ 数据目录
+ * 打包后把 Electron 的 userData 放到**程序自己所在目录**：
+ *   安装版 → 安装目录、绿色版 → 运行目录、便携版 → 便携版 exe 所在目录。
+ * 决策与回落逻辑都在 src/lib/datadir.js（可离线单测），这里只负责把
+ * Electron 的实际路径喂进去、把结果落到 app.setPath。
+ * 开发态仍旧放项目内 .tmpdata/userData：一是别污染真实配置，二是 %APPDATA% 在受限
+ * 环境下不可写会导致单实例锁创建失败而直接退出（见铁律二）。 */
+const datadir = require('./lib/datadir');
+
+/** 程序所在目录。便携版必须优先用 PORTABLE_EXECUTABLE_DIR，
+ *  否则拿到的是临时解包目录 —— 数据会跟着临时目录一起被删。 */
+function programDir() {
+  if (process.env.PORTABLE_EXECUTABLE_DIR) return process.env.PORTABLE_EXECUTABLE_DIR;
+  try { return path.dirname(app.getPath('exe')); } catch { return path.dirname(process.execPath); }
+}
+
+/** 数据目录的落点与原因，ql:info 会原样吐给设置面板 */
+let dataLocation = { dir: '', inProgramDir: false, note: '' };
+
+function setupDataDir() {
+  let legacy = '';
+  try { legacy = app.getPath('userData'); } catch { /* noop */ }   // 必须在 setPath 之前取
+
+  dataLocation = datadir.resolveDataDir({
+    isPackaged: app.isPackaged,
+    devDataDir: path.join(ROOT, '.tmpdata', 'userData'),
+    legacyDir: legacy,
+    programDir: programDir(),
+  });
+
+  if (dataLocation.inProgramDir) {
+    try { fs.mkdirSync(dataLocation.dir, { recursive: true }); } catch { /* noop */ }
+    if (datadir.migrateLegacyConfig(dataLocation.dir, legacy)) {
+      console.log('[data] 已把旧配置迁到程序目录:', path.join(legacy, 'config.json'), '->', dataLocation.dir);
+    }
+  } else if (app.isPackaged) {
+    console.warn('[data] 数据未落在程序目录 ·', dataLocation.note, '· 实际 =', dataLocation.dir);
+  }
+
+  try { app.setPath('userData', dataLocation.dir); } catch (e) {
+    console.error('[data] setPath 失败，改用系统默认目录:', e.message);
+    dataLocation = { dir: legacy, inProgramDir: false, note: 'setPath 失败，已回落到系统目录' };
+  }
+}
+
+setupDataDir();
+
+/** 运行形态：给设置面板显示用。安装版靠程序目录里有没有卸载器来认。 */
+function appForm() {
+  if (!app.isPackaged) return 'dev';
+  if (process.env.PORTABLE_EXECUTABLE_DIR) return 'portable';
+  try {
+    const hasUninstaller = fs.readdirSync(programDir())
+      .some(n => /^Uninstall.*\.exe$/i.test(n));
+    return hasUninstaller ? 'installed' : 'green';
+  } catch { return 'green'; }
 }
 
 /* ---------------------------------------------------- 路径与自启 */
@@ -207,11 +259,20 @@ function createWindow() {
 
   // --drag-probe / --group-probe 共用的截图通道：
   // 由渲染层在准确时刻主动触发（主进程自己掐 setTimeout 会被节流/漂移）
-  if (DRAG_PROBE || GROUP_PROBE) {
+  if (DRAG_PROBE || GROUP_PROBE || INFO_PROBE) {
+    // 打包态下 ROOT 在 asar 内部，写不进去 —— 逐级找一个能写的目录，
+    // 免得探针"静默失败"让人以为没问题。
+    const shotBase = (() => {
+      const cands = [path.join(ROOT, '.tmpdata')];
+      try { cands.push(path.join(path.dirname(process.execPath), '.probe-shot')); } catch { /* noop */ }
+      try { cands.push(path.join(app.getPath('temp'), 'quicklaunch-probe')); } catch { /* noop */ }
+      for (const d of cands) if (datadir.ensureWritable(d)) return d;
+      return app.getPath('temp');
+    })();
     ipcMain.handle('ql:probe-shot', async (_e, name) => {
       try {
         const img = await win.webContents.capturePage();
-        const out = path.join(ROOT, '.tmpdata', name);
+        const out = path.join(shotBase, name);
         fs.mkdirSync(path.dirname(out), { recursive: true });
         fs.writeFileSync(out, img.toPNG());
         console.log(`[probe] 截图 -> ${out}`);
@@ -220,6 +281,17 @@ function createWindow() {
         console.error('[probe] 截图失败:', e.message);
         return { ok: false, msg: e.message };
       }
+    });
+  }
+
+  // --info-probe：打开设置面板 → 打印「运行环境」→ 截图
+  if (INFO_PROBE) {
+    win.webContents.once('did-finish-load', () => {
+      setTimeout(() => {
+        try { win.setOpacity(0); } catch { /* noop */ }
+        win.webContents.send('ql:info-probe');
+      }, 1200);
+      setTimeout(() => quitApp(), 20000);
     });
   }
 
@@ -569,9 +641,13 @@ function registerIpc() {
     node: process.versions.node,
     platform: process.platform,
     packaged: app.isPackaged,
+    form: appForm(),                      // dev / portable / installed / green
     exePath: launcherExePath(),
     configFile: store.configFile(),
     configDir: store.configDir(),
+    dataDir: dataLocation.dir,             // 数据实际落点
+    dataInProgramDir: dataLocation.inProgramDir,
+    dataNote: dataLocation.note,
     autostart: autostartState(),
     hotkeyFail,
     hotkeys: globalShortcut.isRegistered(store.load().settings.hotkey || ''),

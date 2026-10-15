@@ -1080,19 +1080,40 @@ async function openSettings() {
 
   state.info = await API.info();
   const i = state.info;
-  $('#envBox').textContent = [
+  $('#envBox').textContent = envLines(i).join('\n');
+
+  if (i.hotkeyFail) setHotkeyMsg(`热键注册失败：${i.hotkeyFail}`, 'warn');
+  $('#setOverlay').hidden = false;
+}
+
+/** 组装设置面板「运行环境」的文本。
+ *  抽成独立函数是为了让 --info-probe 能直接验它（渲染层最容易出的错就是
+ *  主进程少给一个字段 → 这里打出 undefined）。 */
+function envLines(i) {
+  // 运行形态要分清三种打包形态，不能一律写「便携版」
+  const FORM_TXT = {
+    dev: '开发模式',
+    portable: '便携版（单文件 exe）',
+    installed: '安装版',
+    green: '绿色版',
+  };
+  const formTxt = FORM_TXT[i.form] || (i.packaged ? '已打包' : '开发模式');
+  const lines = [
     `程序版本    v${i.version}`,
-    `运行形态    ${i.packaged ? '已打包（便携版）' : '开发模式'}`,
+    `运行形态    ${formTxt}`,
+    `数据目录    ${i.dataDir || '(未知)'}`,
     `Electron    ${i.electron}`,
     `Chromium    ${i.chrome}`,
     `Node        ${i.node}`,
     `可执行文件  ${i.exePath}`,
     `配置文件    ${i.configFile}`,
     `开机自启    ${i.autostart ? '已启用' : '未启用'}`,
-  ].join('\n');
-
-  if (i.hotkeyFail) setHotkeyMsg(`热键注册失败：${i.hotkeyFail}`, 'warn');
-  $('#setOverlay').hidden = false;
+  ];
+  // 数据没能落在程序目录时必须说出来，不能让用户以为在程序目录里
+  if (i.packaged && !i.dataInProgramDir) {
+    lines.push(`注意        ${i.dataNote || '数据未写在程序目录'}`);
+  }
+  return lines;
 }
 
 function setHotkeyMsg(msg, cls) {
@@ -1600,8 +1621,9 @@ function createMockBridge() {
     copyText: async t => { try { await navigator.clipboard.writeText(String(t || '')); } catch { /* noop */ } return { ok: true }; },
     info: async () => ({
       version: '1.0.0', electron: '（预览）', chrome: '（预览）', node: '（预览）',
-      platform: 'browser', packaged: false, exePath: '（预览模式，无桌面进程）',
+      platform: 'browser', packaged: false, form: 'dev', exePath: '（预览模式，无桌面进程）',
       configFile: 'localStorage: ql-mock-config', configDir: '（预览模式）',
+      dataDir: '（预览模式）', dataInProgramDir: false, dataNote: '预览模式',
       autostart: false, hotkeyFail: '', hotkeys: false,
     }),
     openConfigDir: async () => ({ ok: true }),
@@ -1699,6 +1721,32 @@ function createMockBridge() {
     } else {
       console.log('[import-probe] 阶段B 跳过：侧栏没有分组');
     }
+  });
+
+  // 运行环境面板自检（仅 --info-probe 时由主进程触发）：
+  // 走真实 openSettings()，把 envLines() 的结果打出来并截图。
+  // 重点验：数据目录有没有落到程序目录、三种运行形态标签对不对、
+  // 有没有哪个字段是 undefined（主进程少给字段就会露馅）。
+  API.on('ql:info-probe', async () => {
+    state.probeMode = true;
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
+    await openSettings();
+    await sleep(200);
+    const i = await API.info();
+    const lines = envLines(i);
+    console.log('[info-probe] 面板可见 =', !$('#setOverlay').hidden);
+    lines.forEach(l => console.log('[info-probe]   ' + l));
+    const bad = lines.filter(l => /undefined|null|NaN/.test(l));
+    console.log('[info-probe] 字段完整 =', bad.length === 0,
+      bad.length ? '| 可疑行 = ' + bad.join(' / ') : '');
+    console.log('[info-probe] 数据随程序走 =', !!i.dataInProgramDir, '| 说明 =', i.dataNote);
+    // 「运行环境」在弹窗底部，不滚进来截图就被裁掉了
+    const env = $('#envBox');
+    if (env) { env.scrollIntoView({ block: 'center' }); }
+    await sleep(200);
+    const r = await API.probeShot('shot-env.png');
+    console.log('[info-probe] 截图 =', r && r.ok ? 'ok' : ('失败 ' + (r && r.msg)));
+    console.log('[info-probe] done');
   });
 
   // 分组增删自检（仅 --group-probe 时由主进程触发）：

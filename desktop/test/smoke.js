@@ -312,6 +312,79 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
     ok(true, '本机没找到开始菜单快捷方式，跳过真实 .lnk 解析断言');
   }
 
+  /* ---------------------------------------------------------- 数据目录 */
+  section('datadir 数据目录决策');
+  const datadir = require('../src/lib/datadir');
+
+  ok(datadir.DATA_DIR_NAME === 'data', '数据子目录名叫 data');
+
+  // ① 开发态：写在项目内，不碰真实配置
+  const devRes = datadir.resolveDataDir({
+    isPackaged: false, devDataDir: path.join(TMP, 'devUserData'),
+    legacyDir: path.join(TMP, 'appdata'), programDir: path.join(TMP, 'prog'),
+  });
+  ok(devRes.dir === path.join(TMP, 'devUserData'), '开发态用项目内目录');
+  ok(devRes.inProgramDir === false, '开发态标记为“不随程序走”');
+
+  // ② 打包态 + 程序目录可写：数据落在 <程序目录>/data
+  const progDir = path.join(TMP, 'prog');
+  fs.mkdirSync(progDir, { recursive: true });
+  const packRes = datadir.resolveDataDir({
+    isPackaged: true, devDataDir: path.join(TMP, 'devUserData'),
+    legacyDir: path.join(TMP, 'appdata'), programDir: progDir,
+  });
+  ok(packRes.dir === path.join(progDir, 'data'), '打包态数据落在 <程序目录>/data');
+  ok(packRes.inProgramDir === true, '打包态标记为“数据随程序走”');
+  ok(fs.existsSync(path.join(progDir, 'data')), '决策后目录真的被建出来了');
+
+  // ③ 打包态 + 程序目录不可写：回落到系统目录，并且**说出来**
+  //    —— 这条真实环境很难复现（Windows 上没法随手把目录变成只读），
+  //       所以注入一个 mkdirSync 必抛的假 fs
+  const failFs = {
+    mkdirSync: () => { const e = new Error('EACCES: permission denied'); e.code = 'EACCES'; throw e; },
+    existsSync: () => false, writeFileSync: () => {}, unlinkSync: () => {}, copyFileSync: () => {},
+  };
+  const fallbackRes = datadir.resolveDataDir({
+    isPackaged: true, devDataDir: path.join(TMP, 'devUserData'),
+    legacyDir: path.join(TMP, 'appdata'), programDir: progDir, fs: failFs,
+  });
+  ok(fallbackRes.dir === path.join(TMP, 'appdata'), '程序目录不可写时回落到系统目录');
+  ok(fallbackRes.inProgramDir === false, '回落时如实标记为“不随程序走”');
+  ok(/不可写|回落/.test(fallbackRes.note), `回落原因会写进 note（实际：${fallbackRes.note}）`);
+
+  // ④ 目标目录就是源目录时，迁移必须自己认出「这是同一个文件」而不是硬拷
+  const selfDir = path.join(TMP, 'self');
+  fs.mkdirSync(selfDir, { recursive: true });
+  fs.writeFileSync(path.join(selfDir, 'config.json'), '{"groups":[]}');
+  ok(datadir.migrateLegacyConfig(selfDir, selfDir) === false, '源与目标同一目录时不迁移');
+  ok(fs.readFileSync(path.join(selfDir, 'config.json'), 'utf8') === '{"groups":[]}',
+    '同一目录时文件内容没被动过');
+
+  // ⑤ ensureWritable：真临时目录可写；路径落在一个**文件**底下则不可写（确定性失败）
+  const wDir = path.join(TMP, 'writable-check');
+  ok(datadir.ensureWritable(wDir) === true, '正常临时目录判定为可写');
+  ok(!fs.existsSync(path.join(wDir, '.ql-write-probe-' + process.pid)),
+    '探测文件用完被清掉了，不留下垃圾');
+  const blocker = path.join(TMP, 'blocker.txt');
+  fs.writeFileSync(blocker, 'x');
+  ok(datadir.ensureWritable(path.join(blocker, 'sub')) === false,
+    '路径穿过一个文件时判定为不可写（ENOTDIR）');
+
+  // ⑥ migrateLegacyConfig：搬旧配置，但不能覆盖已有的新配置
+  const migTarget = path.join(TMP, 'mig', 'data');
+  const migLegacy = path.join(TMP, 'mig', 'appdata');
+  fs.mkdirSync(migLegacy, { recursive: true });
+  fs.writeFileSync(path.join(migLegacy, 'config.json'), '{"groups":[]}');
+  ok(datadir.migrateLegacyConfig(migTarget, migLegacy) === true, '新位置没有配置时会把旧的搬过来');
+  ok(fs.existsSync(path.join(migTarget, 'config.json')), '迁移后新位置确实有 config.json');
+  ok(fs.existsSync(path.join(migLegacy, 'config.json')), '旧位置用的是复制不是移动，原文件还在');
+  fs.writeFileSync(path.join(migTarget, 'config.json'), '{"groups":[1]}');
+  ok(datadir.migrateLegacyConfig(migTarget, migLegacy) === false, '新位置已有配置时不覆盖');
+  ok(fs.readFileSync(path.join(migTarget, 'config.json'), 'utf8') === '{"groups":[1]}',
+    '不覆盖意味着内容原样保留');
+  ok(datadir.migrateLegacyConfig(migTarget, path.join(TMP, 'nope')) === false,
+    '旧位置没有配置时什么也不做');
+
   section('结果');
   console.log(`  \x1b[32m通过 ${pass}\x1b[0m${fail ? ` / \x1b[31m失败 ${fail}\x1b[0m` : ''}`);
   fs.rmSync(TMP, { recursive: true, force: true });

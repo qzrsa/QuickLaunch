@@ -39,11 +39,30 @@
 | 产物 | 文件名 | 说明 |
 |---|---|---|
 | **安装版** | `QuickLaunch-Setup-<版本>.exe` | NSIS 安装包。可选安装目录，自动建桌面 + 开始菜单快捷方式，带卸载项 |
-| **便携版** | `QuickLaunch-Portable-<版本>.exe` | 单文件绿色 exe，双击即用，不写注册表（配置仍在 `%APPDATA%`） |
+| **便携版** | `QuickLaunch-Portable-<版本>.exe` | 单文件绿色 exe，双击即用，不写注册表。数据写在 **exe 所在目录**下 |
 | **绿色版** | `QuickLaunch-Green-<版本>.zip` | 解包即用的整个目录，exe 在 zip 根层，解压到哪就在哪跑 |
 
-配置目录（三种形态共用）：
-`%APPDATA%\QuickLaunch\config.json`
+## 数据存在哪
+
+**数据随程序走** —— 三种形态都把配置写在**程序所在目录**的 `data\` 子目录里，
+拷走整个目录（或整个安装目录）就能把配置一起搬走：
+
+| 形态 | 数据落点 |
+|---|---|
+| 安装版 | `<安装目录>\data\` |
+| 绿色版 | `<运行目录>\data\` |
+| 便携版 | `Portable\data\`（**exe 所在目录**，不是临时解包目录） |
+| 开发模式 | `<项目>\desktop\.tmpdata\userData\` |
+
+只有**程序目录不可写**时（例如装进了 `C:\Program Files` 又没提权），才回落到系统目录
+`%APPDATA%\QuickLaunch\`；此时设置面板的「运行环境」会多出一行 `注意` 说明。
+首次在程序目录建 `data\` 时，若 `%APPDATA%` 里已有旧配置，会**复制**一份过去（原文件保留，不会删）。
+
+设置面板的「运行环境」会直接告诉你当前落在哪：
+
+<p align="center">
+  <img src="preview-settings-data.png" width="420" alt="设置面板里的运行环境与数据说明">
+</p>
 
 ## 下载
 
@@ -59,7 +78,7 @@ cd desktop
 npm install
 npm start            # 开发运行
 npm run check        # 语法 + 工作流自检
-npm test             # 主进程逻辑自检（81 项）
+npm test             # 主进程逻辑自检（101 项）
 npm run release      # = check + test + 打三种产物 + 压绿色版 zip
 ```
 
@@ -67,9 +86,9 @@ npm run release      # = check + test + 打三种产物 + 压绿色版 zip
 
 ```
 dist/
-├── QuickLaunch-Setup-1.0.0.exe
-├── QuickLaunch-Portable-1.0.0.exe
-├── QuickLaunch-Green-1.0.0.zip
+├── QuickLaunch-Setup-1.0.1.exe
+├── QuickLaunch-Portable-1.0.1.exe
+├── QuickLaunch-Green-1.0.1.zip
 └── win-unpacked/            # 绿色版的原始目录
 ```
 
@@ -117,7 +136,7 @@ quicklaunch/
 * Electron 渲染层 `contextIsolation: true` / `sandbox: true` / `nodeIntegration: false`，
   只通过 `preload.js` 的白名单接口访问主进程。
 * 遗留 Python 版只监听 `127.0.0.1`，带一次性 CSRF token。
-* 全部数据留在本机 `%APPDATA%\QuickLaunch\`。
+* 全部数据留在本机 —— 默认写在程序目录的 `data\` 里，不联网、不上传。
 
 ## 许可
 
