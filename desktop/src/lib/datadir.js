@@ -7,8 +7,10 @@
  *   统一落在 `<程序目录>/data/`，不让 Chromium 那十几个缓存目录把程序根目录搅乱。
  *   只有程序目录不可写（例如装进 C:\Program Files 又没提权）才回落到系统目录。
  *
- * 这里刻意做成「注入 fs 的纯逻辑」，因为**回落分支没法靠跑真实程序验证** ——
- * Windows 上很难把某个目录变成不可写。注入一个 mkdirSync 会抛的假 fs 就能测。
+ * 这里刻意做成「注入 fs 的纯逻辑」，这样回落分支能在 CI 上跑（smoke 里塞一个 mkdirSync 会抛的假 fs）。
+ * 想真机复现：`icacls <目录> /deny "<机器名>\<用户>:(OI)(CI)(W)"` 就能造出真的不可写目录，
+ * 见 `.tmpdata/ro-fallback-probe.js`。★ 注意 deny 一定要带 `(OI)(CI)`，
+ * 否则先建出来的 `data\` 子目录不继承这条拒绝、仍是可写的，实验会得出假结论。
  */
 
 const path = require('path');
@@ -52,6 +54,9 @@ function resolveDataDir(o) {
   const legacy = o.legacyDir;
   const target = path.join(o.programDir, DATA_DIR_NAME);
 
+  // 探的是 `<程序目录>/data` 本身，不是程序目录 —— 只要那个子目录能建能写就够用。
+  // （所以「程序目录不可写但 data 已存在且有权限」会被正常接受，这正是想要的：
+  //   管理员手动给 data 目录放权之后，数据还是跟着程序走。）
   if (!ensureWritable(target, fs)) {
     return { dir: legacy, inProgramDir: false, note: '程序目录不可写，已回落到系统目录' };
   }
