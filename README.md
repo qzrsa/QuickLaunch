@@ -124,8 +124,8 @@ CI 与本地产出的两个文件**版本号与文件名一致**（两台机器�
 cd desktop
 npm install
 npm start            # 开发运行
-npm run check        # 语法 + 工作流自检（39 项）
-npm test             # 主进程逻辑自检（252 项）
+npm run check        # 语法 + 工作流自检（49 项）
+npm test             # 主进程逻辑自检（261 项）
 npm run release      # = check + test + 打三种产物 + 压绿色版 zip
 ```
 
@@ -154,9 +154,18 @@ npm run pack:green       # 把 win-unpacked 压成绿色版 zip
 （单文件便携版已移出 CI，理由见上）：
 
 ```bash
-git tag -a v1.2.0 -m "……"
+git tag -a v1.2.0 -m "v1.2.0 · 一句话概括" -m "
+- 改了什么，就写在这儿
+- 用户看得懂的话，不是 commit 标题的堆砌"
 git push origin v1.2.0        # ← 必须推 tag 名，推 main 不会顺带推 tag
 ```
+
+**tag 的 message 就是 Release 发布说明**，CI 会 `git tag -l --format='%(contents)'` 取出来放到
+发布页最前面，后面再接 GitHub 自动生成的变更列表（两者是**拼接**，不是替换）。所以：
+
+- 说明和代码同属一个 tag，不用另维护一份 CHANGELOG，也不会忘；
+- 第一行会当作 Release 标题（`%(contents:subject)`）；
+- 个别旧 tag 只有标题没有正文（例如 `v1.1.0`），那种情况就只显示标题 + 变更列表，不会报错。
 
 工作流里有一条**反向守卫**：CI 一旦又打出 `QuickLaunch-Portable-*`，构建会直接以
 `::error::` 失败 —— 免得出现「构建了却没发布」的静默不一致。

@@ -127,11 +127,52 @@ jobs:
             ${{ env.RELEASE_DIR }}\${{ env.SETUP }}
             ${{ env.RELEASE_DIR }}\${{ env.GREEN }}
 
+      # 发布说明就写在 annotated tag 的 message 里（`git tag -a v1.2.0 -m "…"`），
+      # 这里把它取出来交给 Release 步骤 —— 说明和代码同属一个 tag，不会忘、也不必再维护
+      # 一份 CHANGELOG。★ 取不到时**什么都不设**（而不是设成空串），action 会回落到
+      # 自动生成的变更列表；宁可少一段话，也绝不把 git 的报错文本贴到发布页上。
+      - name: 取 tag 里的发布说明
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+
+          # ★ checkout 默认是浅克隆（fetch-depth: 1），**不带 tag 对象** —— 不补这一步
+          #   `git tag -l` 会安静地什么都不返回，我们就静默退化成"没有说明"。
+          #   取不到也不致命（下面的回落会兜住），所以不 `|| exit`。
+          git fetch --depth=1 --no-tags origin "refs/tags/${TAG}:refs/tags/${TAG}" || true
+
+          KIND="$(git cat-file -t "refs/tags/${TAG}" 2>/dev/null || true)"
+          SUBJECT="$(git tag -l --format='%(contents:subject)' "$TAG" 2>/dev/null || true)"
+          NOTES="$(git tag -l --format='%(contents)' "$TAG" 2>/dev/null || true)"
+
+          printf 'RELEASE_TITLE=%s\n' "${SUBJECT:-$TAG}" >> "$GITHUB_ENV"
+
+          if [ -z "$NOTES" ]; then
+            # tag 类型为空 = 本地压根没有这个 tag 对象（补取失败）；= commit = 轻量 tag
+            # （轻量 tag 天生没有 message，只能靠自动生成的变更列表）。
+            echo "::warning::tag $TAG 取不到 message（本地 tag 类型=${KIND:-不存在}），Release 说明将只有自动生成的变更列表"
+          else
+            # 分隔符带上随机量：说明里若正好有一行等于分隔符，heredoc 会被提前截断。
+            DELIM="QL_NOTES_${TAG}_$$_$(date +%s)"
+            {
+              echo "RELEASE_NOTES<<$DELIM"
+              printf '%s\n' "$NOTES"
+              echo "$DELIM"
+            } >> "$GITHUB_ENV"
+            echo "已取到发布说明 $(printf '%s' "$NOTES" | wc -c) 字节"
+          fi
+
       # 推 main 不会顺带推 tag。要发版必须：git tag -a v1.2.0 -m "..." && git push origin v1.2.0
       - name: 发布到 GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v3
         with:
+          # body 不是"覆盖"而是**前置拼接**：v3 的 prepareReleaseMutation 会把
+          # `body + "\n\n" + 生成的 notes` 一起发出去，所以自动生成的变更列表还在。
+          # RELEASE_NOTES 没有时表达式求值为空串 → action 视为未提供 → 只有变更列表。
+          name: ${{ env.RELEASE_TITLE }}
+          body: ${{ env.RELEASE_NOTES }}
           generate_release_notes: true
           # Release 只挂安装版 + 绿色版两个资产（单文件便携版已按用户要求移出 CI）。
           files: |

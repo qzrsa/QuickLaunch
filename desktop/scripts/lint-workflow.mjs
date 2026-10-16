@@ -12,6 +12,7 @@
  *   - 干净机器上 electron 的 postinstall 被门控跳过 → 必须补齐 electronDist
  *   - `branches` 和 `tags` 写在两个 `push:` 键下 → 后者静默覆盖前者
  *   - CI 误把单文件便携版重新加回构建 → 构建了却不发布的静默不一致
+ *   - 浅克隆下 tag 对象不在本地 → 发布说明静默变成空白（每一环都会安静退化）
  *   - run 块里的 shell 语法错误 → 只在 push 之后才由 CI 报错，白烧一个来回
  */
 import fs from 'node:fs';
@@ -132,6 +133,31 @@ for (const [label, blk] of [['upload-artifact', uploadBlock], ['Release', relBlo
 console.log('--- Release 步骤 ---');
 ok(/if:\s*startsWith\(github\.ref, 'refs\/tags\/v'\)/.test(src), 'Release 仅在 tag 上触发');
 ok(relBlock.includes('GITHUB_TOKEN'), 'Release 步骤带 GITHUB_TOKEN');
+
+// ---- 发布说明来自 annotated tag 的 message ----
+// 之前 Release 页面上只有一行自动生成的 compare 链接（action 没给 body）。现在的链条是：
+//   tag message →（浅克隆补取）→ git tag -l --format='%(contents)' → $GITHUB_ENV → body:
+// 每一环都能安静地退化，所以每一环都得断言住。
+console.log('--- 发布说明来自 tag message ---');
+const notesIdx = src.indexOf('取 tag 里的发布说明');
+ok(notesIdx > 0 && notesIdx < relIdx, '取说明的步骤排在 Release 步骤之前');
+ok(/git fetch --depth=1 --no-tags origin/.test(src),
+  '浅克隆下显式补取 tag 对象（fetch-depth:1 默认不带 tag，取不到就静默没有说明）');
+ok(/git tag -l --format='%\(contents\)'/.test(src) && /git tag -l --format='%\(contents:subject\)'/.test(src),
+  '用 %(contents) 取完整 message、%(contents:subject) 取标题');
+ok(/RELEASE_NOTES<<\$DELIM/.test(src) && /DELIM="QL_NOTES_\$\{TAG\}_\$\$_\$\(date \+%s\)"/.test(src),
+  '写进 GITHUB_ENV 用**随机** heredoc 分隔符（说明里出现同名列时会被提前截断）');
+ok(/cat-file -t "refs\/tags\//.test(src) && /::warning::.*取不到 message/.test(src),
+  '取不到说明时只 ::warning:: 不失败，并在告警里带上本地 tag 类型（好定位是补取失败还是轻量 tag）');
+ok(relBlock.includes('body: ${{ env.RELEASE_NOTES }}'), 'Release 步骤把 RELEASE_NOTES 当 body');
+ok(relBlock.includes('name: ${{ env.RELEASE_TITLE }}'), 'Release 步骤把 RELEASE_TITLE 当标题');
+// generate_release_notes 与 body 是**拼接**关系（v3 源码里 body + "\n\n" + notes），
+// 关掉它就等于用自己写的说明换掉 GitHub 的提交列表 —— 那是降级，不是优化。
+ok(relBlock.includes('generate_release_notes: true'),
+  '保留 generate_release_notes（说明是前置拼接，不是替换掉自动变更列表）');
+// 说明步骤与 Release 步骤必须同样只在 tag 上跑：否则推 main 时会去 fetch tag、还会写 env
+const tagGateCount = [...src.matchAll(/if:\s*startsWith\(github\.ref, 'refs\/tags\/v'\)/g)].length;
+ok(tagGateCount === 2, `取说明与发布这两步都只在 tag 上跑（实际 ${tagGateCount} 处）`);
 
 // ---- 每个 run 块都必须是合法 bash ----
 // 走 stdin（`bash -n` 不带文件名就读 stdin），不落临时文件、不依赖 YAML 解析。
