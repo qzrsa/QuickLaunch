@@ -372,6 +372,11 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
     '路径穿过一个文件时判定为不可写（ENOTDIR）');
 
   // ⑥ migrateLegacyConfig：搬旧配置，但不能覆盖已有的新配置
+  // ★ 先把 mig 目录清干净：下面第 1 条断言要求"新位置还没有配置"。
+  //   如果上一次跑崩在收尾之前（崩溃路径早期没清 TMP），这里会读到残留的
+  //   mig/data/config.json，断言就变成**偶发失败** —— 实测踩过：1/3 的概率报红，
+  //   而且红的那次看不出和上一次崩溃有关。**测试自己必须先把状态摆平，不能依赖上一轮。**
+  fs.rmSync(path.join(TMP, 'mig'), { recursive: true, force: true });
   const migTarget = path.join(TMP, 'mig', 'data');
   const migLegacy = path.join(TMP, 'mig', 'appdata');
   fs.mkdirSync(migLegacy, { recursive: true });
@@ -548,8 +553,128 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
   ok(/\.btn\s+\.ic\.solid\s*\{[^}]*fill:\s*currentColor/.test(css),
     '.ic.solid 显式放开 fill（CSS 会盖掉 SVG 自带的 fill 呈现属性）');
 
+  /* ------------------------------------------------------------------
+   * 差量引擎 vcdiff —— 纯函数、不碰 fs，所以能直接在这里跑
+   * ------------------------------------------------------------------ */
+  section('差量引擎 vcdiff');
+  const vc = require('../src/lib/vcdiff');
+  /* 确定性伪随机（xorshift32）：每次跑出来的字节完全一样，CI 上不会飘。
+     ★ 这里**不能**用 LCG（`s = s*1103515245 + 12345`）：它的字节分布是退化的
+       （实测卡方 151774，理想值约 255），Gear 哈希在这种数据上一次都不切块，
+       于是"平均块长"这条断言会假失败 —— 而真实数据、xorshift 数据都正常。
+       一旦测试数据退化，断言既会假红也可能假绿，等于没测。 */
+  const xs32 = (n, seed) => {
+    const b = Buffer.allocUnsafe(n);
+    let x = (seed >>> 0) || 1;
+    for (let i = 0; i < n; i++) {
+      x ^= x << 13; x >>>= 0;
+      x ^= x >>> 17;
+      x ^= x << 5; x >>>= 0;
+      b[i] = x & 0xff;
+    }
+    return b;
+  };
+  // 生成器的质量本身也要验：卡方偏得离谱就说明后面的断言不可信
+  {
+    const probe = xs32(65536, 3);
+    const cnt = new Array(256).fill(0);
+    for (const v of probe) cnt[v]++;
+    const exp = probe.length / 256;
+    const chi = cnt.reduce((s, c) => s + (c - exp) ** 2 / exp, 0);
+    ok(chi < 400, `测试数据生成器分布正常（卡方 ${Math.round(chi)}，255 自由度下理想≈255）`);
+  }
+
+  const big = xs32(256 * 1024, 5);
+  const cs = vc.chunkify(big);
+  ok(cs.every(c => c.len >= vc.MIN_CHUNK && c.len <= vc.MAX_CHUNK), '每个块长度都在 [MIN_CHUNK, MAX_CHUNK] 内');
+  ok(cs.reduce((s, c) => s + c.len, 0) === big.length, '所有块长度之和 = 文件长度（不丢字节）');
+  ok(cs.every((c, i) => i === 0 || cs[i - 1].start + cs[i - 1].len === c.start), '块首尾相接，无缝隙无重叠');
+  const avgChunk = big.length / cs.length;
+  ok(avgChunk > 1500 && avgChunk < 26000,
+    `平均块长 ${Math.round(avgChunk)} 字节落在合理区间（设计期望 ~10 KiB）`);
+
+  /* ★★ 内容定义分块的**核心性质**：中间插入一段，后面所有边界只做平移、不重新洗牌。
+     固定长度分块（以及"切得太稀、退化成固定长度"）会在这里立刻失败。 */
+  const ins = Buffer.alloc(3000, 0x5a);
+  const at = 100000;
+  const shifted = Buffer.concat([big.subarray(0, at), ins, big.subarray(at)]);
+  const starts2 = new Set(vc.chunkify(shifted).map(c => c.start));
+  const eligible = cs.map(c => c.start).filter(s => s > at + 2 * vc.MAX_CHUNK);
+  const keep = eligible.filter(s => starts2.has(s + ins.length)).length;
+  ok(eligible.length > 5, '有足够多的边界可用来验证平移性质', `eligible=${eligible.length}`);
+  ok(keep / eligible.length >= 0.8,
+    `中间插入 ${ins.length} 字节后，${(keep / eligible.length * 100).toFixed(0)}% 的后续边界仍复用在平移后的位置（≥80%）`);
+  // ★ 实测过：Gear 的低位只由最后一个字节决定，用低位掩码去切，真实数据上几乎切不动
+  //   （app.asar 变成平均 23 KiB 一块，复用率 0/11，差量对该文件直接失效）。
+  ok((vc.MASK & 0xff) === 0, '切割掩码不使用低 8 位（Gear 低位没混匀，会在真实数据上退化成大块）');
+
+  /* ---- 目录级差量 ---- */
+  const A = { path: 'a.bin', data: xs32(300 * 1024, 7) };        // 原样不变
+  const B = { path: 'b.bin', data: xs32(1024 * 1024, 21) };      // 中间改 19 字节
+  const C = { path: 'gone.bin', data: xs32(50 * 1024, 9) };      // 被删掉
+  const D = { path: 'new.bin', data: xs32(20 * 1024, 11) };      // 新增
+  const bNew = Buffer.from(B.data);
+  bNew.write('CHANGED-QUICKLAUNCH!', 500000, 'utf8');
+
+  const dp = vc.makeDirPatch([A, B, C], [A, { path: 'b.bin', data: bNew }, D]);
+  const byPath = new Map(dp.manifest.files.map(f => [f.path, f]));
+  ok(byPath.get('a.bin').action === 'same', '内容没变的文件标为 same（客户端保留本地那份，零下载）');
+  ok(byPath.get('b.bin').action === 'patch', '内容变了的文件标为 patch');
+  ok(byPath.get('new.bin').action === 'patch', '新增的文件标为 patch');
+  ok(dp.manifest.removed.length === 1 && dp.manifest.removed[0] === 'gone.bin', '被删掉的文件进 removed 列表');
+
+  /* ★ 回归：指令必须是统一的 4 元组 [type, a, b, len]。
+     一开始 COPY 写 4 元、DATA 写 3 元，长度落在不同下标上 → 还原算出 NaN 直接炸。 */
+  const allOps = dp.manifest.files.filter(f => f.action === 'patch').flatMap(f => f.ops);
+  ok(allOps.length > 0 && allOps.every(o => Array.isArray(o) && o.length === 4),
+    '所有指令都是 4 元组（长度恒在 index 3）');
+  /* ★ 回归：相邻同类指令必须合并。不合并的话，1 MB 文件会产出上百条 COPY 指令，
+     manifest 光是指令表就能膨胀到几百 KB，增量也就白做了。 */
+  ok(byPath.get('b.bin').ops.length <= 5,
+    `改 19 字节的 1 MB 文件只有 ${byPath.get('b.bin').ops.length} 条指令（≤5，说明合并生效）`);
+  ok(dp.pack.length < (B.data.length + D.data.length) / 4,
+    `差量包 ${dp.pack.length} 字节，远小于全量的 ${B.data.length + D.data.length} 字节`);
+
+  const local = new Map([[A.path, A.data], [B.path, B.data], [C.path, C.data]]);
+  let produced = null, applyErr = null;
+  try { produced = vc.applyDirPatch(local, dp.manifest, dp.pack); } catch (e) { applyErr = e; }
+  ok(!applyErr, '正常补丁能应用', applyErr && applyErr.message);
+  const om = new Map((produced || []).map(f => [f.path, f.data]));
+  ok(om.size === 2, `产出 2 个文件（实际 ${om.size}）`);
+  ok(om.has('b.bin') && om.get('b.bin').equals(bNew), 'b.bin 还原后**逐字节**等于新版本');
+  ok(om.has('new.bin') && om.get('new.bin').equals(D.data), 'new.bin 还原后**逐字节**等于新版本');
+  ok(!om.has('a.bin'), '标为 same 的文件不重复产出（客户端本来就有一模一样的那份）');
+
+  /* ---- 坏输入必须抛错：宁可退回全量下载，也不能打出半残的程序 ---- */
+  const badPack = Buffer.from(dp.pack);
+  badPack[0] ^= 0xff;
+  let pe = null; try { vc.applyDirPatch(local, dp.manifest, badPack); } catch (e) { pe = e; }
+  ok(!!pe, '补丁包被改一个字节 → 抛错（哈希校验兜住）');
+
+  const tampered = new Map(local);
+  tampered.set('b.bin', Buffer.alloc(B.data.length, 0x00));
+  let te = null; try { vc.applyDirPatch(tampered, dp.manifest, dp.pack); } catch (e) { te = e; }
+  ok(!!te, '本地基准文件被改过 → 抛错（上层据此自动退回全量下载）');
+
+  const missing = new Map(local);
+  missing.delete('gone.bin');
+  let me = null; try { vc.applyDirPatch(missing, dp.manifest, dp.pack); } catch (e) { me = e; }
+  ok(!!me, '本地缺基准文件 → 抛错');
+
+  /* ---- 增量 / 全量的判定：判据是**占比**，不是"文件大不大" ---- */
+  ok(vc.shouldUseDelta(0.25 * 1048576, 153 * 1048576, 0.6) === true, '差量占 0.16% → 走增量');
+  ok(vc.shouldUseDelta(100 * 1048576, 153 * 1048576, 0.6) === false, '差量占 65% → 超过阈值，走全量');
+  ok(vc.shouldUseDelta(1024, 0, 0.6) === false, '全量大小未知/为 0 → 不冒险，走全量');
+
   section('结果');
   console.log(`  \x1b[32m通过 ${pass}\x1b[0m${fail ? ` / \x1b[31m失败 ${fail}\x1b[0m` : ''}`);
   fs.rmSync(TMP, { recursive: true, force: true });
   process.exit(fail ? 1 : 0);
-})().catch(e => { console.error('测试异常:', e); process.exit(1); });
+})().catch(e => {
+  console.error('测试异常:', e);
+  // ★ 崩溃路径也必须清 TMP。不清的话，残留的 mig/data/config.json 会让**下一次**
+  //   运行在一条看似无关的断言上报红（"新位置没有配置时会把旧的搬过来"），
+  //   排查时会怀疑到刚改的代码上，白费半天。
+  try { fs.rmSync(TMP, { recursive: true, force: true }); } catch { /* 清不掉也不能盖住原始异常 */ }
+  process.exit(1);
+});
