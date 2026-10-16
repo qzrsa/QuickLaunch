@@ -222,19 +222,32 @@ jobs:
 
           # ★ checkout 默认是浅克隆（fetch-depth: 1），**不带 tag 对象** —— 不补这一步
           #   `git tag -l` 会安静地什么都不返回，我们就静默退化成"没有说明"。
+          # ★★ 必须带 `+`（强制更新）：checkout 在浅克隆里会把 `refs/tags/<TAG>` 建成一个
+          #   **指向提交的轻量 ref**，于是这条 fetch 会被 "would clobber existing tag" 拒掉
+          #   （下面 `|| true` 一吞，症状就完全消失了）—— 而轻量 ref 的 `%(contents)` 拿到的是
+          #   **提交信息**，结果整条 commit message 被当成发布说明发出去（v1.2.0 真的这样发过一次，
+          #   Release 标题变成 "feat(update): …"）。带 `+` 才会真的把 annotated tag 对象取回来。
           #   取不到也不致命（下面的回落会兜住），所以不 `|| exit`。
-          git fetch --depth=1 --no-tags origin "refs/tags/${TAG}:refs/tags/${TAG}" || true
+          git fetch --depth=1 --no-tags origin "+refs/tags/${TAG}:refs/tags/${TAG}" || true
 
           KIND="$(git cat-file -t "refs/tags/${TAG}" 2>/dev/null || true)"
           SUBJECT="$(git tag -l --format='%(contents:subject)' "$TAG" 2>/dev/null || true)"
           NOTES="$(git tag -l --format='%(contents)' "$TAG" 2>/dev/null || true)"
 
+          # ★ 只有 annotated tag（类型 = tag）的那份 message 才算发布说明。
+          #   轻量 tag 上 `%(contents)` 返回的是**提交信息** —— 直接用它就会把提交信息贴到
+          #   发布页当标题和正文。所以先认类型，不是 tag 就当作"没有说明"，只留自动变更列表。
+          if [ "$KIND" != "tag" ]; then
+            NOTES=""
+            SUBJECT=""
+          fi
+
           printf 'RELEASE_TITLE=%s\n' "${SUBJECT:-$TAG}" >> "$GITHUB_ENV"
 
           if [ -z "$NOTES" ]; then
-            # tag 类型为空 = 本地压根没有这个 tag 对象（补取失败）；= commit = 轻量 tag
+            # 类型为空 = 本地压根没有这个 tag 对象（补取失败）；= commit = 轻量 tag
             # （轻量 tag 天生没有 message，只能靠自动生成的变更列表）。
-            echo "::warning::tag $TAG 取不到 message（本地 tag 类型=${KIND:-不存在}），Release 说明将只有自动生成的变更列表"
+            echo "::warning::tag $TAG 取不到 message（本地 tag 类型=${KIND:-不存在}），Release 说明将只有自动生成的变更列表；要带说明请用 git tag -a"
           else
             # 分隔符带上随机量：说明里若正好有一行等于分隔符，heredoc 会被提前截断。
             DELIM="QL_NOTES_${TAG}_$$_$(date +%s)"

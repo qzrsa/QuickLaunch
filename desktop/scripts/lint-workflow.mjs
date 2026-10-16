@@ -147,6 +147,15 @@ const notesIdx = src.indexOf('取 tag 里的发布说明');
 ok(notesIdx > 0 && notesIdx < relIdx, '取说明的步骤排在 Release 步骤之前');
 ok(/git fetch --depth=1 --no-tags origin/.test(src),
   '浅克隆下显式补取 tag 对象（fetch-depth:1 默认不带 tag，取不到就静默没有说明）');
+// ★★ 这条 fetch **必须带 `+`**：checkout 在浅克隆里会把 refs/tags/<TAG> 建成"指向提交的
+//    轻量 ref"，不带 `+` 就会被 "would clobber existing tag" 拒掉（外面包着 `|| true`，
+//    症状完全静默），而轻量 ref 的 %(contents) 是**提交信息** → 整条 commit message 被当成
+//    发布说明发出去。v1.2.0 真的这样发过一次（Release 标题成了 "feat(update): …"）。
+ok(/"\+refs\/tags\/\$\{TAG\}:refs\/tags\/\$\{TAG\}"/.test(src),
+  '★ 补取 tag 用 + 强制更新（否则轻量 ref 抢位，%(contents) 会退回成提交信息）');
+// 轻量 tag 必须被认出来并当作"没有说明"，绝不能拿提交信息充数
+ok(/\[ "\$KIND" != "tag" \]/.test(src),
+  '★ 先认 tag 类型：只有 annotated tag 的 message 才算发布说明（轻量 tag 不拿提交信息充数）');
 ok(/git tag -l --format='%\(contents\)'/.test(src) && /git tag -l --format='%\(contents:subject\)'/.test(src),
   '用 %(contents) 取完整 message、%(contents:subject) 取标题');
 ok(/RELEASE_NOTES<<\$DELIM/.test(src) && /DELIM="QL_NOTES_\$\{TAG\}_\$\$_\$\(date \+%s\)"/.test(src),
