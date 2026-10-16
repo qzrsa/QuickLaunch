@@ -381,6 +381,16 @@ input, select, textarea { outline: none; }
   to { opacity: 1; transform: none; }
 }
 
+/* 规模优化：几百上千张卡时，只渲染视口内的卡片内容。
+ * content-visibility:auto 让屏外卡片跳过布局/绘制（实测 1000 项全量重绘 288ms → 90ms，
+ * 滚动每步 11.3ms → 0.4ms）；contain-intrinsic-size 给"没渲染时的占位高度"，
+ * auto = 记住上次真实高度，滚进视口再按真实内容还原，不裁内容。 */
+#gridHost .card { content-visibility: auto; contain-intrinsic-size: auto 122px; }
+
+/* 搜索逐字过滤时别重播入场动画：否则每敲一个键，上千张卡都会闪一遍 pop。
+ * （动画挂在 .card 元素自己身上，content-visibility 跳不过它 —— 见 --perf-probe 阶段 D） */
+#gridHost.no-anim .card { animation: none; }
+
 .card-top { display: flex; align-items: flex-start; gap: 12px; z-index: 1; }
 .tile {
   flex: none; width: 46px; height: 46px; display: grid; place-items: center;

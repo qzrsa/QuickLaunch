@@ -256,8 +256,11 @@ function cardHTML(item, color, delay) {
 const ADD_CARD = `<article class="card add" data-add="1" tabindex="0">
   <div class="plus">＋</div><span>新建启动项</span></article>`;
 
-function render() {
+function render(opts) {
   const host = $('#gridHost');
+  // 搜索逐字过滤时 opts.noAnim = true：不要每敲一个键就把所有卡片的入场动画重播一遍
+  // （上千张卡同时闪 pop 是纯闪烁）。非搜索的重绘不传 → 正常播入场动画。
+  host.classList.toggle('no-anim', !!(opts && opts.noAnim));
 
   if (!state.config) {
     host.innerHTML = `<div class="grid">${'<div class="skeleton"></div>'.repeat(8)}</div>`;
@@ -1780,7 +1783,7 @@ function bind() {
     state.q = q.value.trim();
     // 同理：列表内容变了，看不见的勾选不能留
     if (state.editMode && state.picked.size) state.picked.clear();
-    render();
+    render({ noAnim: true });   // 逐字过滤别重播入场动画（上千张卡会闪）
   });
   q.addEventListener('keydown', e => {
     if (e.key === 'ArrowDown') {
@@ -2556,6 +2559,297 @@ function createMockBridge() {
     console.log('[rail-probe] 已还原分组数 =', state.config.groups.length,
       '| 侧栏行数 =', nav.querySelectorAll('.nav-item').length);
     console.log('[rail-probe] done');
+  });
+
+  // 规模性能自检（仅 --perf-probe 时由主进程触发）：
+  // 灌 100 / 500 / 1000 / 2000 个启动项（**只在内存里改 groups，从不写盘**），量三件事：
+  //   ① 全量重绘 render() 的同步耗时（构建 HTML 串 → 解析 → 插入 DOM）
+  //   ② 强制布局耗时（innerHTML 只到"解析完"为止，布局是懒的，不强制量不到真实成本）
+  //   ③ 每次敲键的过滤重绘耗时 + 该次重绘同时启动的 CSS 动画条数
+  // 再加一段滚动主线程代价。A/B 是"关掉 content-visibility（模拟旧版） vs 已发布样式"，
+  // 以及"正常 vs #gridHost.no-anim"的动画条数对照 —— 全部只信同步数据，不用 rAF。
+  API.on('ql:perf-probe', async () => {
+    // ★ 第一行就吼一声：没看到这行 = 事件根本没送到渲染层（多半是 preload 白名单漏登记），
+    //   看到这行之后的沉默才是"跑得慢"。这两种情况在日志里必须能一眼分开。
+    console.log('[perf-probe] 收到事件，开始（这条日志同时证明 preload 白名单已放行）');
+    state.probeMode = true;
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
+    const host = () => document.querySelector('#gridHost');
+    const content = () => document.querySelector('#content');
+    const r2 = x => Math.round(x * 100) / 100;
+
+    // 磁盘上从来不动：整段跑完按快照还原（和 rail-probe 一个套路）
+    const snapshot = JSON.parse(JSON.stringify(state.config.groups));
+    const snapState = { active: state.active, q: state.q, sort: state.sort };
+
+    const mkItem = (gi, ii) => ({
+      id: `perf-${gi}-${ii}`,
+      name: `压力测试项 ${gi + 1}-${ii + 1}`,
+      path: `D:\\Tools\\App${gi}_${ii}\\app.exe`,
+      desc: `这一行是给匹配函数够用的描述文本 ${ii}`,
+      args: '', type: 'app', icon: ICONS[ii % ICONS.length],
+      favorite: ii % 7 === 0, useCount: ii % 13, lastUsed: 0,
+    });
+    const mkGroups = (nG, perG) => Array.from({ length: nG }, (_, gi) => ({
+      id: `perf-g-${gi}`, name: `性能分组 ${gi + 1}`,
+      color: PALETTE[gi % PALETTE.length], icon: '📦',
+      items: Array.from({ length: perG }, (_, ii) => mkItem(gi, ii)),
+    }));
+
+    /** 量一次 render()：① 构建+解析+插入 ② 强制样式计算+布局 ③ 这次重绘起了多少条动画。
+     *  ★ 不强制布局就只量到"把 HTML 串塞进去"那一步，真实成本会被低估一截。 */
+    const cost = () => {
+      const t0 = performance.now();
+      render();
+      const t1 = performance.now();
+      void host().offsetHeight;          // 强制布局
+      const t2 = performance.now();
+      return { build: t1 - t0, layout: t2 - t1, total: t2 - t0,
+               anim: document.getAnimations().length };
+    };
+    /** 重复 k 次取中位数：耗时受 GC 与调度影响，单次取样会被尖刺带跑。 */
+    const costN = (k = 5) => {
+      const rs = [];
+      for (let i = 0; i < k; i++) rs.push(cost());
+      const med = f => { const a = rs.map(f).sort((x, y) => x - y); return r2(a[a.length >> 1]); };
+      return { build: med(r => r.build), layout: med(r => r.layout), total: med(r => r.total),
+               worst: r2(Math.max(...rs.map(r => r.total))), anim: rs[0].anim };
+    };
+    const pad = (s, n) => String(s) + ' '.repeat(Math.max(0, n - String(s).length));
+    const line = (tag, c) => console.log(
+      `[perf-probe] ${pad(tag, 22)}`
+      + `构建 ${pad(c.build, 7)}ms | 布局 ${pad(c.layout, 7)}ms`
+      + ` | 合计 ${pad(c.total, 8)}ms | 最差 ${pad(c.worst, 8)}ms`
+      + ` | 动画 ${pad(c.anim, 4)} 条`);
+
+    /** 探一下这个隐形窗口还会不会继续出帧。
+     *  ★ 必须带硬超时：opacity:0 的窗口实测只出第一帧，rAF 回调永远不会来，
+     *    直接 await rAF 会把探针挂死（探针手册里记过这个坑）。出不了帧就老实说
+     *    "绘制没法量"，而不是拿主线程耗时冒充绘制耗时。 */
+    const framesAlive = () => new Promise(resolve => {
+      let done = false;
+      const to = setTimeout(() => { if (!done) { done = true; resolve(0); } }, 700);
+      let n = 0;
+      const tick = () => {
+        if (++n >= 2) { if (!done) { done = true; clearTimeout(to); resolve(n); } return; }
+        requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    });
+
+    /** 滚动一屏：改 scrollTop 后强制布局，量主线程那一半代价。 */
+    const scrollTest = label => {
+      const c = content();
+      const canScroll = c.scrollHeight - c.clientHeight;
+      const steps = 12;
+      const times = [];
+      for (let i = 1; i <= steps; i++) {
+        const t0 = performance.now();
+        c.scrollTop = Math.round(canScroll * i / steps);
+        void c.offsetHeight;
+        times.push(performance.now() - t0);
+      }
+      times.sort((a, b) => a - b);
+      console.log(`[perf-probe] ${pad('滚动 ' + label, 22)}`
+        + `可滚 ${pad(canScroll, 7)}px | 每步中位 ${pad(r2(times[times.length >> 1]), 7)}ms`
+        + ` | 最差 ${pad(r2(times[times.length - 1]), 7)}ms`);
+      c.scrollTop = 0;
+      return r2(times[times.length >> 1]);
+    };
+
+    /** 模拟逐字输入：每次按键就是一次同步 render()，量"手到屏幕"前被阻塞多久。 */
+    const typeTest = async (text, label) => {
+      const q = document.querySelector('#q');
+      let acc = '';
+      const times = [];
+      for (const ch of text) {
+        acc += ch;
+        const t0 = performance.now();
+        q.value = acc;
+        state.q = acc;
+        render();
+        void host().offsetHeight;
+        times.push(performance.now() - t0);
+        await sleep(6);        // 模拟真实敲键间隔；不 sleep 会连成一坨，量出来的不是用户体感
+      }
+      const sorted = times.slice().sort((a, b) => a - b);
+      const shown = host().querySelectorAll('.card[data-id]').length;
+      console.log(`[perf-probe] ${pad('逐字输入 ' + label, 22)}`
+        + `「${text}」每次阻塞 ${times.map(t => Math.round(t)).join('/')} ms`
+        + ` | 中位 ${r2(sorted[sorted.length >> 1])}ms | 命中 ${shown} 张卡`);
+      return times;
+    };
+
+    const domStats = tag => {
+      const h = host();
+      console.log(`[perf-probe] ${pad('DOM ' + tag, 22)}`
+        + `卡片 ${pad(h.querySelectorAll('.card[data-id]').length, 5)}`
+        + ` | 元素总数 ${pad(h.querySelectorAll('*').length, 6)}`
+        + ` | 每卡约 ${Math.round(h.querySelectorAll('*').length / Math.max(1, h.querySelectorAll('.card[data-id]').length))} 个`);
+    };
+
+    /** 原地注入/移除样式（改内存里的一份 <style>，不落盘），用于同一次运行做 A/B。
+     *  content-visibility 已经**永久写进 style.css**，所以这里的 A/B 是：
+     *   基线 = 关掉它（模拟旧版），对照 = 恢复已发布样式。 */
+    const styleOn = (id, css) => {
+      document.getElementById(id)?.remove();
+      const st = document.createElement('style');
+      st.id = id;
+      st.textContent = css;
+      document.head.appendChild(st);
+      return st;
+    };
+    const cvOff = () => styleOn('perf-cv-off',
+      '#gridHost .card{content-visibility:visible !important;contain-intrinsic-size:none !important;}');
+    const cvOn = () => { document.getElementById('perf-cv-off')?.remove(); };
+
+    // ★ 这里**故意不**用 requestAnimationFrame 量帧间隔 / 滚动流畅度：
+    //   探针窗口 opacity:0，背景节流会在一段时间后把 setTimeout/rAF 压到近乎停摆
+    //   （实测出现过"注入后 500 项 → 1000 项之间凭空卡 60 秒"），rAF 帧率在这个环境里
+    //   测出来是节流噪声而不是真实性能。所以本探针只信两种**同步**数据：
+    //   ① performance.now() 量的主线程 build/layout 耗时（真正的卡顿来源）
+    //   ② document.getAnimations().length（重绘启动了多少条 CSS 动画）
+    //   帧级的"滚起来卡不卡"只能靠真机肉眼 + 截图，别在这里用 rAF 冒充。
+
+    console.log('[perf-probe] ===== 起始状态 =====');
+    await sleep(300);
+    console.log('[perf-probe] 起始分组/项目 =',
+      state.config.groups.length, '/', state.config.groups.reduce((n, g) => n + g.items.length, 0),
+      '| active =', state.active, '| sort =', state.sort);
+    console.log('[perf-probe] 窗口内容区 =', content().clientWidth + 'x' + content().clientHeight,
+      'px | 单个 .card 高度 =',
+      (() => { const c = host().querySelector('.card'); return c ? Math.round(c.getBoundingClientRect().height) : '-'; })());
+
+    const alive = await framesAlive();
+    console.log('[perf-probe] 隐形窗口是否继续出帧 =', alive ? ('是（' + alive + ' 帧）') : '否（只出首帧）',
+      '→ 帧率测量', alive ? '看似可用，但背景节流随时会把它掐断' : '★ 不可用（这是常态）',
+      '，本探针统一只报同步主线程耗时');
+
+    /* ---- 阶段 A：基线 = 关掉 content-visibility（模拟旧版），随规模看曲线 ---- */
+    const SCALES = [
+      { nG: 1, perG: 100, tag: '1 组 × 100' },
+      { nG: 5, perG: 100, tag: '5 组 × 100' },
+      { nG: 10, perG: 100, tag: '10 组 × 100' },
+      { nG: 20, perG: 100, tag: '20 组 × 100' },
+    ];
+    cvOff();
+    const baseResults = [];
+    for (const s of SCALES) {
+      state.config.groups = mkGroups(s.nG, s.perG);
+      renderNav();
+      await sleep(120);
+      const c = costN(5);
+      console.log(`[perf-probe] ---- 基线 ${s.tag}（共 ${s.nG * s.perG} 项）----`);
+      line(s.tag, c);
+      domStats(s.tag);
+      baseResults.push({ ...s, total: s.nG * s.perG, c });
+      if (s.nG === 10) {
+        scrollTest(s.tag);
+        // ★ 截图前必须等入场动画播完（延迟最长 400ms + pop 340ms ≈ 740ms），
+        //   否则拍到的是 opacity:0 的延迟期，看起来像"卡片没渲染"——
+        //   content-vis 开启后 scrollTest 几乎瞬间完成，这个坑必踩（第一版就栽在这）。
+        await sleep(1200);
+        await API.probeShot('shot-perf-1000-before.png');
+        console.log('[perf-probe] 截图 shot-perf-1000-before.png');
+      }
+    }
+
+    /* ---- 阶段 B：1000 项下的逐字输入（模拟"筛选几乎不缩小"的最坏情况）---- */
+    state.config.groups = mkGroups(10, 100);
+    renderNav();
+    const qBox = document.querySelector('#q');
+    state.q = ''; qBox.value = '';
+    render();
+    await sleep(200);
+    console.log('[perf-probe] ---- 基线 1000 项：逐字输入 ----');
+    await typeTest('压力', '最坏（筛选不缩小）');
+    state.q = ''; qBox.value = '';
+    render();
+    await sleep(200);
+    await typeTest('App3_7', '收窄（命中少量）');
+
+    /* ---- 阶段 C：恢复已发布样式（content-visibility 开）—— A/B ---- */
+    state.q = ''; qBox.value = '';
+    render();
+    await sleep(200);
+    cvOn();
+    await sleep(120);
+    console.log('[perf-probe] 已恢复 style.css 里的 content-visibility');
+    console.log('[perf-probe] 生效检查 = content-visibility:',
+      getComputedStyle(host().querySelector('.card')).contentVisibility);
+
+    const fixResults = [];
+    for (const s of SCALES) {
+      state.config.groups = mkGroups(s.nG, s.perG);
+      renderNav();
+      await sleep(120);
+      const c = costN(5);
+      console.log(`[perf-probe] ---- content-vis 开 ${s.tag}（共 ${s.nG * s.perG} 项）----`);
+      line(s.tag, c);
+      fixResults.push({ ...s, total: s.nG * s.perG, c });
+      if (s.nG === 10) {
+        scrollTest(s.tag);
+        await sleep(1200);          // 同上：等入场动画播完再拍，两张图才可比
+        await API.probeShot('shot-perf-1000-after.png');
+        console.log('[perf-probe] 截图 shot-perf-1000-after.png');
+      }
+    }
+
+    state.config.groups = mkGroups(10, 100);
+    renderNav();
+    await sleep(150);
+    console.log('[perf-probe] ---- content-vis 开 1000 项：逐字输入 ----');
+    await typeTest('压力', '最坏（筛选不缩小）');
+
+    /* ---- 阶段 D：入场动画是不是独立的问题 ----
+     * 阶段 C 已经给出一个反直觉结论：注入 content-visibility 后动画条数**没变**
+     * （1004 → 1004）。因为 content-visibility 跳过的是卡片的"内容"布局/绘制，
+     * 而 pop 动画挂在 .card 元素自己身上 —— 所以每次重绘仍会创建约 1000 条动画，
+     * 逐字搜索时它们一起重播，等于每敲一个键上千张卡闪一遍。这里直接验证修复
+     * （#gridHost.no-anim，搜索重绘时由 render({noAnim}) 挂上）的效果。 */
+    state.q = ''; qBox.value = '';
+    state.config.groups = mkGroups(10, 100);
+    renderNav();
+    await sleep(200);
+
+    const animCount = (noAnim) => { render({ noAnim: !!noAnim }); void host().offsetHeight; return document.getAnimations().length; };
+    const animOn = animCount(false);
+    const animOff = animCount(true);
+    animCount(false);
+    console.log('[perf-probe] 1000 项一次重绘的动画条数：正常 render() =', animOn,
+      '| render({noAnim:true}) =', animOff,
+      '→ 逐字搜索走 no-anim，把 ~1000 条 pop 动画从每次敲键里拿掉');
+    await sleep(150);
+
+    /* ---- 对照表 ---- */
+    console.log('[perf-probe] ===== A/B 对照（合计耗时中位数）=====');
+    baseResults.forEach((b, i) => {
+      const f = fixResults[i];
+      const drop = b.c.total ? Math.round((1 - f.c.total / b.c.total) * 100) : 0;
+      console.log(`[perf-probe]   ${pad(b.tag, 14)} 基线 ${pad(b.c.total, 8)}ms`
+        + ` → content-vis 开 ${pad(f.c.total, 8)}ms  (${drop >= 0 ? '降' : '升'} ${Math.abs(drop)}%)`
+        + ` | 动画 ${b.c.anim} → ${f.c.anim}`);
+    });
+
+    /* ---- 还原（内存还原 + 重绘，磁盘从未被动过）---- */
+    cvOn();
+    state.config.groups = snapshot;
+    state.active = snapState.active;
+    state.q = snapState.q;
+    state.sort = snapState.sort;
+    state.picked.clear();
+    qBox.value = '';
+    renderNav();
+    render();
+    await sleep(200);
+    console.log('[perf-probe] 已还原 分组/项目 =',
+      state.config.groups.length, '/', state.config.groups.reduce((n, g) => n + g.items.length, 0),
+      '| 临时样式已清 =', !document.querySelector('#perf-cv-off'),
+      '| 卡片数 =', host().querySelectorAll('.card[data-id]').length);
+    console.log('[perf-probe] done');
+    // ★ 主动退出：不然探针跑完应用还挂着 300s 看门狗，期间它占着单实例锁，
+    //   下一次探针会立刻静默退出（第二次实测栽在这 —— 日志只有一行"用时=347ms"）。
+    API.quit().catch(() => { /* 进程正在退出，属正常 */ });
   });
 
   // 「启动时打开哪个分组」+「多选编辑模式」自检（仅 --select-probe 时由主进程触发）：

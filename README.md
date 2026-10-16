@@ -157,8 +157,8 @@ CI 与本地产出的两个文件**版本号与文件名一致**（两台机器�
 cd desktop
 npm install
 npm start            # 开发运行
-npm run check        # 语法 + 工作流自检（50 项）
-npm test             # 主进程逻辑自检（518 项）
+npm run check        # 语法 + 工作流自检（63 项）
+npm test             # 主进程逻辑自检（523 项）
 npm run verify:apply # 真起一个 shell 跑"退出后换文件"那套助手（48 项）
 npm run release      # = check + test + verify:apply + 打三种产物 + 压绿色版 zip
 ```

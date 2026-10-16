@@ -57,6 +57,12 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
 
 /* ---------- 主流程 ---------- */
 (async () => {
+  // ★ 开头先把上一轮的残留整个清掉：结尾会清一次，但上一轮若在收尾前崩溃/被掐，
+  //   TMP 里会留下半截夹具（如 old-only.txt、.update/2.0.0、locales/zh-CN.pak），
+  //   下一次运行那些"恰好 N 个文件 / 恰好这几个文件"的断言就会报红 —— 而且报红的样子
+  //   跟"刚改的代码坏了"一模一样，会把人带进沟里白查半天。所以**测试自己必须先摆平状态，
+  //   不能依赖上一轮**（datadir 的 mig 段也是这么干的）。
+  fs.rmSync(TMP, { recursive: true, force: true });
   fs.mkdirSync(TMP_HOME, { recursive: true });
   fs.rmSync(path.join(TMP, 'userData'), { recursive: true, force: true });
 
@@ -741,6 +747,32 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
     '提示文案复用 statusText（与侧栏状态行、「关于」同一份实现）');
   ok(/^function lastToast/m.test(appSrc),
     'lastToast 提到顶层（探针共用一份，不再每个探针各拷一遍）');
+
+  /* ------------------------------------------------------------------
+   * 静默失效防线：主进程往外发的每个频道都得在 preload 白名单里
+   * ------------------------------------------------------------------ */
+  section('事件白名单对账');
+  {
+    // preload 的 EVENTS 白名单漏登记一个频道，API.on 会**静默**返回空函数 ——
+    // 探针看起来跑了，其实渲染层一个字都没收到（--perf-probe 真栽过这个，
+    // 白白等了 5 分钟看门狗才退出，日志里只有一行"用了 300757ms"）。
+    const evLine = (preloadSrc.match(/const EVENTS = \[[\s\S]*?\];/) || [''])[0];
+    const declared = new Set((evLine.match(/'ql:[^']+'/g) || []).map(s => s.slice(1, -1)));
+    const sent = [...new Set((mainSrc.match(/send\(\s*'ql:[^']+'/g) || [])
+      .map(s => s.match(/'ql:[^']+'/)[0].slice(1, -1)))];
+    // ★ 先把"两边都解析出来了"钉死：解析失败会得到空集合，下面的差集断言就**永远为绿**，
+    //   等于没写（本项目吃过好几次"空集合上的断言"的亏）。
+    ok(declared.size >= 15, 'preload 的 EVENTS 白名单解析成功', `解析到 ${declared.size} 条`);
+    ok(sent.length >= 15, "main.js 的 send('ql:…') 解析成功", `解析到 ${sent.length} 条`);
+    ok(!/EVENTS\.push/.test(preloadSrc),
+      '白名单是字面量数组（如果改成 push，上面这条静态对账就失效了，得换写法）');
+    const missing = sent.filter(c => !declared.has(c));
+    ok(missing.length === 0,
+      '★ main.js 每个 send(\'ql:…\') 频道都在 preload 白名单里（漏了就是「探针白跑」）',
+      `缺: ${missing.join(', ')}`);
+    ok(declared.has('ql:perf-probe') && /PERF_PROBE/.test(mainSrc),
+      '--perf-probe 的频道与常量都已就位');
+  }
 
   /* ------------------------------------------------------------------
    * 差量引擎 vcdiff —— 纯函数、不碰 fs，所以能直接在这里跑

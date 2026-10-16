@@ -62,12 +62,15 @@ const SECOND_PROBE = process.argv.includes('--second-probe');
 // 开发期自检：--update-probe 用**完全离线**的假更新源把「检查 → 发现新版本 → 下载 → 已就绪」
 // 整条界面链路跑一遍并逐状态截图（真去 GitHub 拉一次的话，没网/没发清单都会让探针失去意义）
 const UPDATE_PROBE = !app.isPackaged && process.argv.includes('--update-probe');
+// 开发期自检：--perf-probe 灌 100~2000 个启动项（只在内存，不写盘），量全量重绘 /
+// 逐字输入 / 滚动的主线程耗时，并原地注入 content-visibility 做同一次运行的 A/B 对照
+const PERF_PROBE = process.argv.includes('--perf-probe');
 
 // ★ 任何自检都不许联网：探针必须可重复、可离线。一次真实请求就会让它变成"看运气"。
 //   所以启动时的静默检查只在**没有**任何探针时才会跑。
 // ★★ 加新探针时把这个常量一起改 —— 漏了的话新探针会带上一次不确定的网络请求。
 const ANY_PROBE = !!SHOT || MENU_PROBE || IMPORT_PROBE || DRAG_PROBE || GROUP_PROBE
-  || INFO_PROBE || RAIL_PROBE || SELECT_PROBE || SECOND_PROBE || UPDATE_PROBE;
+  || INFO_PROBE || RAIL_PROBE || SELECT_PROBE || SECOND_PROBE || UPDATE_PROBE || PERF_PROBE;
 
 /** 启动后多久才去静默检查更新。★ 刻意晚一点：启动那一刻最该做的事是把窗口画出来，
  *  而不是抢带宽；而且更新是"知道了就行"的信息，晚 8 秒没有任何损失。 */
@@ -283,7 +286,7 @@ function createWindow() {
   // 由渲染层在准确时刻主动触发（主进程自己掐 setTimeout 会被节流/漂移）。
   // ★ 加新探针时**必须把它的名字加进这个条件**，否则 ql:probe-shot 根本没注册，
   //   渲染层会报 "No handler registered for 'ql:probe-shot'"，探针等于白跑。
-  if (DRAG_PROBE || GROUP_PROBE || INFO_PROBE || RAIL_PROBE || SELECT_PROBE || SECOND_PROBE || UPDATE_PROBE) {
+  if (DRAG_PROBE || GROUP_PROBE || INFO_PROBE || RAIL_PROBE || SELECT_PROBE || SECOND_PROBE || UPDATE_PROBE || PERF_PROBE) {
     // 打包态下 ROOT 在 asar 内部，写不进去 —— 逐级找一个能写的目录，
     // 免得探针"静默失败"让人以为没问题。
     const shotBase = (() => {
@@ -398,6 +401,25 @@ function createWindow() {
         win.webContents.send('ql:update-probe');
       }, 1200);
       setTimeout(() => quitApp(), 60000);
+    });
+  }
+
+  // --perf-probe：灌 100~2000 项量主线程耗时，并注入候选样式做 A/B。
+  // 窗口保持 opacity:0 且不可聚焦：探针窗口一旦可聚焦，用户在外面打字会打进搜索框，
+  // 把列表过滤掉，量出来的就不是我们要的那个场景了（select-probe 踩过）。
+  if (PERF_PROBE) {
+    win.webContents.once('did-finish-load', () => {
+      setTimeout(() => {
+        try { win.setOpacity(0); } catch { /* noop */ }
+        try { win.setFocusable(false); } catch { /* noop */ }
+        win.webContents.send('ql:perf-probe');
+      }, 1200);
+      // 看门狗只是兜底：渲染层探针跑完会主动 API.quit()。给 90s 是留足
+      // 背景节流把 setTimeout 拖慢的余量，同时别让跑完的实例久占单实例锁。
+      setTimeout(() => {
+        console.error('[probe] ★ perf-probe 超时 90s 仍未跑完，强制退出：本次结果不可信');
+        quitApp();
+      }, 90000);
     });
   }
 
