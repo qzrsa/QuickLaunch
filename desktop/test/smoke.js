@@ -675,6 +675,32 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
 
 
   /* ------------------------------------------------------------------
+   * 单实例交接提示：第二个实例必须"会说话"
+   *   单实例锁按 **userData 目录**上锁，而打包形态的 userData 就是程序目录下的 `data\`，
+   *   所以同一个文件夹里的不同版本共用一把锁。用户双击新版 exe 时新进程拿不到锁直接
+   *   退出，浮起来的是**旧版窗口** —— 看起来就像"新功能没做"（真踩过：用户报
+   *   「关于加了吗？」）。原实现只有一句 showWindow()，必须补上说明。
+   * ------------------------------------------------------------------ */
+  section('单实例交接提示');
+  const mainSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  const preloadSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'preload.js'), 'utf8');
+  ok(/'ql:second-instance'/.test(preloadSrc), 'preload 白名单放行 ql:second-instance');
+  ok(/'ql:second-probe'/.test(preloadSrc), 'preload 白名单放行 ql:second-probe');
+  ok(/app\.on\('second-instance',[\s\S]{0,120}showWindow\(\)/.test(mainSrc),
+    '第二个实例仍把窗口带到前台');
+  ok(/app\.on\('second-instance',[\s\S]{0,600}send\('ql:second-instance'/.test(mainSrc),
+    '并且把「你看到的是已在运行的那个版本」告知渲染层');
+  ok(/DRAG_PROBE \|\| GROUP_PROBE[\s\S]{0,160}SECOND_PROBE/.test(mainSrc),
+    '--second-probe 放开了 ql:probe-shot 的闸门（漏了会报 No handler registered，探针白跑）');
+  ok(/API\.on\('ql:second-instance'/.test(appSrc), '渲染层订阅了单实例交接事件');
+  ok(/已有一个实例在运行/.test(appSrc) && /托盘图标上右键退出/.test(appSrc),
+    '提示既说清"看到的是哪个版本"，也说清"去哪退出再打开新版"');
+  ok(/API\.on\('ql:second-instance'[\s\S]{0,300}statusText\(info\)/.test(appSrc),
+    '提示文案复用 statusText（与侧栏状态行、「关于」同一份实现）');
+  ok(/^function lastToast/m.test(appSrc),
+    'lastToast 提到顶层（探针共用一份，不再每个探针各拷一遍）');
+
+  /* ------------------------------------------------------------------
    * 差量引擎 vcdiff —— 纯函数、不碰 fs，所以能直接在这里跑
    * ------------------------------------------------------------------ */
   section('差量引擎 vcdiff');

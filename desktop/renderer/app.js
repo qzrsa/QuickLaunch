@@ -77,6 +77,13 @@ function toast(kind, title, text = '') {
     kind === 'bad' ? 4200 : 2400);
 }
 
+/** 最近一条提示的纯文本（探针断言用）。提成顶层函数，别让每个探针各拷一份。 */
+function lastToast() {
+  const ts = document.querySelectorAll('#toasts .toast');
+  const t = ts[ts.length - 1];
+  return t ? t.textContent.replace(/\s+/g, ' ').trim() : '(无)';
+}
+
 function allItems() {
   const out = [];
   state.config.groups.forEach(g => g.items.forEach(i => out.push({ g, i })));
@@ -1902,6 +1909,30 @@ function bind() {
     Object.assign(state.config.settings, p);
     $('#sAutostart').checked = !!p.autostart;
   });
+
+  /* 有人又启动了一次程序，本次启动被交接给了**这个**已经在跑的实例。
+     必须说清楚，否则用户双击新版 exe 时看到的是旧版窗口，会以为新功能没做
+     （单实例锁按 userData 上锁，同一目录里的不同版本共用一把锁 —— 真踩过）。
+     文案复用 statusText()，和侧栏状态行、「关于」是同一份实现。 */
+  API.on('ql:second-instance', info => {
+    if (!info) return;
+    toast('info', '已有一个实例在运行',
+      `${statusText(info)}　·　刚才那次启动已交给它。`
+      + '若你启动的是另一个版本，请先在托盘图标上右键退出，再打开新的。');
+  });
+
+  // 单实例交接自检（仅 --second-probe 时由主进程触发）：截图看提示有没有出来
+  API.on('ql:second-probe', async () => {
+    state.probeMode = true;
+    await new Promise(r => setTimeout(r, 600));   // 等 toast 入场动画
+    const t = lastToast();
+    console.log('[second-probe] 提示文案 =', JSON.stringify(t));
+    console.log('[second-probe] 提示说明去哪跑新版 =', /托盘图标上右键退出/.test(t));
+    console.log('[second-probe] 隐形窗口没吞掉输入 =', state.q === '', '| 搜索词 =', JSON.stringify(state.q));
+    const r = await API.probeShot('shot-second.png');
+    console.log('[second-probe] 截图 =', r && r.ok ? 'ok' : ('失败 ' + (r && r.msg)));
+    console.log('[second-probe] done');
+  });
 }
 
 /* ------------------------------------------------------------ 浏览器预览兜底 */
@@ -2268,11 +2299,6 @@ function createMockBridge() {
     if (!cardEls().length) render();
     console.log('[select-probe] 起始 卡片数 =', cardEls().length,
       '| active =', state.active, '| q =', JSON.stringify(state.q));
-    const lastToast = () => {
-      const ts = document.querySelectorAll('#toasts .toast');
-      const t = ts[ts.length - 1];
-      return t ? t.textContent.replace(/\s+/g, ' ').trim() : '(无)';
-    };
     const snap = async (file, label) => {
       const t0 = performance.now();
       // 1) 截"干净"的图：提示气泡浮在操作栏右边，会盖住「完成」按钮。

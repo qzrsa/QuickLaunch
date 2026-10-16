@@ -55,6 +55,9 @@ const INFO_PROBE = process.argv.includes('--info-probe');
 const RAIL_PROBE = process.argv.includes('--rail-probe');
 // 开发期自检：--select-probe 验「启动分组设置」+「多选编辑模式」整条链路（会写 dev 配置）
 const SELECT_PROBE = process.argv.includes('--select-probe');
+// 开发期自检：--second-probe 让本实例等一个「第二个实例」，验证单实例交接时的提示
+// （配合再启动一次 `electron .` 即可；本实例保持 opacity:0，不打扰用户）
+const SECOND_PROBE = process.argv.includes('--second-probe');
 
 function probeMenu(kind, payload, tpl) {
   const acts = tpl.filter(i => typeof i.click === 'function').map(i => i.click());
@@ -262,9 +265,11 @@ function createWindow() {
     });
   }
 
-  // --drag-probe / --group-probe 共用的截图通道：
-  // 由渲染层在准确时刻主动触发（主进程自己掐 setTimeout 会被节流/漂移）
-  if (DRAG_PROBE || GROUP_PROBE || INFO_PROBE || RAIL_PROBE || SELECT_PROBE) {
+  // 各探针共用的截图通道：
+  // 由渲染层在准确时刻主动触发（主进程自己掐 setTimeout 会被节流/漂移）。
+  // ★ 加新探针时**必须把它的名字加进这个条件**，否则 ql:probe-shot 根本没注册，
+  //   渲染层会报 "No handler registered for 'ql:probe-shot'"，探针等于白跑。
+  if (DRAG_PROBE || GROUP_PROBE || INFO_PROBE || RAIL_PROBE || SELECT_PROBE || SECOND_PROBE) {
     // 打包态下 ROOT 在 asar 内部，写不进去 —— 逐级找一个能写的目录，
     // 免得探针"静默失败"让人以为没问题。
     const shotBase = (() => {
@@ -297,6 +302,19 @@ function createWindow() {
         win.webContents.send('ql:info-probe');
       }, 1200);
       setTimeout(() => quitApp(), 20000);
+    });
+  }
+
+  // --second-probe：本实例隐形待命，等「第二个实例」被交接过来 → 提示 → 渲染层截图。
+  // 用法：先 `electron . --second-probe`（放后台），几秒后再 `electron .` 一次。
+  // showWindow() 只 show/focus，不动 opacity，所以探针窗口自始至终不可见。
+  if (SECOND_PROBE) {
+    win.webContents.once('did-finish-load', () => {
+      setTimeout(() => {
+        try { win.setOpacity(0); } catch { /* noop */ }
+        console.log('[second-probe] 已就绪，等待第二个实例被启动…');
+      }, 1200);
+      setTimeout(() => quitApp(), 90000);
     });
   }
 
@@ -745,7 +763,21 @@ function quitApp() {
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-  app.on('second-instance', () => showWindow());
+  /* ★★ 第二个实例只 showWindow() 是不够的。
+     单实例锁是按 **userData 目录**上的，而打包形态的 userData 就是程序目录下的 `data\`
+     （见上面的 setPath）—— 所以**同一个文件夹里的不同版本共用一把锁**。
+     用户双击新版 exe 时，新进程拿不到锁直接退出，前台浮起来的是**旧版窗口**，
+     看起来就像"新功能没做"（真踩过：用户报「关于加了吗？」）。
+     这里把「你看到的是已在运行的那个版本」明确说出来，并告诉他怎么跑新的。 */
+  app.on('second-instance', () => {
+    showWindow();
+    try {
+      win?.webContents.send('ql:second-instance', { version: app.getVersion(), form: appForm() });
+    } catch { /* 窗口还没建好就算了，showWindow 已经起到作用 */ }
+    if (SECOND_PROBE) {
+      setTimeout(() => { try { win?.webContents.send('ql:second-probe'); } catch { /* noop */ } }, 800);
+    }
+  });
 
   app.whenReady().then(() => {
     store.init();
