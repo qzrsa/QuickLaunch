@@ -1399,6 +1399,142 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
   }
 
   /* ------------------------------------------------------------------
+   * 构建后清理 prune-dist：dist\ 只留当前版本，旧版本全删
+   * ------------------------------------------------------------------
+   * 用户需求：「每次编译完之后删掉之前的版本 只保留最新版」。
+   * 规则从严：只删**认识得出来**的产物名（Setup/Portable/Green/Delta/blockmap +
+   * 版本号在内容里的 update.json）；目录（win-unpacked/data）和不认识的文件
+   * （latest.yml / builder-debug.yml / build.log）绝不碰 —— 宁可少删不能误删。
+   */
+  section('构建后清理 prune-dist');
+  {
+    const { artifactVersion, pruneDist } = await import('../scripts/lib/prune-dist.mjs');
+
+    // ---- 版本提取规则（纯函数，逐条钉死）----
+    ok(artifactVersion('QuickLaunch-Setup-1.2.1.exe') === '1.2.1', 'Setup 提出版本');
+    ok(artifactVersion('QuickLaunch-Portable-1.2.1.exe') === '1.2.1', 'Portable 提出版本');
+    ok(artifactVersion('QuickLaunch-Green-1.2.1.zip') === '1.2.1', 'Green 提出版本');
+    ok(artifactVersion('QuickLaunch-Setup-1.2.1.exe.blockmap') === '1.2.1',
+      'Setup 的 .blockmap 跟着 Setup 的版本走');
+    ok(artifactVersion('QuickLaunch-Delta-1.2.0-to-1.2.1.bin') === '1.2.1',
+      '★ 差量包属于 to（目标版本），from 是它的基准不算数');
+    ok(artifactVersion('latest.yml') === null
+      && artifactVersion('builder-debug.yml') === null
+      && artifactVersion('build.log') === null
+      && artifactVersion('QuickLaunch-Weird-1.0.0.txt') === null
+      && artifactVersion('update.json') === null,
+      '不认识的文件名一律返回 null（update.json 的版本在内容里，单独判）');
+
+    // ---- 真删真留（真实临时目录 + 真 fs）----
+    const PDIR = path.join(TMP, 'prune-dist');
+    fs.rmSync(PDIR, { recursive: true, force: true });
+    const putP = (name, content) => {
+      const p = path.join(PDIR, ...name.split('/'));
+      fs.mkdirSync(path.dirname(p), { recursive: true });
+      fs.writeFileSync(p, content);
+      return p;
+    };
+    const CUR = '1.2.1', OLD = '1.2.0';
+
+    // 期望被删的：4 个旧产物 + 旧版 update.json（无版本号后缀，版本在内容里）
+    const doomed = [
+      [`QuickLaunch-Setup-${OLD}.exe`, 'x'.repeat(300)],
+      [`QuickLaunch-Portable-${OLD}.exe`, 'x'.repeat(300)],
+      [`QuickLaunch-Green-${OLD}.zip`, 'x'.repeat(300)],
+      [`QuickLaunch-Delta-1.1.1-to-${OLD}.bin`, 'x'.repeat(300)],
+      ['update.json', JSON.stringify({ version: OLD })],
+    ];
+    const expectFreed = doomed.reduce((n, [, c]) => n + Buffer.byteLength(c), 0);
+    doomed.forEach(([n, c]) => putP(n, c));
+
+    // 期望保留的：当前版本产物 + 不认识的文件 + 目录（目录里放诱饵防误删）
+    putP(`QuickLaunch-Setup-${CUR}.exe`, 'new');
+    putP(`QuickLaunch-Setup-${CUR}.exe.blockmap`, 'new');
+    putP(`QuickLaunch-Portable-${CUR}.exe`, 'new');
+    putP(`QuickLaunch-Green-${CUR}.zip`, 'new');
+    putP(`QuickLaunch-Delta-${OLD}-to-${CUR}.bin`, 'new');   // to=当前版 → 留
+    putP('latest.yml', 'yml');
+    putP('builder-debug.yml', 'yml');
+    putP('build.log', 'log');
+    putP('update.json.old', '干扰项：名字不认识');
+    putP('win-unpacked/QuickLaunch.exe', 'app');             // 目录
+    putP('data/config.json', '{"private":1}');               // 目录（可能是本机私人配置）
+
+    const r = pruneDist({ distDir: PDIR, version: CUR, log: () => {} });
+    ok(r.removed.length === 5,
+      `删了 5 个（4 个旧产物 + 旧版 update.json；实际 ${r.removed.length}：${r.removed.map(x => x.name).join(', ')}）`);
+    ok(r.removed.every(x => x.name === 'update.json' || x.name.includes(OLD)),
+      '删掉的全是旧版本产物（差量包按 to 判，1.1.1-to-1.2.0 属于 1.2.0）');
+    ok(r.freed === expectFreed, `释放字节数 = 被删文件合计（实际 ${r.freed} / 期望 ${expectFreed}）`);
+    ok([`QuickLaunch-Setup-${CUR}.exe`, `QuickLaunch-Setup-${CUR}.exe.blockmap`,
+      `QuickLaunch-Portable-${CUR}.exe`, `QuickLaunch-Green-${CUR}.zip`,
+      `QuickLaunch-Delta-${OLD}-to-${CUR}.bin`].every(n => r.kept.includes(n)),
+      '当前版本产物 + 属于当前版的差量包全保留');
+    ok(r.kept.includes('latest.yml') && r.kept.includes('builder-debug.yml')
+      && r.kept.includes('build.log') && r.kept.includes('update.json.old'),
+      '★ 构建元数据等不认识的名字一个都没动');
+    ok(r.kept.includes('win-unpacked/') && r.kept.includes('data/'),
+      '★ 目录一律绕开（win-unpacked 是产物本体，data 可能是本机私人配置）');
+    ok(fs.readFileSync(path.join(PDIR, 'data', 'config.json'), 'utf8') === '{"private":1}',
+      '目录里的文件原样保留');
+
+    // update.json 的版本判断：当前版留（可重复执行） / 旧版删 / 坏 JSON 不动
+    fs.writeFileSync(path.join(PDIR, 'update.json'), JSON.stringify({ version: CUR }));
+    ok(pruneDist({ distDir: PDIR, version: CUR }).removed.length === 0,
+      'update.json 版本 = 当前版本 → 保留（再跑一遍什么都不删，可重复执行）');
+    fs.writeFileSync(path.join(PDIR, 'update.json'), JSON.stringify({ version: OLD }));
+    ok(pruneDist({ distDir: PDIR, version: CUR }).removed.map(x => x.name).join(',') === 'update.json',
+      'update.json 版本 ≠ 当前版本 → 删');
+    fs.writeFileSync(path.join(PDIR, 'update.json'), '{ 坏掉的 JSON');
+    ok(pruneDist({ distDir: PDIR, version: CUR }).removed.length === 0,
+      '★ update.json 读不出版本（坏 JSON）→ 当不认识，不动');
+
+    // dist 目录不存在 → 不抛、当空处理
+    const rNone = pruneDist({ distDir: path.join(TMP, 'no-such-dist'), version: CUR });
+    ok(rNone.removed.length === 0 && rNone.kept.length === 0, 'dist 目录不存在 → 不抛、当空处理');
+
+    // ★ 单个删除失败 → 记录进 failed、继续删其他的（绝不"删一半就中断"）
+    const FDIR = path.join(TMP, 'prune-fail');
+    fs.rmSync(FDIR, { recursive: true, force: true });
+    fs.mkdirSync(FDIR, { recursive: true });
+    const boomFs = {
+      readdirSync: fs.readdirSync.bind(fs),
+      statSync: fs.statSync.bind(fs),
+      rmSync: (p) => {
+        if (String(p).includes('Green-1.2.0.zip')) {
+          const e = new Error('EBUSY: 被占用'); e.code = 'EBUSY'; throw e;
+        }
+        return fs.rmSync(p, { force: true });
+      },
+    };
+    [`QuickLaunch-Green-${OLD}.zip`, `QuickLaunch-Portable-${OLD}.exe`, `QuickLaunch-Setup-${OLD}.exe`]
+      .forEach(n => fs.writeFileSync(path.join(FDIR, n), 'x'.repeat(100)));
+    const rFail = pruneDist({ distDir: FDIR, version: CUR, fsMod: boomFs });
+    ok(rFail.failed.length === 1 && rFail.failed[0].name === `QuickLaunch-Green-${OLD}.zip`
+      && /EBUSY/.test(rFail.failed[0].reason),
+      '★ 删除失败如实记进 failed（带原因），而不是中断或静默');
+    ok(rFail.removed.length === 2, '失败后其余文件继续删（不中断）');
+    ok(fs.existsSync(path.join(FDIR, `QuickLaunch-Green-${OLD}.zip`)),
+      '删失败的那个还在（没被假装删掉）');
+
+    // ---- CLI 端到端（跟 pack-green 同一测法：spawn 真进程；--dist 指定临时目录）----
+    const CLI = path.join(__dirname, '..', 'scripts', 'prune-dist.mjs');
+    fs.rmSync(PDIR, { recursive: true, force: true });
+    fs.mkdirSync(PDIR, { recursive: true });
+    fs.writeFileSync(path.join(PDIR, `QuickLaunch-Green-${OLD}.zip`), 'x'.repeat(500));
+    fs.writeFileSync(path.join(PDIR, `QuickLaunch-Green-${CUR}.zip`), 'new');
+    const pr = cp.spawnSync(process.execPath, [CLI, '--dist', PDIR], { encoding: 'utf8' });
+    ok(pr.status === 0, 'CLI（--dist 指定目录）退出码 0', String(pr.stderr || '').split('\n')[0]);
+    ok(!fs.existsSync(path.join(PDIR, `QuickLaunch-Green-${OLD}.zip`))
+      && fs.existsSync(path.join(PDIR, `QuickLaunch-Green-${CUR}.zip`)),
+      'CLI 真删了旧版、真留了当前版');
+    ok(/已删 1 个旧产物/.test(pr.stdout || ''), 'CLI 输出带删除统计（让人看得见删了多少）',
+      (pr.stdout || '').trim().split('\n').pop());
+    // CLI 不传 --dist 时指向真实 ../dist —— 真实 dist 的清理由 npm run dist 末尾自动执行，
+    // 这里不在 smoke 里对真 dist 干跑（那会把真实产物删掉）。
+  }
+
+  /* ------------------------------------------------------------------
    * asar 补丁：打包后才会踩到的坑
    * ------------------------------------------------------------------
    * Electron 会把**任何以 `.asar` 结尾的路径**当 asar 存档（大小写不敏感）：
