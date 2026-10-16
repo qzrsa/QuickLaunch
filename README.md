@@ -60,13 +60,19 @@
 
 ## 三种发布形态
 
-每次发版都会产出**同一套**三个文件（本地 `dist/` 与 GitHub Release 完全一致）：
+一共有三种产物，但**本地和 GitHub Release 出的不是同一套**：
 
-| 产物 | 文件名 | 说明 |
-|---|---|---|
-| **安装版** | `QuickLaunch-Setup-<版本>.exe` | NSIS 安装包。可选安装目录，自动建桌面 + 开始菜单快捷方式，带卸载项 |
-| **便携版** | `QuickLaunch-Portable-<版本>.exe` | 单文件绿色 exe，双击即用，不写注册表。数据写在 **exe 所在目录**下 |
-| **绿色版** | `QuickLaunch-Green-<版本>.zip` | 解包即用的整个目录，exe 在 zip 根层，解压到哪就在哪跑 |
+| 产物 | 文件名 | 说明 | 本机 `npm run dist` | GitHub Release |
+|---|---|---|---|---|
+| **安装版** | `QuickLaunch-Setup-<版本>.exe` | NSIS 安装包。可选安装目录，自动建桌面 + 开始菜单快捷方式，带卸载项 | ✅ | ✅ |
+| **绿色版** | `QuickLaunch-Green-<版本>.zip` | 解包即用的整个目录，exe 在 zip 根层，解压到哪就在哪跑 | ✅ | ✅ |
+| **便携版** | `QuickLaunch-Portable-<版本>.exe` | 单文件绿色 exe，双击即用，不写注册表。数据写在 **exe 所在目录**下 | ✅ | ❌ 不出 |
+
+> **为什么 Release 不出便携版？** 单文件 exe 体积与安装版接近（≈111 MB），却多一份需要维护的
+> 打包路径；Release 页面留「安装版 + 绿色版」两个入口已经覆盖了全部使用场景。
+> 需要便携版请按下面的「从源码构建」自己打一个，命令原样保留。
+
+CI 与本地产出的两个文件**版本号与文件名一致**（两台机器分别构建，字节不完全相同）。
 
 ## 数据存在哪
 
@@ -103,12 +109,12 @@
 cd desktop
 npm install
 npm start            # 开发运行
-npm run check        # 语法 + 工作流自检
+npm run check        # 语法 + 工作流自检（39 项）
 npm test             # 主进程逻辑自检（161 项）
 npm run release      # = check + test + 打三种产物 + 压绿色版 zip
 ```
 
-产物落在仓库根目录的 `dist/`：
+产物落在仓库根目录的 `dist/`（本地三个都出；CI 只取前两个打进 Release）：
 
 ```
 dist/
@@ -129,12 +135,17 @@ npm run pack:green       # 把 win-unpacked 压成绿色版 zip
 
 ### CI 发版
 
-推 `v*` tag 会触发 GitHub Actions，在 `windows-latest` 上打三种产物并创建 Release：
+推 `v*` tag 会触发 GitHub Actions，在 `windows-latest` 上打**安装版 + 绿色版两个**产物并创建 Release
+（单文件便携版已移出 CI，理由见上）：
 
 ```bash
-git tag -a v1.1.0 -m "多选编辑 + 启动分组"
-git push origin v1.1.0        # ← 必须推 tag 名，推 main 不会顺带推 tag
+git tag -a v1.2.0 -m "……"
+git push origin v1.2.0        # ← 必须推 tag 名，推 main 不会顺带推 tag
 ```
+
+工作流里有一条**反向守卫**：CI 一旦又打出 `QuickLaunch-Portable-*`，构建会直接以
+`::error::` 失败 —— 免得出现「构建了却没发布」的静默不一致。
+`desktop/scripts/lint-workflow.mjs` 也会在本地就拦住这种改回去的写法。
 
 ## 目录结构
 

@@ -13,7 +13,9 @@ permissions:
 
 jobs:
   build:
-    name: 打包（安装版 / 便携版 / 绿色版）
+    # ★ CI 只出「安装版 + 绿色版」两个产物（用户要求：GitHub 不要单文件便携版）。
+    #   本机 `npm run dist` 仍然是 nsis + portable + dir 三个，两边只有产物集合不同。
+    name: 打包（安装版 / 绿色版）
     runs-on: windows-latest
     defaults:
       run:
@@ -62,7 +64,8 @@ jobs:
         shell: bash
         env:
           ELECTRON_BUILDER_CACHE: ${{ runner.temp }}\electron-builder-cache
-        run: npx electron-builder --win nsis portable dir --x64 --publish never
+        # 没有 portable：单文件便携版只在本地构建，不进 Release（用户要求）。
+        run: npx electron-builder --win nsis dir --x64 --publish never
 
       - name: 压绿色版 zip
         shell: bash
@@ -88,20 +91,27 @@ jobs:
           esac
 
           SETUP="QuickLaunch-Setup-${VERSION}.exe"
-          PORTABLE="QuickLaunch-Portable-${VERSION}.exe"
           GREEN="QuickLaunch-Green-${VERSION}.zip"
 
           # 文件名不得含空格：GitHub 会把 Release 资产名里的空格换成点，从 action 侧治不了
-          for f in "$SETUP" "$PORTABLE" "$GREEN"; do
+          for f in "$SETUP" "$GREEN"; do
             case "$f" in *" "*) echo "::error::资产名含空格：$f"; exit 1 ;; esac
             test -f "$f" || { echo "::error::产物缺失：$RELEASE_DIR\\$f"; exit 1; }
           done
+
+          # 反向守卫：CI 不该再产出单文件便携版。它一旦出现，就说明「打包」那步
+          # 被人改回了 --win nsis portable dir，而 Release 是照 SETUP/GREEN 两行取的 ——
+          # 那种"构建了但不发布"的静默不一致必须在构建期就炸掉。
+          PORTABLE_HITS="$(ls QuickLaunch-Portable-* 2>/dev/null || true)"
+          if [ -n "$PORTABLE_HITS" ]; then
+            echo "::error::CI 不应产出便携版，却发现了：$PORTABLE_HITS"
+            exit 1
+          fi
 
           {
             echo "VERSION=$VERSION"
             echo "RELEASE_DIR=$RELEASE_DIR"
             echo "SETUP=$SETUP"
-            echo "PORTABLE=$PORTABLE"
             echo "GREEN=$GREEN"
           } >> "$GITHUB_ENV"
 
@@ -115,18 +125,17 @@ jobs:
           if-no-files-found: error
           path: |
             ${{ env.RELEASE_DIR }}\${{ env.SETUP }}
-            ${{ env.RELEASE_DIR }}\${{ env.PORTABLE }}
             ${{ env.RELEASE_DIR }}\${{ env.GREEN }}
 
-      # 推 main 不会顺带推 tag。要发版必须：git tag -a v1.0.1 -m "..." && git push origin v1.0.1
+      # 推 main 不会顺带推 tag。要发版必须：git tag -a v1.2.0 -m "..." && git push origin v1.2.0
       - name: 发布到 GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true
+          # Release 只挂安装版 + 绿色版两个资产（单文件便携版已按用户要求移出 CI）。
           files: |
             ${{ env.RELEASE_DIR }}\${{ env.SETUP }}
-            ${{ env.RELEASE_DIR }}\${{ env.PORTABLE }}
             ${{ env.RELEASE_DIR }}\${{ env.GREEN }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
