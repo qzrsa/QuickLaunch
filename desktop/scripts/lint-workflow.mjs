@@ -161,7 +161,30 @@ ok(relBlock.includes('generate_release_notes: true'),
   '保留 generate_release_notes（说明是前置拼接，不是替换掉自动变更列表）');
 // 说明步骤与 Release 步骤必须同样只在 tag 上跑：否则推 main 时会去 fetch tag、还会写 env
 const tagGateCount = [...src.matchAll(/if:\s*startsWith\(github\.ref, 'refs\/tags\/v'\)/g)].length;
-ok(tagGateCount === 2, `取说明与发布这两步都只在 tag 上跑（实际 ${tagGateCount} 处）`);
+ok(tagGateCount === 3, `取说明、生成清单、发布这三步都只在 tag 上跑（实际 ${tagGateCount} 处）`);
+
+// ---- 更新元数据：update.json + 差量包 ----
+// 客户端默认从 `<更新源>/update.json` 取清单，而默认更新源是 releases/latest/download ——
+// 所以清单必须作为**同名 Release 资产**发出去。它不是资产，客户端就永远只看到 404。
+console.log('--- 更新元数据（update.json / 差量包）---');
+const mfIdx = src.indexOf('生成更新清单');
+ok(mfIdx > 0, '有「生成更新清单」这一步');
+ok(mfIdx > 0 && mfIdx < relIdx, '生成清单排在 Release 之前（资产得先生成出来）');
+ok(mfIdx > 0 && /if:\s*startsWith\(github\.ref, 'refs\/tags\/v'\)/.test(src.slice(mfIdx - 300, mfIdx + 300)),
+  '清单步骤只在 tag 上跑（推 main 不产出、也不发资产）');
+ok(relBlock.includes('update.json'), 'Release 资产里有 update.json（客户端默认就取这个文件名）');
+ok(relBlock.includes('QuickLaunch-Delta-*.bin'),
+  'Release 资产里有差量包（名字带版本号，只能 glob；匹配不到时 action 跳过，正好对上降级路径）');
+ok(/scripts\/unpack-green\.mjs/.test(src) && /scripts\/make-update-manifest\.mjs/.test(src),
+  '解包与生成清单都走现成脚本，没有在 YAML 里另写一份解压/哈希');
+ok(/--old\s+"\$TMP\/old"\s+--from\s+"\$FROM"/.test(src),
+  '上一個版本的目录与版本号一起传给清单脚本（差量基准）');
+// 降级路径必须存在且只告警：一次网络抖动不该把整个 Release 卡死
+ok(/::warning::[^\n]*不含差量/.test(src),
+  '拿不到差量基准只 ::warning:: 不失败（降级成"只有全量"的清单）');
+// 清单自己也要过一道：混进 data/ 就等于把用户私人配置当程序文件发出去
+ok(/混进了运行时文件/.test(src), '清单生成后自查有没有混进运行时目录（data/ 等）');
+ok(/清单引用的差量包不在 dist 里/.test(src), '自查清单引用的差量包真的在 dist 里（否则客户端下载必然 404）');
 
 // ---- 每个 run 块都必须是合法 bash ----
 // 走 stdin（`bash -n` 不带文件名就读 stdin），不落临时文件、不依赖 YAML 解析。

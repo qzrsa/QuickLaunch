@@ -121,6 +121,86 @@ jobs:
           echo "=== 产物清单 ==="
           ls -la QuickLaunch-*
 
+      # 更新元数据（绿色版与安装版共用同一份 update.json）。
+      # 客户端取的是 `<更新源>/update.json`，默认更新源 = releases/latest/download ——
+      # 所以清单必须作为**同名 Release 资产**发出去。缺了它客户端只会拿到 404
+      # （那是正常的"还没发清单"），用户就永远不知道有新版本。
+      # ★ 差量基准 = 上一个 Release 的绿色版 zip，解开成目录喂给 make-update-manifest。
+      #   拿不到就降级成"只有全量"的清单：用户照样能更新，只是要下整包 ——
+      #   宁可少一条优化，也绝不因为一次网络抖动把整个 Release 卡死。
+      - name: 生成更新清单（+ 差量补丁）
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eo pipefail
+          DIST="../dist"
+          TMP="$RUNNER_TEMP/ql-baseline"
+          rm -rf "$TMP"; mkdir -p "$TMP"
+
+          # 1) 找上一个（非草稿、非预发布）Release 里的绿色版 zip，连它的 tag 一起取出来。
+          #    ★ 这里刻意不写死资产名：只按前缀/中缀/后缀三段去认，
+          #      免得往工作流里再添一处"资产全名"（那处名单只该在下面 files: 里有一份）。
+          curl -sSL -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/releases?per_page=40" > "$TMP/rel.json"
+          RELS="$TMP/rel.json" node -e '
+            const fs = require("fs");
+            const rels = JSON.parse(fs.readFileSync(process.env.RELS, "utf8"));
+            const cur = process.env.GITHUB_REF_NAME;
+            for (const r of rels) {
+              if (!r || r.draft || r.prerelease || r.tag_name === cur) continue;
+              const a = (r.assets || []).find(x =>
+                typeof x.name === "string" && x.name.startsWith("QuickLaunch-") &&
+                x.name.includes("-Green-") && x.name.endsWith(".zip"));
+              if (a) { process.stdout.write(r.tag_name + " " + a.browser_download_url); break; }
+            }
+          ' > "$TMP/found.txt" || true
+
+          FROM=""; URL=""
+          if [ -s "$TMP/found.txt" ]; then
+            read -r TAG URL <<< "$(cat "$TMP/found.txt")"
+            FROM="${TAG#v}"
+          fi
+
+          # 2) 解开当差量基准。任一步失败都退回"只有全量"，不让它拦住发版。
+          OLD_ARG=()
+          if [ -n "$FROM" ] && [ -n "$URL" ]; then
+            echo "差量基准：$URL"
+            if curl -fsSL -o "$TMP/prev.zip" "$URL" \
+               && node scripts/unpack-green.mjs --zip "$TMP/prev.zip" --out "$TMP/old"; then
+              OLD_ARG=(--old "$TMP/old" --from "$FROM")
+            else
+              echo "::warning::差量基准下载/解包失败，本次清单不含差量（老用户会下整包）"
+            fi
+          else
+            echo "::warning::没有可作为基准的上一个 Release，本次清单不含差量（老用户会下整包）"
+          fi
+
+          # 3) 出清单：dist/update.json + dist/QuickLaunch-Delta-<from>-to-<to>.bin
+          node scripts/make-update-manifest.mjs \
+            --new "$DIST/win-unpacked" --zip "$DIST/$GREEN" --out "$DIST" "${OLD_ARG[@]}"
+
+          # 4) 自己先验一遍，别把一份坏清单发出去（客户端拿到它只会报"格式不认识"）
+          test -f "$DIST/update.json" || { echo "::error::没有产出 update.json"; exit 1; }
+          MANIFEST="$DIST/update.json" DIST="$DIST" node -e '
+            const fs = require("fs");
+            const m = JSON.parse(fs.readFileSync(process.env.MANIFEST, "utf8"));
+            console.log("清单: v" + m.version + " / 文件 " + m.files.length + " 个 / 差量 " + m.patches.length + " 条");
+            if (!m.patches.length) console.log("::warning::本次没有差量补丁 —— 老用户会下整包");
+            const leak = m.files.filter(f => /^(data|\.update|\.tmpdata|\.probe-shot)\//.test(f.path));
+            if (leak.length) {
+              console.error("::error::清单里混进了运行时文件：" + leak.slice(0, 3).map(f => f.path).join(", "));
+              process.exit(1);
+            }
+            for (const p of m.patches) {
+              if (!fs.existsSync(process.env.DIST + "/" + p.asset)) {
+                console.error("::error::清单引用的差量包不在 dist 里：" + p.asset);
+                process.exit(1);
+              }
+            }
+          '
+
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
@@ -177,9 +257,16 @@ jobs:
           name: ${{ env.RELEASE_TITLE }}
           body: ${{ env.RELEASE_NOTES }}
           generate_release_notes: true
-          # Release 只挂安装版 + 绿色版两个资产（单文件便携版已按用户要求移出 CI）。
+          # Release 只挂安装版 + 绿色版两个**程序包**（单文件便携版已按用户要求移出 CI），
+          # 外加客户端的更新元数据 update.json 与差量包 —— 后两个没有就更新不了：
+          # 客户端默认从 releases/latest/download 取 update.json，它不是资产就永远是 404。
+          # ★ 差量包名带版本号（QuickLaunch-Delta-<from>-to-<to>.bin），所以用 glob：
+          #   匹配不到时 action 默认只是跳过（fail_on_unmatched_files 默认 false），
+          #   正好对上"没有基准就发全量清单"的降级路径。
           files: |
             ${{ env.RELEASE_DIR }}\${{ env.SETUP }}
             ${{ env.RELEASE_DIR }}\${{ env.GREEN }}
+            ${{ env.RELEASE_DIR }}\update.json
+            ${{ env.RELEASE_DIR }}\QuickLaunch-Delta-*.bin
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

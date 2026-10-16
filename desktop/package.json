@@ -1,7 +1,7 @@
 {
   "name": "quicklaunch",
   "productName": "QuickLaunch",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "description": "快速启动 · QuickLaunch — 桌面版启动器",
   "main": "src/main.js",
   "author": "QZRS",
@@ -48,9 +48,24 @@
     ],
     "win": {
       "target": [
-        { "target": "nsis", "arch": ["x64"] },
-        { "target": "portable", "arch": ["x64"] },
-        { "target": "dir", "arch": ["x64"] }
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "dir",
+          "arch": [
+            "x64"
+          ]
+        }
       ],
       "icon": "build/icon.ico"
     },
