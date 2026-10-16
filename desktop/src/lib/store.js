@@ -151,6 +151,16 @@ function defaultConfig() {
       // 这样用户切回「记住上次」时立刻就是上次的位置。
       startGroup: 'last',
       lastGroup: 'all',
+      // 启动时静默检查一次更新。**默认开**，且只在启动时查这一次 ——
+      // 不轮询、不常驻、不后台盯着；查到也不自动下载，动手永远等用户点。
+      autoUpdate: true,
+      // 更新源。留空 = GitHub Release 的 latest/download。
+      // 允许改成镜像/代理：本机实测国内直连 GitHub 资产常断流，
+      // 而"更新器只能用某个镜像"是最容易被忽略的失败原因，所以做成显式配置项。
+      updateBase: '',
+      // 上一次已经弹过提示的更新结果（形如 `applied|1.2.0|<时间>`）。
+      // 靠它让"更新成功/失败"的提示**只出现一次**，跨重启也不会重复。
+      lastUpdateNotice: '',
     },
     groups: buildGroups(),
   };

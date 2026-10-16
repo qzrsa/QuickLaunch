@@ -598,7 +598,7 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
     return m ? m[0] : '';
   };
   const formMapSrc = (appSrc.match(/const FORM_TXT = \{[\s\S]*?\n\};/) || [''])[0];
-  const parts = ['FORM_TXT', 'formText', 'statusText', 'dataWarnText', 'aboutGroups', 'envLines'];
+  const parts = ['FORM_TXT', 'formText', 'statusText', 'dataWarnText', 'aboutGroups', 'envLines', 'updateRows'];
   const got = {
     FORM_TXT: formMapSrc,
     formText: fnSrc('formText'),
@@ -606,17 +606,21 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
     dataWarnText: fnSrc('dataWarnText'),
     aboutGroups: fnSrc('aboutGroups'),
     envLines: fnSrc('envLines'),
+    updateRows: fnSrc('updateRows'),
   };
   const missingSrc = parts.filter(n => !got[n]);
-  ok(missingSrc.length === 0, '6 段源码都抠出来了', missingSrc.join(',') || 'ok');
+  ok(missingSrc.length === 0, '7 段源码都抠出来了', missingSrc.join(',') || 'ok');
   ok((appSrc.match(/FORM_TXT/g) || []).length === 2,
     'FORM_TXT 只有一份（定义 + formText 里取用）；状态行和「关于」共用它',
     `出现 ${(appSrc.match(/FORM_TXT/g) || []).length} 次`);
 
   if (missingSrc.length === 0) {
-    const mk = preview => new Function('PREVIEW',
-      [formMapSrc, got.formText, got.statusText, got.dataWarnText, got.aboutGroups, got.envLines].join('\n')
-      + '\nreturn { formText, statusText, dataWarnText, aboutGroups, envLines };')(preview);
+    // ★ envLines 现在还会去读 state.update（"关于"里推过来的最新快照），
+    //   所以把 state 也一起注进去 —— 不注的话抽出来一跑就是 ReferenceError。
+    const mk = (preview, st = {}) => new Function('PREVIEW', 'state',
+      [formMapSrc, got.formText, got.statusText, got.dataWarnText, got.aboutGroups,
+        got.updateRows, got.envLines].join('\n')
+      + '\nreturn { formText, statusText, dataWarnText, aboutGroups, envLines, updateRows };')(preview, st);
     const A = mk(false);
 
     // 运行形态四种标签
@@ -631,7 +635,7 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
     ok(A.statusText({ version: '1.0.2', form: 'installed' }) === 'v1.0.2 · 安装版',
       '状态行 = 「v版本 · 运行形态」');
     ok(!/已连接/.test(A.statusText({ version: '1.0.2', form: 'installed' })),
-      '状态行不再出现「已连接」（程序不联网，那词会被读成在线状态）');
+      '状态行不再出现「已连接」（那词会被读成在线状态，而它表达的是版本 + 运行形态）');
     ok(A.statusText({ version: '1.0.2', form: 'green' }) === 'v1.0.2 · 绿色版', '绿色版状态行');
     ok(A.statusText(null) === '初始化…', 'info 还没到手时说「初始化…」，不谎报运行形态');
     ok(mk(true).statusText({ version: '1.0.2', form: 'installed' }) === '预览模式（非桌面版）',
@@ -671,6 +675,44 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
     ok(/注意\s+程序目录不可写/.test(A.envLines(warnInfo).join('\n')),
       '数据回落时诊断信息里带一行「注意」（用户贴出来就能定位问题）');
     ok(!/注意/.test(text), '数据正常时诊断信息里不带「注意」');
+
+    /* 更新段：用户报"更新下不动"时，这段字里有状态、目标版本、实际用的更新源、日志目录。
+       ★ 一个 undefined 就能把整段诊断信息废掉 —— 这几条就是盯这个的。 */
+    const updInfo = {
+      ...info,
+      update: {
+        supported: true, unsupportedReason: '', form: 'green', myVersion: '1.0.2', autoUpdate: true,
+        base: 'https://example.invalid/ql', baseError: '', status: 'available',
+        statusText: '发现新版本', latest: '1.1.0', reason: '可以走增量',
+        plan: { mode: 'delta', size: 1024, sizeText: '1.0 KiB' }, progress: null,
+        checkedAt: 0, checkedAtText: '2026-10-16 10:00', busy: false,
+        canCheck: true, canDownload: true, canApply: false, notice: null, dir: 'C:\\App\\.update',
+      },
+    };
+    const updText = A.envLines(updInfo).join('\n');
+    ok(/【更新】/.test(updText), '★ 诊断信息里带一段【更新】（用户贴出来就能定位更新问题）');
+    ok(!/undefined|null|NaN/.test(updText), '更新段里也没有 undefined/null/NaN');
+    ok(/发现新版本/.test(updText) && /1\.1\.0/.test(updText), '更新段写清了状态与目标版本');
+    ok(/https:\/\/example\.invalid\/ql/.test(updText),
+      '★ 更新段带上了**实际用的**更新源（更新下不动时这是第一个要看的东西）');
+    ok(!/【更新】/.test(text), '拿不到更新快照时不硬造一段（宁可没有，也不要一段假的）');
+    const updOff = {
+      ...info,
+      update: {
+        supported: false, unsupportedReason: '便携版是单文件 exe，换不了自己',
+        status: 'unsupported', statusText: '当前形态不支持自动更新', autoUpdate: true,
+        base: '', baseError: '', latest: '', reason: '', checkedAt: 0, checkedAtText: '',
+        progress: null, plan: null, dir: '—',
+      },
+    };
+    const offText = A.envLines(updOff).join('\n');
+    ok(!/undefined|null|NaN/.test(offText) && /便携版是单文件/.test(offText),
+      '不支持的形态在诊断信息里也给出人话原因');
+    ok(A.updateRows(null).every(r => r.k && typeof r.v === 'string'),
+      'updateRows(null)（快照还没到）也不吐 undefined');
+    ok(A.updateRows({ supported: true, status: 'idle', statusText: '尚未检查', autoUpdate: true })
+      .every(r => typeof r.v === 'string'),
+    '字段很稀疏的快照也不会吐 undefined（主进程少给字段就会在这露馅）');
   }
 
 
@@ -1323,6 +1365,619 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
     });
     ok(r.ok === false && /sha256/.test(r.reason), '★ zip 校验失败在第 1 步就被拦住（不会解一个坏包）', r.reason);
   }
+
+  /* ------------------------------------------------------------------
+   * asar 补丁：打包后才会踩到的坑
+   * ------------------------------------------------------------------
+   * Electron 会把**任何以 `.asar` 结尾的路径**当 asar 存档（大小写不敏感）：
+   * `<程序目录>\resources\app.asar` 这个**文件本身**读不出来、statSync 还谎报 size=0。
+   * 而更新器必须把它当普通文件（算 sha256、摊进暂存区、从 zip 解出来），每个真机上都有它。
+   *
+   * ★ 为什么单测以前全绿也漏掉了：纯 Node 下**根本没有这个补丁**。所以这里自己造一个
+   *   **忠实的替身**（行为逐条来自 Electron 44.7.2 实测，见 .workbuddy/memory/探针手册.md），
+   *   再由注入的 fs 灌进真实现里跑 —— 不然这一节测的只是"我以为补丁会做什么"。
+   * ★ 先断言替身**真的会拦**（前提），再看真实现能不能扛住：否则一条假替身能让整节假绿。
+   */
+  section('asar 补丁：程序目录里的 app.asar 必须当普通文件');
+  const asarSafe = require('../src/lib/asar-safe.js');
+  // ★ 自己 require 一份：update-probe 在后面那个段落里才 require，"借用"会踩暂存死区
+  const asarFx = require('../src/lib/update-probe');
+
+  // ---- A. withoutAsar 的契约 ----
+  ok(!process.noAsar, '起点：补丁是开着的');
+  ok(asarSafe.withoutAsar(() => process.noAsar) === true, '守卫体里 noAsar 是 true');
+  ok(!process.noAsar, '跑完自动还原');
+  try { asarSafe.withoutAsar(() => { throw new Error('boom'); }); } catch { /* 预期 */ }
+  ok(!process.noAsar, '★ 里面抛错也必须还原（否则整个程序读不到自己的 app.asar）');
+  ok(asarSafe.withoutAsar(() => asarSafe.withoutAsar(() => process.noAsar)) === true, '嵌套的内层同样生效');
+  ok(!process.noAsar, '嵌套跑完还原');
+  process.noAsar = true;
+  asarSafe.withoutAsar(() => {});
+  ok(process.noAsar === true, '★ 外面本来就是 true 时，内层不许把它改回 false');
+  process.noAsar = false;
+
+  // ---- B. 忠实的"asar 补丁"替身 + 前提断言 ----
+  // 拦（读不到 / 谎报）：readFileSync openSync statSync lstatSync realpathSync writeFileSync(Buffer)
+  //                       existsSync（不抛，谎报 false）
+  // 不拦：readdirSync unlinkSync renameSync copyFileSync mkdirSync rmSync
+  //       writeFileSync(字符串)（Node 的 C++ 快路径绕过了 JS 层的 openSync，于是侥幸写进去）
+  const isAsarPath = (p) => /\.asar$/i.test(String(p == null ? '' : p));
+  const patchedFs = (base) => new Proxy(base, {
+    get(t, k) {
+      const fn = t[k];
+      if (typeof k !== 'string' || typeof fn !== 'function') return fn;
+      return (...args) => {
+        const first = args[0];
+        if (process.noAsar === true || typeof first !== 'string' || !isAsarPath(first)) {
+          return fn.apply(t, args);
+        }
+        if (k === 'existsSync') return false;                                  // 谎报
+        if (k === 'statSync' || k === 'lstatSync') {                           // 谎报 size=0
+          return { size: 0, isFile: () => true, isDirectory: () => false, mtimeMs: 0,
+            isSymbolicLink: () => false, isBlockDevice: () => false, isCharacterDevice: () => false,
+            isFIFO: () => false, isSocket: () => false, dev: 0, ino: 0, mode: 0, nlink: 1,
+            uid: 0, gid: 0, rdev: 0, blksize: 0, blocks: 0, atimeMs: 0, ctimeMs: 0, birthtimeMs: 0,
+            atime: new Date(0), mtime: new Date(0), ctime: new Date(0), birthtime: new Date(0) };
+        }
+        if (k === 'writeFileSync' && typeof args[1] === 'string') return fn.apply(t, args); // 侥幸
+        if (k === 'readFileSync' || k === 'openSync' || k === 'realpathSync' || k === 'writeFileSync') {
+          throw new Error('Invalid package ' + first);                          // 抛
+        }
+        return fn.apply(t, args);
+      };
+    },
+  });
+
+  const PATCHED = patchedFs(fs);
+  const ASAR_PROG = path.join(TMP, 'prog-asar');
+  const asarAbs = path.join(ASAR_PROG, 'resources', 'app.asar');
+  const asarBytes = Buffer.from('这是 app.asar 的字节，绝不能当存档'.repeat(40));
+  fs.mkdirSync(path.join(ASAR_PROG, 'resources'), { recursive: true });
+  fs.writeFileSync(asarAbs, asarBytes);
+  fs.writeFileSync(path.join(ASAR_PROG, 'other.dll'), Buffer.from('plain'));
+  const asarShaTruth = vc.sha256hex(asarBytes);
+
+  // 前提：替身真的会拦（这几条绿了，下面才算测到东西）
+  let intercepted = null;
+  try { PATCHED.readFileSync(asarAbs); } catch (e) { intercepted = e.message; }
+  ok(/Invalid package/.test(intercepted || ''), '★ 替身真的会拦 *.asar（否则这一节全是假绿）', intercepted || '没拦');
+  ok(PATCHED.statSync(asarAbs).size === 0, '替身像真补丁一样把 app.asar 的 size 谎报成 0');
+  ok(PATCHED.existsSync(asarAbs) === false, '替身像真补丁一样 existsSync 谎报 false');
+  ok(PATCHED.readdirSync(path.join(ASAR_PROG, 'resources')).includes('app.asar'),
+    '替身不拦 readdirSync（与实测一致：列目录能看到它）');
+  ok(PATCHED.readFileSync(path.join(ASAR_PROG, 'other.dll')).toString() === 'plain',
+    '替身只拦 .asar，普通文件照常读');
+  ok(isAsarPath('X:\\p\\resources\\App.ASAR') && !isAsarPath('X:\\p\\resources\\app.asar.txt'),
+    '判据是"后缀正好是 .asar"（大小写不敏感，多一个后缀就不算）');
+
+  // ---- C. 读：扫描本机程序目录要拿到真 size / 真 sha256 ----
+  let scanPatched = null, scanErr = null;
+  try { scanPatched = updater.scanProgramDir(ASAR_PROG, { fs: PATCHED }); } catch (e) { scanErr = e.message; }
+  ok(scanErr === null, '★ 带补丁的 fs 也能扫完程序目录（不炸）', scanErr || '');
+  const rowAsar = (scanPatched || []).find(f => f.path === 'resources/app.asar');
+  ok(!!rowAsar, '扫描结果里有 resources/app.asar（不能因为补丁就"看不见"它）');
+  ok(!!rowAsar && rowAsar.size === asarBytes.length,
+    `★ app.asar 的 size 是真的（${asarBytes.length}，不是补丁谎报的 0）`,
+    rowAsar ? String(rowAsar.size) : '');
+  ok(!!rowAsar && rowAsar.sha256 === asarShaTruth, '★ app.asar 的 sha256 与真实字节一致',
+    rowAsar ? rowAsar.sha256.slice(0, 16) : '');
+  ok(updater.sha256File(asarAbs, PATCHED) === asarShaTruth, 'sha256File 自己就带守卫（回退用）');
+
+  // ---- D. 写：从 zip 里解出 app.asar ----
+  const ASAR_OUT = path.join(TMP, 'unzip-asar');
+  fs.rmSync(ASAR_OUT, { recursive: true, force: true });
+  let wroteAsar = null, wErr = null;
+  try { wroteAsar = uz.extractToDir(zipBuf, ASAR_OUT, { fs: PATCHED }); } catch (e) { wErr = e.message; }
+  ok(wErr === null && !!wroteAsar, '★ 带补丁的 fs 也能把 zip 解到目录（不炸）', wErr || '');
+  const outAsar = readIf(path.join(ASAR_OUT, 'resources', 'app.asar'));
+  ok(!!outAsar && outAsar.equals(asarTxt), '★ 解出来的 resources/app.asar 与源文件逐字节一致');
+
+  // ---- E. 全量：stageFull 端到端（注入补丁 fs） ----
+  const EPROG = path.join(TMP, 'prog-asar-full');
+  fs.mkdirSync(path.join(EPROG, 'resources'), { recursive: true });
+  fs.writeFileSync(path.join(EPROG, 'resources', 'app.asar'), Buffer.from('OLD-ASAR'));
+  fs.writeFileSync(path.join(EPROG, 'QuickLaunch.exe'), Buffer.from('OLD-EXE'));
+  // 诱饵：更新器绝不能碰的文件（断言"内容没变"，比断言"不存在"强 —— 后者恒真）
+  const eDecoy = path.join(EPROG, 'data', 'config.json');
+  fs.mkdirSync(path.dirname(eDecoy), { recursive: true });
+  fs.writeFileSync(eDecoy, '{"private":"用户数据"}');
+  const eManifest = mkUpd({
+    files: [{ path: 'resources/app.asar', size: asarTxt.length, sha256: vc.sha256hex(asarTxt) }],
+    full: { asset: path.basename(ZIP), size: zipBuf.length, sha256: vc.sha256hex(zipBuf) },
+    patches: [],
+  });
+  const eFull = await updater.stageFull({
+    manifest: eManifest, base: 'https://fx.example', programDir: EPROG, version: '2.0.0', fs: PATCHED,
+    getBuffer: asarFx.transport({ served: [{ name: path.basename(ZIP), body: zipBuf }] }),
+  });
+  ok(eFull.ok === true, '★ 全量路径在补丁 fs 下也能摊进暂存区', eFull.reason || '');
+  const eStaged = readIf(path.join(eFull.stage || path.join(TMP, 'nope'), 'files', 'resources', 'app.asar'));
+  ok(!!eStaged && eStaged.equals(asarTxt), '★ 暂存区里的 app.asar 是 zip 里那一份');
+  ok(fs.readFileSync(eDecoy, 'utf8') === '{"private":"用户数据"}', '全量路径没碰受保护目录（config.json 一个字节都没动）');
+
+  // ---- F. 差量：stage 端到端（覆盖 lazyLocalStore 读本机 app.asar） ----
+  const DPROG = path.join(TMP, 'prog-asar-delta');
+  const dPut = (rel, content) => {
+    const p = path.join(DPROG, ...rel.split('/'));
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, content);
+  };
+  const oldAsar = Buffer.from('OLD-ASAR-BYTES-'.repeat(300));
+  const newAsar = Buffer.from(oldAsar); newAsar.write('NEW', 40, 'utf8');
+  const oldExeD = Buffer.from('OLD-EXE-'.repeat(50));
+  const newExeD = Buffer.from(oldExeD); newExeD.write('NEW', 10, 'utf8');
+  dPut('resources/app.asar', oldAsar);
+  dPut('QuickLaunch.exe', oldExeD);
+  const madeD = vc.makeDirPatch(
+    [{ path: 'resources/app.asar', data: oldAsar }, { path: 'QuickLaunch.exe', data: oldExeD }],
+    [{ path: 'resources/app.asar', data: newAsar }, { path: 'QuickLaunch.exe', data: newExeD }]);
+  const dPatch = { from: '1.1.1', asset: 'QuickLaunch-Delta-1.1.1-to-2.0.0.bin',
+    size: madeD.pack.length, sha256: vc.sha256hex(madeD.pack), plan: madeD.manifest };
+  const dManifest = mkUpd({
+    files: [
+      { path: 'resources/app.asar', size: newAsar.length, sha256: vc.sha256hex(newAsar) },
+      { path: 'QuickLaunch.exe', size: newExeD.length, sha256: vc.sha256hex(newExeD) },
+    ],
+    patches: [dPatch],
+  });
+  const dStage = updater.stage({
+    manifest: dManifest, mode: 'delta', patch: dPatch, pack: madeD.pack, fs: PATCHED,
+    programDir: DPROG, myVersion: '1.1.1',
+  });
+  ok(dStage.ok === true, '★ 差量路径在补丁 fs 下也能摊进暂存区', dStage.reason || '');
+  const dStagedAsar = readIf(path.join(dStage.stage || path.join(TMP, 'nope'), 'files', 'resources', 'app.asar'));
+  ok(!!dStagedAsar && dStagedAsar.equals(newAsar), '★ 差量还原出的 app.asar 逐字节等于新版');
+
+  /* ------------------------------------------------------------------
+   * 自更新 界面接线（一处在主进程、一处在 preload、一处在渲染层）
+   * ------------------------------------------------------------------
+   * 这几条盯的都是"接错线"型的 bug —— 通道名打错一个字母、白名单忘登记、
+   * 界面自己另拼一份状态。这类错误不会崩，只会静默不工作。
+   */
+  section('自更新 界面接线');
+  ok(/id="abUpd"/.test(htmlSrc) && /id="abUpdState"/.test(htmlSrc), '「关于」里有更新块 #abUpd');
+  for (const id of ['abUpdCheck', 'abUpdDown', 'abUpdApply', 'abUpdLog', 'abUpdMsg', 'abUpdBarIn']) {
+    ok(new RegExp(`id="${id}"`).test(htmlSrc), `「关于」更新块含 #${id}`);
+  }
+  ok(/id="abUpdDown"[^>]*\shidden/.test(htmlSrc) && /id="abUpdApply"[^>]*\shidden/.test(htmlSrc),
+    '「下载」与「重启并更新」默认隐藏（没有可下载的东西时不该出现）');
+  ok(/id="sAutoUpdate"/.test(htmlSrc) && /id="sUpdateBase"/.test(htmlSrc),
+    '设置面板里有「启动时自动检查更新」与「更新源」两项（能改的东西只在设置里）');
+  const iAboutSec = htmlSrc.indexOf('id="aboutOverlay"');
+  ok(htmlSrc.slice(iAboutSec).includes('id="abUpdCheck"'),
+    '更新块在「关于」弹窗里（版本号 + "按一下检查"是同一类事情）');
+  ok(/autoUpdate: \$\('#sAutoUpdate'\)\.checked/.test(appSrc),
+    '保存设置时把开关读进 autoUpdate（不是硬编码 true）');
+  ok(/const updateBase = \$\('#sUpdateBase'\)\.value\.trim\(\)/.test(appSrc)
+    && /\^https\?:\\\/\\\//.test(appSrc),
+    '保存设置时校验更新源格式（不合格就拦下来，不把垃圾写进配置）');
+  ok(/openSettings[\s\S]{0,1400}\$\('#sAutoUpdate'\)\.checked = s\.autoUpdate !== false/.test(appSrc),
+    '打开设置面板时把配置回填到开关（默认开：只有显式 false 才算关）');
+
+  ok(/\.conn\.upd\s+i\s*\{[^}]*var\(--accent\)/.test(css), '.conn.upd 的蓝点用 accent 色（有新版本一眼可见）');
+  ok(/\.upd-state\.hot\s*\{/.test(css) && /\.upd-box\s*\{/.test(css), '更新块的样式齐备（.upd-box / .upd-state.hot）');
+  ok(/\.conn\s+span\s*\{[^}]*text-overflow:\s*ellipsis/.test(css),
+    '.conn span 会被裁（窄窗口下这行文案不折行顶掉底部栏）');
+
+  // 状态行只有一份实现：以前内联在 refresh() 里，现在加了更新角标，很容易又抄一份
+  ok((appSrc.match(/conn\.querySelector\('span'\)/g) || []).length === 1,
+    '★ 状态行只有一处实现（paintStatusLine），不是刷新和更新各画一遍',
+    `出现 ${(appSrc.match(/conn\.querySelector\('span'\)/g) || []).length} 次`);
+  ok(/function paintStatusLine\(\)/.test(appSrc), '有 paintStatusLine()');
+  ok(/const alert = updAlert\(u\)[\s\S]{0,300}可更新/.test(appSrc),
+    '状态行在有新版本时会补上「可更新」（更新不自动下载，没有常驻提示就等于没这功能）');
+  ok(/renderUpdate\(\)/.test(appSrc) && /applyUpdateState\(/.test(appSrc),
+    '快照到了就重绘更新块（不是重开一次窗口）');
+  ok((appSrc.match(/API\.on\('ql:update-state'/g) || []).length === 1, '只订阅一次更新快照事件');
+  ok(/API\.on\('ql:update-available'/.test(appSrc) === false,
+    '不再单开一条"有新版本"事件（同一个状态走同一条通道，免得两处口径不一致）');
+
+  ok(/'ql:update-state'/.test(preloadSrc) && /'ql:update-probe'/.test(preloadSrc),
+    'preload 白名单放行 ql:update-state / ql:update-probe');
+  ok(/'ql:update-state', 'ql:update-available'/.test(preloadSrc),
+    'ql:update-available 仍在白名单里（早期版本可能用到，去掉会让它静默收不到）');
+  for (const m of ['updateState', 'updateCheck', 'updateDownload', 'updateApply']) {
+    ok(new RegExp(`${m}:\\s*\\(\\)`).test(preloadSrc), `preload 暴露 ${m}()`);
+  }
+
+  for (const ch of ['ql:update:state', 'ql:update:check', 'ql:update:download', 'ql:update:apply']) {
+    ok(new RegExp(`ipcMain\\.handle\\('${ch.replace(/:/g, ':')}'`).test(mainSrc), `主进程注册 ${ch}`);
+  }
+  ok(/ql:info'[\s\S]{0,900}update: svc \? svc\.snapshot\(\)/.test(mainSrc),
+    '★ ql:info 里带上更新快照（界面打开「关于」时不必再单独问一次）');
+  ok(/startGroup|START_CHECK_DELAY_MS/.test(mainSrc) && /setTimeout\(async \(\) => \{[\s\S]{0,400}svc\.check\(\{ silent: true \}\)/.test(mainSrc),
+    '★ 启动时的静默检查是延后跑的（不抢启动那一下）');
+  ok(/cfg\.settings\.autoUpdate !== false && !ANY_PROBE && svc\.canSelfUpdate\(\)\.ok/.test(mainSrc),
+    '★ 静默检查有三重门：设置里开着 + 不是探针 + 形态支持（探针必须离线可重复）');
+  ok((mainSrc.match(/svc\.download\(\)/g) || []).length === 1,
+    '★ 全项目只有 IPC 一处会调用下载 —— 下载永远等用户点，不会自己动',
+    `出现 ${(mainSrc.match(/svc\.download\(\)/g) || []).length} 次`);
+  ok((mainSrc.match(/svc\.applyAndRestart\(\)/g) || []).length === 1,
+    '★ 也只有一处会交接助手（那一步会退出程序，绝不能被别处顺手调到）');
+  // ★ 一条事件只许一个气泡。这一条是 --update-probe 的**截图**逼出来的：
+  //   applyUpdateState 与「检查更新」按钮的处理器都在报"发现新版本"，于是同屏两个气泡。
+  ok((appSrc.match(/toast\([^)]*发现新版本/g) || []).length === 1,
+    '★ 「发现新版本」的气泡只有一处实现（两处会同时弹两个）',
+    `实际 ${(appSrc.match(/toast\([^)]*发现新版本/g) || []).length} 处`);
+  ok(/const ANY_PROBE = /.test(mainSrc) && /UPDATE_PROBE/.test(mainSrc),
+    'ANY_PROBE 常量存在且把新探针算了进去');
+  // ★ 各探针共用的 ql:probe-shot 是**条件注册**的：漏把新探针加进那个条件，
+  //   渲染层就会报 "No handler registered"，探针看起来"跑完了"其实一张图都没出。
+  const shotRegAt = mainSrc.indexOf("ipcMain.handle('ql:probe-shot'");
+  const shotGate = shotRegAt > 0 ? mainSrc.slice(Math.max(0, shotRegAt - 900), shotRegAt) : '';
+  ok(/UPDATE_PROBE/.test(shotGate), '★ ql:probe-shot 的注册条件里加上了 --update-probe（漏了探针就白跑）');
+  ok(/UPDATE_PROBE = !app\.isPackaged/.test(mainSrc), '--update-probe 只在未打包时生效（打包态不会误开假更新源）');
+
+  /* ------------------------------------------------------------------
+   * 自更新 编排层（update-service.js）—— 依赖全注入，完整状态机离线跑
+   * ------------------------------------------------------------------
+   * 这一层是"检查 → 下载 → 暂存 → 交接助手"的串线人，也是最容易出接线错误的地方
+   * （比如把 st.patch 传成 st.plan、或者把"不支持的形态"也放进网络请求路径）。
+   * 所以这里不 mock 内部：给真的 updater.js、真的 zip、真的补丁包，只把传输层与
+   * 程序目录换成临时目录。
+   */
+  section('自更新 编排层 update-service');
+  const { createUpdateService } = require('../src/lib/update-service');
+  const probeFx = require('../src/lib/update-probe');
+
+  function mkSvc(o = {}) {
+    const sent = [];
+    const settings = Object.assign({ autoUpdate: true, updateBase: '' }, o.settings || {});
+    const svc = createUpdateService({
+      version: () => o.version || '1.1.1',
+      form: () => o.form || 'green',
+      programDir: () => o.programDir || PROG,
+      exePath: () => o.exePath || 'C:\\P\\QuickLaunch.exe',
+      getSettings: () => settings,
+      setSettings: p => Object.assign(settings, p),
+      send: (ch, u) => sent.push({ ch, u }),
+      quit: () => { sent.push({ ch: 'QUIT', u: null }); if (o.order) o.order.push('quit'); },
+      fs,
+      getBuffer: o.getBuffer,
+      spawn: o.spawn,
+      now: o.now,
+    });
+    return { svc, sent, settings };
+  }
+
+  /* ---- A. 形态：便携版/开发模式根本不该去碰网络 ---- */
+  let netHits = 0;
+  const sPortable = mkSvc({ form: 'portable', getBuffer: async () => { netHits++; return Buffer.from('{}'); } });
+  const bp = sPortable.svc.boot();
+  ok(bp.ok === false, '便携版 boot 明确返回"不支持"');
+  ok(sPortable.svc.snapshot().status === 'unsupported', '便携版状态 = unsupported');
+  ok(/单文件/.test(sPortable.svc.snapshot().unsupportedReason), '不支持的原因是人话',
+    sPortable.svc.snapshot().unsupportedReason);
+  const spSnap = sPortable.svc.snapshot();
+  ok(spSnap.canCheck === false && spSnap.canDownload === false && spSnap.canApply === false,
+    '不支持时三个按钮全不可用（不给用户一个点了没用的按钮）');
+  const cpPortable = await sPortable.svc.check();
+  ok(cpPortable.unsupported === true, '便携版调 check 直接返回不支持');
+  ok(netHits === 0, '★ 不支持的形态一次网络请求都没发（连尝试都没有）');
+
+  /* ---- B. 启动收尾：上次更新的结果 ---- */
+  const P3 = path.join(TMP, 'prog3');
+  const UPD3 = path.join(P3, '.update');
+  const putP3 = (rel, content) => {
+    const p = path.join(P3, ...rel.split('/'));
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, content);
+  };
+  const writeState = (o) => {
+    fs.mkdirSync(UPD3, { recursive: true });
+    fs.writeFileSync(path.join(UPD3, 'state.json'), JSON.stringify(o, null, 2), 'utf8');
+  };
+  const rmState = () => { try { fs.unlinkSync(path.join(UPD3, 'state.json')); } catch { /* noop */ } };
+  putP3('QuickLaunch.exe', 'EXE');
+
+  writeState({ state: 'applied', to: '1.1.1', from: '1.1.0', at: '2026-10-16T00:00:00', note: '' });
+  const sAppl = mkSvc({ programDir: P3 });
+  const bAppl = sAppl.svc.boot();
+  ok(bAppl.applied === '1.1.1', '上次更新成功 → 认出来');
+  const nAppl = sAppl.svc.snapshot().notice;
+  ok(!!nAppl && nAppl.kind === 'applied', '启动后挂上一条"已更新"提示');
+  ok(/已更新到 v1\.1\.1/.test(nAppl.title), '提示文案带上目标版本', nAppl.title);
+  ok(sAppl.settings.lastUpdateNotice === 'applied|1.1.1|2026-10-16T00:00:00',
+    '已报过的记号被写进设置（跨重启去重靠它）');
+
+  const sAppl2 = mkSvc({ programDir: P3, settings: sAppl.settings });
+  sAppl2.svc.boot();
+  ok(sAppl2.svc.snapshot().notice === null, '★ 同一件事重启后不再重复提示（不唠叨）');
+
+  writeState({ state: 'applied', to: '1.0.0', from: '0.9', at: 'T2' });
+  const sOld = mkSvc({ programDir: P3 });
+  sOld.svc.boot();
+  ok(sOld.svc.snapshot().notice === null,
+    '★ 结果记的是**别的版本** → 不吹牛（那说明替换其实没生效，当前跑的还是旧版）');
+
+  writeState({ state: 'failed', to: '1.2.0', from: '1.1.1', at: 'T3', note: '暂存文件校验失败：resources/app.asar' });
+  const sFail = mkSvc({ programDir: P3 });
+  sFail.svc.boot();
+  const nFail = sFail.svc.snapshot().notice;
+  ok(!!nFail && nFail.kind === 'failed',
+    '★ 上次更新失败**必须**报出来（不报的话用户以为更新成功了，其实还在用旧版）');
+  ok(/校验失败/.test(nFail.text), '失败提示带上原始原因', nFail.text);
+  ok(/apply-1\.2\.0\.log/.test(nFail.text), '失败提示指出去哪看日志', nFail.text);
+
+  /* ---- C. staged 恢复 / 清理 ---- */
+  const stageDir3 = path.join(UPD3, '1.2.0');
+  fs.mkdirSync(path.join(stageDir3, 'files'), { recursive: true });
+  fs.writeFileSync(path.join(stageDir3, 'apply.json'), JSON.stringify({ schema: 1, to: '1.2.0' }), 'utf8');
+  writeState({ state: 'staged', to: '1.2.0', from: '1.1.1', at: 'T4' });
+  const sResume = mkSvc({ programDir: P3 });
+  sResume.svc.boot();
+  const rs = sResume.svc.snapshot();
+  ok(rs.status === 'staged' && rs.canApply === true,
+    '★ 上次下好了但没重启 → 恢复成"重启即可更新"（不让用户白下 160 MB）');
+  ok(rs.latest === '1.2.0', '恢复出的目标版本正确', rs.latest);
+  ok(rs.dir === UPD3, '快照里的更新目录就是程序目录下的 .update', rs.dir);
+  ok(/上次已下好/.test(rs.reason), '恢复时的说明是人话', rs.reason);
+
+  // 残留：暂存目标是**更老**的版本（比如用户手动换了回旧版）→ 该清掉
+  const staleDir = path.join(UPD3, '1.0.0');
+  fs.mkdirSync(path.join(staleDir, 'files'), { recursive: true });
+  fs.writeFileSync(path.join(staleDir, 'apply.json'), '{"to":"1.0.0"}', 'utf8');
+  writeState({ state: 'staged', to: '1.0.0', from: '0.9', at: 'T5' });
+  const sStale = mkSvc({ programDir: P3 });
+  const br = sStale.svc.boot();
+  ok(br.discarded === '1.0.0', '暂存目标是**更老**的版本 → 判为残留');
+  ok(!fs.existsSync(staleDir), '★ 残留暂存区被清掉（不把上百 MB 白留在用户盘上）');
+  ok(fs.existsSync(stageDir3), '而"比本机新"的那份暂存区留着没动（那是可用的）');
+  ok(!fs.existsSync(path.join(UPD3, 'state.json')), '残留的 state.json 一起清掉（否则每次启动都判一遍）');
+
+  /* ---- D. 检查的各条失败路径 ---- */
+  const feedThrow = (msg, status) => async () => {
+    const e = new Error(msg);
+    if (status) e.status = status;
+    throw e;
+  };
+  const s404 = mkSvc({ programDir: P3, getBuffer: feedThrow('HTTP 404', 404) });
+  const r404 = await s404.svc.check({ silent: true });
+  const s404s = s404.svc.snapshot();
+  ok(r404.ok === true && r404.available === false, '★ 更新源还没有清单（404）不算错误');
+  ok(s404s.status === 'uptodate' && /还没有发布更新清单/.test(s404s.reason),
+    '404 落到"已是最新"并给出人话原因（不然更新器刚上线，用户一启动就看到红报错）');
+
+  const sNet = mkSvc({ programDir: P3, getBuffer: feedThrow('getaddrinfo ENOTFOUND github.com') });
+  const rNet = await sNet.svc.check();
+  ok(rNet.ok === false && /ENOTFOUND/.test(rNet.reason), '网络异常 → 失败并带上原始原因', rNet.reason);
+  ok(sNet.svc.snapshot().status === 'failed', '网络异常后状态 = failed（界面能看到"失败"而不是一直转）');
+
+  const sBadJson = mkSvc({ programDir: P3, getBuffer: async () => Buffer.from('<html>不是 JSON</html>') });
+  const rBadJson = await sBadJson.svc.check();
+  ok(rBadJson.ok === false && /合法 JSON/.test(rBadJson.reason), '清单不是 JSON → 明确报错', rBadJson.reason);
+
+  const hang = () => new Promise(() => { /* 永远不返回 */ });
+  const sHang = mkSvc({ programDir: P3, getBuffer: hang });
+  const rHang = await sHang.svc.check({ timeoutMs: 40 });
+  ok(rHang.ok === false && /检查超时/.test(rHang.reason), '★ 更新源不响应 → 超时兜住（不会永远停在"正在检查"）',
+    rHang.reason);
+  ok(sHang.svc.snapshot().status === 'failed' && sHang.svc.snapshot().busy === false,
+    '超时后不再显示"进行中"');
+
+  const sBadBase = mkSvc({ programDir: P3, getBuffer: hang, settings: { updateBase: 'ftp://mirror' } });
+  const rBadBase = await sBadBase.svc.check();
+  ok(rBadBase.ok === false && /http\(s\)/.test(rBadBase.reason), '★ 更新源填错直接明说，不静默回落成默认源',
+    rBadBase.reason);
+  const bb = sBadBase.svc.snapshot();
+  ok(bb.status === 'failed' && bb.base === '' && !!bb.baseError, '快照里两处都如实反映（base 空 + baseError 有值）');
+
+  /* ---- E. 全量路径端到端（真 zip，离线假更新源）---- */
+  const fx = probeFx.makeFixture(path.join(TMP, 'updfx'), '1.2.0');
+  const rawTransport = probeFx.transport(fx, { slow: false });
+  const hits = [];
+  const sFull = mkSvc({
+    programDir: fx.progDir,
+    getBuffer: (u, o) => { hits.push(u); return rawTransport(u, o); },
+  });
+  sFull.svc.boot();
+  const f1 = await sFull.svc.check({ silent: true });
+  ok(f1.ok === true && f1.available === true && f1.version === '1.2.0', '检查到新版本 1.2.0（夹具）', f1.reason);
+  const fs1 = sFull.svc.snapshot();
+  ok(fs1.status === 'available' && fs1.canDownload === true && fs1.canApply === false,
+    '状态 = 可下载；此时"重启并更新"还不该出现（还没下）');
+  ok(!!fs1.plan && fs1.plan.mode === 'full' && fs1.plan.size === fx.zipBuf.length,
+    '方案 = 完整包，大小取自清单');
+  ok(fs1.base === updater.DEFAULT_BASE, '快照里的更新源是默认 GitHub（设置里留空）');
+  ok(fs1.supported === true && fs1.autoUpdate === true, '快照如实反映"支持自更新 + 自动检查开着"');
+
+  const f2 = await sFull.svc.download();
+  ok(f2.ok === true && f2.staged === true && f2.mode === 'full', '★ 下载 + 暂存走通（全量）', f2.reason || '');
+  const fs2 = sFull.svc.snapshot();
+  ok(fs2.status === 'staged' && fs2.canApply === true && fs2.canDownload === false,
+    '状态 = 已就绪，「重启并更新」这时才出现');
+  ok(/重启/.test(fs2.reason), '就绪的说明写清了下一步是重启', fs2.reason);
+  ok(fs2.progress === null, '下载完成后进度被清空（不留在界面上）');
+
+  const ajFull = readJsonIf(path.join(fx.progDir, '.update', '1.2.0', 'apply.json'));
+  ok(!!ajFull && ajFull.mode === 'full' && ajFull.restart === true,
+    'apply.json 记了 full，且要求助手换完把自己拉起来');
+  ok(!!ajFull && ajFull.writes.length === 2,
+    `只摊了真正变了的 2 个文件（实际 ${ajFull ? ajFull.writes.length : '?'}）`);
+  ok(!!ajFull && ajFull.deletes.length === 0, '全量路径 deletes 恒为空（不认识的本机文件绝不删）');
+  ok(!!ajFull && JSON.stringify(ajFull.protectedTop) === JSON.stringify(datadir.PROTECTED_TOP),
+    '受保护名单来自 datadir（编排层没有另写一份）');
+  ok(fs.readFileSync(path.join(fx.progDir, 'data', 'config.json'), 'utf8').includes('用户数据'),
+    '★ 整条更新流程没碰用户的 data/');
+
+  ok(hits.some(u => /update\.json$/.test(u)), '去更新源取过 update.json');
+  ok(hits.some(u => /\.zip$/.test(u)), '也取过绿色版 zip');
+  ok(hits.length === 2, `整个"检查 + 下载"只发 2 次请求（实际 ${hits.length}）—— 不多余轮询`);
+
+  const dlPushes = sFull.sent.filter(e => e.u && e.u.status === 'downloading');
+  ok(dlPushes.length >= 1, '下载过程中推过状态（界面才有进度可显示）');
+  ok(dlPushes.some(e => e.u.progress && e.u.progress.got > 0), '推的快照里带真实进度字节数');
+  ok(dlPushes.some(e => e.u.progress && e.u.progress.pct !== null),
+    '进度带百分比（不然进度条无从画）');
+  ok(dlPushes.length <= 4, `★ 进度事件被节流（${dlPushes.length} 次推送；zip ${fx.zipBuf.length} 字节、切片 64 KiB）`);
+  ok(sFull.sent.some(e => e.u && e.u.status === 'available'), '状态迁移经过 available（不是一步跳到 staged）');
+  ok(!sFull.sent.some(e => e.ch === 'QUIT'), '★ 下载完**不会**自动退出重启 —— 动手必须等用户点');
+
+  /* ---- F. 交接助手 ---- */
+  // ★ 用一个共享的 order 记"谁先谁后"：必须先起助手、再退出自己 —— 顺序反了的话
+  //   主进程一走，还没 spawn 的助手就再也没人起了，更新会永远停在"正在退出"。
+  const order = [];
+  const spawnCalls = [];
+  const fakeSpawn = (exe, args, opts) => {
+    order.push('spawn');
+    spawnCalls.push({ exe, args, opts, unrefed: false });
+    const rec = spawnCalls[spawnCalls.length - 1];
+    return { pid: 4242, unref() { rec.unrefed = true; } };
+  };
+
+  // ① 什么都没暂存 → 必须拒绝，且**不能**空转一次退出
+  const sEmpty = mkSvc({ programDir: P3, spawn: fakeSpawn, order });
+  sEmpty.svc.boot();
+  const applyIdle = sEmpty.svc.applyAndRestart();
+  ok(applyIdle.ok === false && /还没有下载好/.test(applyIdle.reason),
+    '★ 没暂存就点"重启并更新" → 拒绝（绝不空转一次"退出→什么都没发生"）', applyIdle.reason);
+  ok(spawnCalls.length === 0, '被拒绝时不会去起助手进程');
+  ok(!sEmpty.sent.some(e => e.ch === 'QUIT'), '被拒绝时不会退出程序');
+
+  // ② 有暂存（上一步全量下载留下的 state.json 还在）→ 真的交接
+  const sApply = mkSvc({ programDir: fx.progDir, spawn: fakeSpawn, order });
+  ok(sApply.svc.boot().resumed === '1.2.0', '（前置）这份暂存区能被恢复成"已就绪"');
+  const applyOk = sApply.svc.applyAndRestart();
+  ok(applyOk.ok === true && applyOk.helperPid === 4242, '★ 有暂存时交接成功并拿到助手 pid', applyOk.reason || '');
+  ok(spawnCalls.length === 1, '正好起了一个助手进程（不多不少）');
+  const sc = spawnCalls[0];
+  ok(/powershell\.exe$/i.test(sc.exe),
+    '★ 用**绝对路径**起 powershell（打包后被 detached 拉起的进程未必有完整 PATH）', sc.exe);
+  ok(sc.args.includes('-EncodedCommand'),
+    '★ 走 -EncodedCommand（一个字节脚本都不落盘，不怕中文路径的代码页）');
+  ok(sc.args.includes('-NoProfile') && sc.args.includes('-NonInteractive'),
+    '离线、非交互地跑（不加载用户 profile，不会卡在提示上）');
+  ok(sc.opts && sc.opts.detached === true && sc.opts.stdio === 'ignore' && sc.opts.windowsHide === true,
+    'detached + 忽略 stdio + 隐藏窗口：主进程退出后助手还要能活着');
+  ok(sc.unrefed === true, '★ 调了 unref()（否则主进程会等它，退出就卡住）');
+
+  const encArg = sc.args[sc.args.indexOf('-EncodedCommand') + 1];
+  const helperScript = Buffer.from(encArg, 'base64').toString('utf16le');
+  ok(helperScript.length > 500 && /Assert-Safe/.test(helperScript),
+    '★ 助手脚本解出来是完整的那段（UTF-16LE base64 往返没问题）');
+  ok(helperScript.includes("'" + fx.progDir + "'"), '助手脚本里带上了真实程序目录');
+  ok(helperScript.includes('$restart = $true'), '★ 交接时强制要求"换完把我拉起来"（不是照抄 apply.json）');
+  ok(datadir.PROTECTED_TOP.every(p => helperScript.includes(`'${p}'`)),
+    '★ 受保护名单由主进程从 datadir 注入到助手脚本里（不是助手自己硬编码）');
+  ok(/Move-Item -LiteralPath \$p\.Tmp/.test(helperScript), '用原子 Move 换文件（不留半截 exe）');
+  // 退出是延后 400 ms 的（留给渲染层把"正在退出并替换文件…"画出来），所以要等一等
+  await new Promise(r => setTimeout(r, 600));
+  ok(sApply.sent.some(e => e.ch === 'QUIT'), '交接之后确实退出了自己');
+  ok(order.join(',') === 'spawn,quit',
+    `★ 顺序是「先起助手，再退出自己」（实际 ${order.join(' → ') || '什么都没发生'}）`);
+
+  /* ---- G. 差量路径（真补丁包）---- */
+  const dOldExe = Buffer.from('OLD-EXE-'.repeat(400));
+  const dNewExe = Buffer.from(dOldExe); dNewExe.write('NEW', 120, 'utf8');
+  const dPak = Buffer.from('NEW-PAK-CONTENT');
+  const made2 = vc.makeDirPatch(
+    [{ path: 'QuickLaunch.exe', data: dOldExe }],
+    [{ path: 'QuickLaunch.exe', data: dNewExe }, { path: 'locales/new.pak', data: dPak }]);
+  const P4 = path.join(TMP, 'prog4');
+  const putP4 = (rel, content) => {
+    const p = path.join(P4, ...rel.split('/'));
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, content);
+  };
+  putP4('QuickLaunch.exe', dOldExe);
+  const deltaMan = mkUpd({
+    version: '1.3.0',
+    full: { asset: 'QuickLaunch-Green-1.3.0.zip', size: made2.pack.length * 100, sha256: 'b'.repeat(64) },
+    files: [
+      { path: 'QuickLaunch.exe', size: dNewExe.length, sha256: vc.sha256hex(dNewExe) },
+      { path: 'locales/new.pak', size: dPak.length, sha256: vc.sha256hex(dPak) },
+    ],
+    patches: [{
+      from: '1.1.1', asset: 'QuickLaunch-Delta-1.1.1-to-1.3.0.bin',
+      size: made2.pack.length, sha256: vc.sha256hex(made2.pack), plan: made2.manifest,
+    }],
+  });
+  const dHits = [];
+  const sDelta = mkSvc({
+    programDir: P4, getBuffer: (u, o) => {
+      dHits.push(u);
+      const body = /update\.json$/.test(u)
+        ? Buffer.from(JSON.stringify(deltaMan), 'utf8')
+        : made2.pack;
+      if (o && o.destPath) { fs.writeFileSync(o.destPath, body); return { path: o.destPath, size: body.length, total: body.length }; }
+      return body;
+    },
+  });
+  sDelta.svc.boot();
+  const d1 = await sDelta.svc.check({ silent: true });
+  ok(d1.available === true && d1.plan.mode === 'delta',
+    '★ 有对应本机版本的差量且占比够小 → 选增量（用户要的"智能识别"）', d1.plan && d1.plan.reason);
+  const dSnap1 = sDelta.svc.snapshot();
+  ok(!!dSnap1.plan && dSnap1.plan.mode === 'delta', '快照把方案报成增量（界面才知道要下的是补丁包）');
+  ok(dSnap1.plan.size === made2.pack.length, '大小取自补丁包（差量只有几十 KB 时不能显示成 160 MB）');
+
+  const d2 = await sDelta.svc.download();
+  ok(d2.ok === true && d2.staged === true && d2.mode === 'delta', '★ 差量路径：下载 + 还原 + 暂存走通', d2.reason || '');
+  const ajDelta = readJsonIf(path.join(P4, '.update', '1.3.0', 'apply.json'));
+  ok(!!ajDelta && ajDelta.mode === 'delta', 'apply.json 记的是 delta 模式');
+  const stgExe2 = readIf(path.join(P4, '.update', '1.3.0', 'files', 'QuickLaunch.exe'));
+  ok(!!stgExe2 && stgExe2.equals(dNewExe), '★ 暂存的 exe 是补丁真还原出来的新版（逐字节等于目标）');
+  ok(dHits.some(u => /\.bin$/.test(u)) && !dHits.some(u => /\.zip$/.test(u)),
+    '★ 走增量时下的是补丁包，**没有**去下 160 MB 的全量 zip');
+  ok(dHits.length === 2, `差量路径同样只发 2 次请求（实际 ${dHits.length}）`);
+
+  // 夹在中间的：download 之前不能下
+  const sEarly = mkSvc({ programDir: P4, getBuffer: async () => Buffer.from('{}') });
+  const eDl = await sEarly.svc.download();
+  ok(eDl.ok === false && /先检查更新/.test(eDl.reason), '还没检查就点下载 → 明确拒绝并告诉他先检查', eDl.reason);
+
+  // 下载中途失败 → 落到 failed，且**不**留下半截
+  // ★ 先把上一次成功暂存留下的 .update 清掉，否则"没有 apply.json"这条断言是在
+  //   看别人的产物（第一次写这条时正是这么假绿的）。
+  const stage4 = path.join(P4, '.update');
+  fs.rmSync(stage4, { recursive: true, force: true });
+  const sDlFail = mkSvc({
+    programDir: P4,
+    getBuffer: async (u, o) => {
+      if (/update\.json$/.test(u)) return Buffer.from(JSON.stringify(deltaMan), 'utf8');
+      throw new Error('ECONNRESET');
+    },
+  });
+  sDlFail.svc.boot();
+  await sDlFail.svc.check({ silent: true });
+  const fDl = await sDlFail.svc.download();
+  ok(fDl.ok === false && /ECONNRESET/.test(fDl.reason), '补丁包下载失败 → 失败并带上原始原因', fDl.reason);
+  ok(sDlFail.svc.snapshot().status === 'failed', '下载失败后状态 = failed');
+  ok(!fs.existsSync(path.join(stage4, '1.3.0', 'apply.json')),
+    '★ 下载失败**不留** apply.json（否则下次启动会把它当成"已下好可重启"，换出一份半残）');
+  ok(!fs.existsSync(path.join(stage4, 'state.json')),
+    '★ 下载失败也不写 state.json（不然下次启动会"恢复"出一个根本不存在的暂存）');
+  ok(!fs.existsSync(path.join(stage4, '1.3.0', 'QuickLaunch-Delta-1.1.1-to-1.3.0.bin')),
+    '失败后没留下半截的补丁包');
+
+  // 补丁被篡改 → 也要拒绝
+  const sTamper = mkSvc({
+    programDir: P4,
+    getBuffer: async (u, o) => {
+      if (/update\.json$/.test(u)) return Buffer.from(JSON.stringify(deltaMan), 'utf8');
+      const bad = Buffer.from(made2.pack);
+      bad[20] ^= 0xff;
+      if (o && o.destPath) { fs.writeFileSync(o.destPath, bad); return { path: o.destPath, size: bad.length, total: bad.length }; }
+      return bad;
+    },
+  });
+  sTamper.svc.boot();
+  await sTamper.svc.check({ silent: true });
+  const fTam = await sTamper.svc.download();
+  ok(fTam.ok === false && /sha256/.test(fTam.reason), '★ 补丁包被篡改 → 下载阶段就拦住', fTam.reason);
+
+  /* ---- H. 快照自身的诚实性 ---- */
+  const sU = mkSvc({ programDir: P3, form: 'dev' });
+  sU.svc.boot();
+  ok(sU.svc.snapshot().supported === false, '开发模式不支持自更新');
+  ok(sU.svc.canSelfUpdate().ok === false, 'canSelfUpdate 与快照口径一致');
+  const sIdle = mkSvc({ programDir: P3, settings: { autoUpdate: false } });
+  sIdle.svc.boot();
+  ok(sIdle.svc.snapshot().autoUpdate === false, '设置里关掉自动检查 → 快照如实反映');
+  // 每个状态都得有人话，界面与诊断信息都直接用 statusText
+  const svcStates = Object.values(sU.svc.STATE);
+  ok(svcStates.every(s => typeof sU.svc.STATE_TXT[s] === 'string' && sU.svc.STATE_TXT[s].length > 0),
+    `${svcStates.length} 个状态每个都有人话文案（界面与诊断信息直接用 statusText）`);
 
   section('结果');
   console.log(`  \x1b[32m通过 ${pass}\x1b[0m${fail ? ` / \x1b[31m失败 ${fail}\x1b[0m` : ''}`);

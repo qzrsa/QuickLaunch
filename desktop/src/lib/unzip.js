@@ -17,6 +17,7 @@
  */
 
 const zlib = require('zlib');
+const { withoutAsar } = require('./asar-safe.js');
 
 /* ------------------------------------------------------------------ CRC32 */
 const CRC_TABLE = (() => {
@@ -145,23 +146,27 @@ function extractAll(buf, o = {}) {
 
 /**
  * 解包到目录（调用方负责目标目录可写）。
+ * ★ 整趟写入都在"关掉 asar 补丁"的状态下做：绿色版 zip 里的 `resources/app.asar` 会被
+ *   Electron 当存档拦下（写 Buffer 直接抛），而那是**必须解出来**的主载荷。见 asar-safe.js。
  * @returns {{path:string,size:number}[]} 实际写出的文件
  */
 function extractToDir(buf, dir, o = {}) {
   const fs = o.fs || require('fs');
   const nodePath = require('path');
   const written = [];
-  for (const e of listZip(buf)) {
-    const kind = assertSafeName(e.name, o.isProtected);
-    if (kind === 'dir') continue;
-    if (o.filter && !o.filter(e.name)) continue;
-    const data = extractEntry(buf, e);
-    const abs = nodePath.join(dir, ...e.name.split('/'));
-    fs.mkdirSync(nodePath.dirname(abs), { recursive: true });
-    fs.writeFileSync(abs, data);
-    written.push({ path: e.name, size: data.length });
-    if (o.onFile) o.onFile(e.name, written.length);
-  }
+  withoutAsar(() => {
+    for (const e of listZip(buf)) {
+      const kind = assertSafeName(e.name, o.isProtected);
+      if (kind === 'dir') continue;
+      if (o.filter && !o.filter(e.name)) continue;
+      const data = extractEntry(buf, e);
+      const abs = nodePath.join(dir, ...e.name.split('/'));
+      fs.mkdirSync(nodePath.dirname(abs), { recursive: true });
+      fs.writeFileSync(abs, data);
+      written.push({ path: e.name, size: data.length });
+      if (o.onFile) o.onFile(e.name, written.length);
+    }
+  });
   return written;
 }
 

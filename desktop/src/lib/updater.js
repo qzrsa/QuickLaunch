@@ -25,6 +25,7 @@ const nodeHttp = require('http');
 const vcdiff = require('./vcdiff.js');
 const core = require('./updater-core.js');
 const unzip = require('./unzip.js');
+const { withoutAsar } = require('./asar-safe.js');
 const { PROTECTED_TOP, isProtectedPath } = require('./datadir.js');
 
 /* ------------------------------------------------------------------ 常量 */
@@ -51,17 +52,21 @@ const DEFAULT_BASE = `https://github.com/${REPO.owner}/${REPO.repo}/releases/lat
 const sha256hex = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
 
 function sha256File(p, fs = nodeFs) {
-  const h = crypto.createHash('sha256');
-  const fd = fs.openSync(p, 'r');
-  try {
-    const BUF = 1 << 20;                       // 1 MiB：245 MB 的 exe 也不会占内存
-    const b = Buffer.allocUnsafe(BUF);
-    let n;
-    while ((n = fs.readSync(fd, b, 0, BUF, null)) > 0) h.update(b.subarray(0, n));
-  } finally {
-    fs.closeSync(fd);
-  }
-  return h.digest('hex');
+  // ★ 必须关掉 asar 补丁：`resources/app.asar` 是**要当普通文件读**的，而 Electron 会把它
+  //   当存档去解析（读不到 / size 谎报 0）。详见 asar-safe.js。
+  return withoutAsar(() => {
+    const h = crypto.createHash('sha256');
+    const fd = fs.openSync(p, 'r');
+    try {
+      const BUF = 1 << 20;                       // 1 MiB：245 MB 的 exe 也不会占内存
+      const b = Buffer.allocUnsafe(BUF);
+      let n;
+      while ((n = fs.readSync(fd, b, 0, BUF, null)) > 0) h.update(b.subarray(0, n));
+    } finally {
+      fs.closeSync(fd);
+    }
+    return h.digest('hex');
+  });
 }
 
 function humanBytes(n) {
@@ -196,7 +201,10 @@ function scanProgramDir(dir, opts = {}) {
       out.push({ path: childRel, size: st.size, sha256: sha256File(childAbs, fs) });
     }
   };
-  walk(dir, '');
+  // ★ 整趟扫描都得关掉 asar 补丁：程序目录里的 `resources/app.asar` 会同时踩两个坑 ——
+  //   sha256File 读不到它，`statSync` 还会把它的 size 谎报成 0（静默给错值，比抛错更坏）。
+  //   纯 Node 下没有这个补丁，所以这一条只有打包后真跑才看得见。
+  withoutAsar(() => walk(dir, ''));
   out.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
   return out;
 }
@@ -322,16 +330,19 @@ async function downloadAsset(o) {
 /* ------------------------------------------------------------------ 暂存 */
 
 /** 惰性本机文件表：applyDirPatch 通过 `.get(path)` 取基准文件。
- *  ★ 绝不预读全部 —— 76 个文件解压后约 500 MB；按需读且**不缓存**，峰值只有一个文件。 */
+ *  ★ 绝不预读全部 —— 76 个文件解压后约 500 MB；按需读且**不缓存**，峰值只有一个文件。
+ *  ★ 读的正是**程序目录里那些文件**，所以同样要关掉 asar 补丁：差量要拿本机 `resources/app.asar`
+ *    的字节当基准，而补丁会让 readFileSync 抛错、statSync 谎报"不存在"（见 asar-safe.js）。 */
 function lazyLocalStore(programDir, fs = nodeFs) {
   return {
     get(p) {
       const abs = nodePath.join(programDir, p);
-      const buf = fs.readFileSync(abs);
-      return buf;
+      return withoutAsar(() => fs.readFileSync(abs));
     },
     has(p) {
-      try { fs.statSync(nodePath.join(programDir, p)); return true; } catch { return false; }
+      return withoutAsar(() => {
+        try { fs.statSync(nodePath.join(programDir, p)); return true; } catch { return false; }
+      });
     },
   };
 }
@@ -422,8 +433,13 @@ function stage(o) {
     if (!Buffer.isBuffer(w.data)) return { ok: false, reason: `内部错误：${w.path} 没有字节内容` };
     const dest = nodePath.join(filesRoot, ...String(w.path).split('/'));
     try {
-      fs.mkdirSync(nodePath.dirname(dest), { recursive: true });
-      fs.writeFileSync(dest, w.data);
+      // ★ 摊进暂存区的是**程序里的相对路径**，`resources/app.asar` 正好是其中之一；
+      //   而 writeFileSync 写 Buffer 会被 asar 补丁拦下（写字符串反而侥幸通过 ——
+      //   因为它走 Node 的 C++ 快路径绕过了 JS 层的 openSync）。见 asar-safe.js。
+      withoutAsar(() => {
+        fs.mkdirSync(nodePath.dirname(dest), { recursive: true });
+        fs.writeFileSync(dest, w.data);
+      });
     } catch (e) {
       return { ok: false, reason: `暂存 ${w.path} 失败：${e.message}` };
     }

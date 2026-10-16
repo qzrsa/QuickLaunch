@@ -10,7 +10,7 @@
   "scripts": {
     "start": "electron .",
     "start:visible": "electron . --dev",
-    "check": "node --check src/main.js && node --check src/preload.js && node --check src/lib/menus.js && node --check src/lib/store.js && node --check src/lib/datadir.js && node --check src/lib/vcdiff.js && node --check src/lib/updater-core.js && node --check src/lib/updater.js && node --check src/lib/updater-apply.js && node --check src/lib/unzip.js && node --check renderer/app.js && node --check scripts/pack-green.mjs && node --check scripts/delta-bench.mjs && node --check scripts/make-update-manifest.mjs && node --check scripts/verify-update.mjs && node --check scripts/verify-apply.mjs && node --check scripts/lib/dist-walk.mjs && node --check scripts/lint-workflow.mjs && node scripts/lint-workflow.mjs",
+    "check": "node --check src/main.js && node --check src/preload.js && node --check src/lib/menus.js && node --check src/lib/store.js && node --check src/lib/datadir.js && node --check src/lib/vcdiff.js && node --check src/lib/updater-core.js && node --check src/lib/updater.js && node --check src/lib/updater-apply.js && node --check src/lib/unzip.js && node --check src/lib/asar-safe.js && node --check src/lib/update-service.js && node --check src/lib/update-probe.js && node --check renderer/app.js && node --check scripts/pack-green.mjs && node --check scripts/delta-bench.mjs && node --check scripts/make-update-manifest.mjs && node --check scripts/verify-update.mjs && node --check scripts/verify-apply.mjs && node --check scripts/lib/dist-walk.mjs && node --check scripts/lint-workflow.mjs && node scripts/lint-workflow.mjs",
     "test": "node test/smoke.js",
     "verify:apply": "node scripts/verify-apply.mjs",
     "bench:delta": "node scripts/delta-bench.mjs",

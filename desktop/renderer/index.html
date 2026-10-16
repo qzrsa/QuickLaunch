@@ -26,7 +26,8 @@
       <button class="ghost-btn" id="btnTheme">🌙<span>深色模式</span></button>
       <button class="ghost-btn" id="btnSettings">⚙️<span>设置</span></button>
       <!-- 状态行 = 「关于」的入口（版本 + 运行形态，点它看运行环境）。
-           之前写的是「已连接」，容易被读成"连上了服务器"——程序根本不联网。 -->
+           之前写的是「已连接」，容易被读成"连上了服务器"——程序不会常连任何服务器。
+           查到新版本时这行会追加「· 可更新」，那是更新检查的结果，同样不是在线状态。 -->
       <button type="button" class="conn" id="conn" title="查看版本与运行环境"><i></i><span>初始化…</span></button>
     </div>
   </aside>
@@ -268,6 +269,9 @@
           <label class="switch">
             <input type="checkbox" id="sHoverActs"><span class="track"></span>鼠标悬停显示卡片快捷按钮
           </label>
+          <label class="switch">
+            <input type="checkbox" id="sAutoUpdate"><span class="track"></span>启动时自动检查更新
+          </label>
         </div>
 
         <div class="field">
@@ -291,6 +295,14 @@
               <option value="none">不显示</option>
             </select>
           </div>
+        </div>
+
+        <div class="field">
+          <label>更新源 <span class="hint">留空 = 官方 GitHub；国内直连不稳时可填镜像或代理地址</span></label>
+          <div class="path-row">
+            <input type="text" id="sUpdateBase" placeholder="https://github.com/qzrsa/QuickLaunch/releases/latest/download">
+          </div>
+          <p class="hint-line" id="updateBaseMsg"></p>
         </div>
 
         <div class="tip">
@@ -337,6 +349,26 @@
 
     <div class="modal-body">
       <div id="abGrid"></div>
+
+      <!-- 软件更新。★ 放「关于」而不是设置面板：它是"看一眼 + 按一下"，
+           不是"配一配"——和版本号、运行形态同属一类信息。
+           「更新源 / 是否自动检查」那两项才是设置，在设置面板里。 -->
+      <section class="upd-box" id="abUpd">
+        <div class="upd-head">
+          <h3>软件更新</h3>
+          <span class="upd-state" id="abUpdState">—</span>
+        </div>
+        <div class="upd-bar" id="abUpdBar" hidden><i id="abUpdBarIn"></i></div>
+        <p class="upd-msg" id="abUpdMsg"></p>
+        <div class="upd-acts">
+          <button class="btn sm" id="abUpdCheck">检查更新</button>
+          <button class="btn sm primary" id="abUpdDown" hidden>下载</button>
+          <button class="btn sm primary" id="abUpdApply" hidden>重启并更新</button>
+          <div class="spacer"></div>
+          <button class="btn sm" id="abUpdLog" hidden>打开更新目录</button>
+        </div>
+      </section>
+
       <div class="warn-box" id="abWarn" hidden></div>
     </div>
 

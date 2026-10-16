@@ -57,6 +57,7 @@ const state = {
   probeMode: false,
   editMode: false,        // 多选编辑模式
   picked: new Set(),      // 编辑模式下勾选的启动项 id
+  update: null,           // 自更新快照（主进程推过来的，界面只读）
 };
 
 /* ------------------------------------------------------------ 基础 */
@@ -1270,6 +1271,9 @@ async function openSettings() {
   $('#sCloseAction').value = s.closeAction || 'tray';
   $('#sTrayQuick').value = s.trayQuick || 'top';
   $('#sHoverActs').checked = !!s.hoverActions;
+  $('#sAutoUpdate').checked = s.autoUpdate !== false;
+  $('#sUpdateBase').value = s.updateBase || '';
+  setUpdateBaseMsg('', '');
   renderStartGroupOptions(s.startGroup);
   state.capturedHotkey = s.hotkey || '';
   setHotkeyMsg('', '');
@@ -1301,9 +1305,9 @@ function formText(i) {
   return FORM_TXT[f] || ((i && i.packaged) ? '已打包' : '开发模式');
 }
 
-/** 侧栏底部状态行的文案。**它不是网络状态** —— 程序不联网，
- *  这里表达的是「哪个版本 + 什么运行形态」，点它打开「关于」。
- *  state.info 还没到手时只能说「初始化…」，不能谎报一个运行形态。 */
+/** 侧栏底部状态行的文案。**它不是网络状态** —— 程序唯一的网络行为是启动时查一次更新，
+ *  这里表达的是「哪个版本 + 什么运行形态」（查到新版本时再追加一个「· 可更新」），
+ *  点它打开「关于」。state.info 还没到手时只能说「初始化…」，不能谎报一个运行形态。 */
 function statusText(i) {
   if (PREVIEW) return '预览模式（非桌面版）';
   if (!i || !i.form) return '初始化…';
@@ -1348,15 +1352,24 @@ function envLines(i) {
     lines.push(`【${g.title}】`);
     g.rows.forEach(r => lines.push(`${r.k.padEnd(10)}${r.v}`));
   });
+  // 更新信息也进诊断信息：用户报"更新失败"时，这段字里有状态、更新源和日志目录
+  const u = state.update || (i && i.update);
+  if (u) {
+    lines.push('【更新】');
+    updateRows(u).forEach(r => lines.push(`${r.k.padEnd(10)}${r.v}`));
+  }
   const warn = dataWarnText(i);
   if (warn) lines.push(`注意      ${warn}`);
   return lines;
 }
 
-/** 打开「关于」：渲染分组表格 + 数据回落提示。 */
+/** 打开「关于」：渲染分组表格 + 更新块 + 数据回落提示。 */
 async function openAbout() {
   state.info = await API.info();
   const i = state.info;
+  // 主进程在响应里带了一份更新快照；只有在本地还没有（或还没收到事件）时才采用它，
+  // 免得用一份更旧的快照盖掉刚推过来的新状态。
+  if (i.update && !state.update) state.update = i.update;
   $('#abVer').textContent = `v${i.version}`;
   $('#abSub').textContent = `${formText(i)} · Electron ${i.electron}`;
   $('#abGrid').innerHTML = aboutGroups(i).map(g => `
@@ -1365,6 +1378,7 @@ async function openAbout() {
       ${g.rows.map(r => `<div class="about-row"><span class="k">${esc(r.k)}</span>`
         + `<span class="v">${esc(r.v)}</span></div>`).join('')}
     </section>`).join('');
+  renderUpdate();
   const warn = dataWarnText(i);
   const wb = $('#abWarn');
   wb.hidden = !warn;
@@ -1389,7 +1403,187 @@ function setHotkeyMsg(msg, cls) {
   el.className = 'hint-line' + (cls ? ' ' + cls : '');
 }
 
+/* ------------------------------------------------------------ 自更新
+ *
+ * 界面**不自己拼更新状态** —— 主进程推的快照（state.update）是唯一来源：
+ * 只有它知道清单、方案、进度、暂存区。这里只做两件事：把快照画出来、把用户的
+ * 点击转成一个 API 调用。
+ *
+ * ★ 下载与安装永远等用户点（检查才是自动的）。所以这里的按钮不是"装饰"：
+ *   「下载」和「重启并更新」是用户唯一的动手入口，必须一直看得见。
+ */
+
+const seenNotices = new Set();      // 已弹过的"上次更新结果"（按 notice.key 去重）
+const announcedVers = new Set();    // 已提示过的新版本号（同一个版本不唠叨第二次）
+
+/** 状态行是否该显示"可更新"。只有"发现了"和"已下好"两种算 ——
+ *  「已是最新」不值得占用侧栏唯一那行字。 */
+function updAlert(u) {
+  return !!u && u.supported && (u.status === 'available' || u.status === 'staged');
+}
+
+/** 侧栏底部状态行：版本 · 运行形态（· 可更新）。
+ *  ★ 为什么把更新提示也放这行：这是唯一常驻的位置。更新默认**不自动下载**，
+ *    不提示的话用户永远不会知道有新版本 —— 那就等于没有这个功能。 */
+function paintStatusLine() {
+  const conn = $('#conn');
+  if (!conn) return;
+  const i = state.info;
+  const u = state.update;
+  const warn = i ? dataWarnText(i) : '';
+  const alert = updAlert(u);
+  conn.className = 'conn ' + (warn ? 'warn' : alert ? 'upd' : 'ok');
+  conn.querySelector('span').textContent = statusText(i) + (alert ? ' · 可更新' : '');
+  const bits = [];
+  if (warn) bits.push(warn);
+  if (alert) {
+    bits.push(u.status === 'staged'
+      ? `已下好 v${u.latest}，重启即可更新`
+      : `发现新版本 v${u.latest}，在「关于」里下载`);
+  }
+  conn.title = bits.length ? `查看版本与运行环境（${bits.join('；')}）` : '查看版本与运行环境';
+}
+
+/** 「关于」里的更新块。独立成函数是因为主进程推新状态时要能**原地重绘**，
+ *  而不是重开一次窗口。 */
+function renderUpdate() {
+  const box = $('#abUpd');
+  if (!box) return;
+  const u = state.update;
+  const st = $('#abUpdState');
+  const msg = $('#abUpdMsg');
+  const bar = $('#abUpdBar');
+
+  if (!u) {
+    st.textContent = '—';
+    st.className = 'upd-state';
+    msg.innerHTML = '<span>还拿不到更新状态。</span>';
+  } else if (!u.supported) {
+    st.textContent = '不支持';
+    st.className = 'upd-state off';
+    msg.innerHTML = `<span>${esc(u.unsupportedReason || '当前运行形态不支持自动更新。')}</span>`;
+  } else {
+    st.textContent = u.statusText;
+    st.className = 'upd-state'
+      + (updAlert(u) ? ' hot' : (u.status === 'failed' ? ' bad' : ''));
+    const head = [];
+    if (u.latest) head.push(`目标 v${u.latest}`);
+    if (u.plan) head.push(`${u.plan.mode === 'delta' ? '增量包' : '完整包'} ${u.plan.sizeText}`);
+    if (u.checkedAtText) head.push(`上次检查 ${u.checkedAtText}`);
+    const rows = [];
+    if (head.length) rows.push(`<b>${esc(head.join(' · '))}</b>`);
+    // 下载中就把进度数字写在这里 —— 进度条只给出"多长"，说不出"多少 MB"
+    if (u.progress && u.progress.text) rows.push(`<span>${esc(u.progress.text)}</span>`);
+    if (u.reason) rows.push(`<span>${esc(u.reason)}</span>`);
+    if (u.baseError) rows.push(`<span class="bad">更新源配置有误：${esc(u.baseError)}</span>`);
+    msg.innerHTML = rows.join('') || '<span>还没有检查过更新。</span>';
+  }
+
+  const p = u && u.progress;
+  bar.hidden = !p;
+  if (p) $('#abUpdBarIn').style.width = (p.pct == null ? 100 : p.pct) + '%';
+
+  const check = $('#abUpdCheck');
+  check.disabled = !(u && u.canCheck);
+  check.textContent = u && u.status === 'checking' ? '检查中…' : '检查更新';
+  $('#abUpdDown').hidden = !(u && u.canDownload);
+  $('#abUpdApply').hidden = !(u && u.canApply);
+  // 有暂存区或有失败记录时才给"打开更新目录" —— 那里有 apply-<版本>.log
+  $('#abUpdLog').hidden = !(u && (u.status === 'staged' || u.status === 'failed'));
+}
+
+/** 收到一份新快照：存下来 → 重绘关于块 → 重绘状态行 → 该提示的提示一次 */
+function applyUpdateState(u) {
+  state.update = u || null;
+  renderUpdate();
+  paintStatusLine();
+  if (!u) return;
+
+  // ① 上次更新的结果（更新成功 / 上次失败）—— 主进程已保证"只报一次"，这里再去一次重
+  if (u.notice && u.notice.key && !seenNotices.has(u.notice.key)) {
+    seenNotices.add(u.notice.key);
+    toast(u.notice.kind === 'failed' ? 'bad' : 'ok', u.notice.title, u.notice.text || '');
+  }
+  // ② 发现新版本 → 提示一次（同一个版本只说一次；用户点「检查更新」时也走这里）
+  if (u.status === 'available' && u.latest && !announcedVers.has(u.latest)) {
+    announcedVers.add(u.latest);
+    toast('info', `发现新版本 v${u.latest}`, '在「关于」里可以下载；下载与安装都由你决定。');
+  }
+}
+
+/** 主动向主进程要一次最新快照（事件可能在我们注册之前就推过了） */
+async function refreshUpdateState() {
+  try { applyUpdateState(await API.updateState()); } catch { /* 拿不到就保持现状 */ }
+}
+
+/** 供「关于」和「复制诊断信息」共用的更新信息行。★ 值一律是字符串：
+ *  这里出现一个 undefined，整段诊断信息就废了（--info-probe 专门盯这个）。 */
+function updateRows(u) {
+  if (!u) return [{ k: '更新', v: '(未就绪)' }];
+  return [
+    { k: '自更新', v: u.supported ? '支持' : `不支持：${u.unsupportedReason || '未知原因'}` },
+    { k: '更新状态', v: u.statusText + (u.latest ? `（目标 v${u.latest}）` : '') },
+    { k: '更新源', v: u.baseError ? `配置有误：${u.baseError}` : (u.base || '(默认)') },
+    { k: '自动检查', v: u.autoUpdate ? '已开启（仅启动时一次）' : '已关闭' },
+    { k: '上次检查', v: u.checkedAtText || '尚未检查' },
+    { k: '更新目录', v: u.dir || '(未知)' },
+  ];
+}
+
+function setUpdateBaseMsg(msg, cls) {
+  const el = $('#updateBaseMsg');
+  if (!el) return;
+  el.textContent = msg;
+  el.className = 'hint-line' + (cls ? ' ' + cls : '');
+}
+
+/** 绑定「关于」里的更新按钮。**只在这里绑一次**（renderUpdate 只改内容不改结构）。 */
+function bindUpdate() {
+  $('#abUpdCheck').addEventListener('click', async () => {
+    const r = await API.updateCheck();
+    if (r && r.unsupported) return;              // 不支持时状态块里已经写清原因，不再弹
+    if (!r || !r.ok) return toast('bad', '检查更新失败', (r && r.reason) || '');
+    // ★ 「发现新版本」**只由 applyUpdateState 报一次**：它按版本号去重，而且自动检查、
+    //   手动检查、主进程主动推送三条路都汇到它那里。这里再弹一条就会同屏出现两个气泡
+    //   （--update-probe 的截图里真的同时拍到过两个"发现新版本 v1.2.0"）。
+    //   只有「已是最新」要在这里说 —— 它是对"你点了这个按钮"的回执，没有别的来源。
+    if (!r.available) toast('ok', '已是最新版本', r.reason || '');
+  });
+
+  $('#abUpdDown').addEventListener('click', async () => {
+    toast('info', '开始下载', '下完还需要你点一次「重启并更新」才会换文件。');
+    const r = await API.updateDownload();
+    if (!r || !r.ok) toast('bad', '下载没成功', (r && r.reason) || '');
+  });
+
+  $('#abUpdApply').addEventListener('click', async () => {
+    const yes = await confirmDialog({
+      icon: '⬆',
+      title: '重启并更新？',
+      text: '程序会立刻退出，由一个后台助手替换文件，然后自动重新打开。'
+        + '替换过程不会碰你的配置（data 目录）。',
+      okText: '重启并更新',
+      danger: false,
+    });
+    if (!yes) return;
+    const r = await API.updateApply();
+    if (!r || !r.ok) toast('bad', '没能开始更新', (r && r.reason) || '');
+  });
+
+  $('#abUpdLog').addEventListener('click', () => {
+    const dir = state.update && state.update.dir;
+    if (!dir) return;
+    API.openFolder(dir).then(r => { if (!r || !r.ok) toast('bad', '打不开更新目录'); });
+  });
+}
+
 async function saveSettings() {
+  const updateBase = $('#sUpdateBase').value.trim();
+  if (updateBase && !/^https?:\/\//i.test(updateBase)) {
+    setUpdateBaseMsg('更新源要以 http:// 或 https:// 开头；留空表示用官方 GitHub。', 'warn');
+    return toast('bad', '更新源不合法', '改好再保存。');
+  }
+  setUpdateBaseMsg('', '');
   const patch = {
     hotkey: state.capturedHotkey || '',
     hotkeyEnabled: $('#sHotkeyOn').checked,
@@ -1397,6 +1591,8 @@ async function saveSettings() {
     closeAction: $('#sCloseAction').value,
     trayQuick: $('#sTrayQuick').value,
     hoverActions: $('#sHoverActs').checked,
+    autoUpdate: $('#sAutoUpdate').checked,
+    updateBase,
     startGroup: $('#sStartGroup').value || 'last',
     theme: document.documentElement.dataset.theme,
   };
@@ -1440,14 +1636,10 @@ async function refresh(opts) {
   }
   renderNav();
   render();
-  const conn = $('#conn');
-  // 绿点 = 一切正常；黄点 = 数据没落在程序目录（回落 %APPDATA%）。
-  // 文案是「版本 · 运行形态」，点它打开「关于」。★ 这里曾经写「已连接」，
-  // 会被读成"连上了服务器"——程序根本不联网，已改掉。
-  const warn = state.info ? dataWarnText(state.info) : '';
-  conn.className = 'conn ' + (warn ? 'warn' : 'ok');
-  conn.querySelector('span').textContent = statusText(state.info);
-  conn.title = warn ? `查看版本与运行环境（${warn}）` : '查看版本与运行环境';
+  // 绿点 = 一切正常；红点 = 数据没落在程序目录（回落 %APPDATA%）；
+  // 蓝点 = 有新版本可更新。文案是「版本 · 运行形态（· 可更新）」，点它打开「关于」。
+  // ★ 这里曾经写「已连接」，会被读成"连上了服务器"——程序除了查更新不联网，已改掉。
+  paintStatusLine();
 }
 
 async function persistSettings() {
@@ -1910,6 +2102,10 @@ function bind() {
     $('#sAutostart').checked = !!p.autostart;
   });
 
+  /* 自更新：主进程是唯一的状态源，这里只接快照 */
+  API.on('ql:update-state', u => applyUpdateState(u));
+  bindUpdate();
+
   /* 有人又启动了一次程序，本次启动被交接给了**这个**已经在跑的实例。
      必须说清楚，否则用户双击新版 exe 时看到的是旧版窗口，会以为新功能没做
      （单实例锁按 userData 上锁，同一目录里的不同版本共用一把锁 —— 真踩过）。
@@ -1919,6 +2115,73 @@ function bind() {
     toast('info', '已有一个实例在运行',
       `${statusText(info)}　·　刚才那次启动已交给它。`
       + '若你启动的是另一个版本，请先在托盘图标上右键退出，再打开新的。');
+  });
+
+  // 自更新界面自检（仅 --update-probe 时由主进程触发）：
+  // 用**完全离线**的假更新源（src/lib/update-probe.js）把
+  // 「检查 → 发现新版本 → 下载 → 已就绪」整条界面链路跑一遍并逐状态截图。
+  // ★ 走的是真实按钮（真的 click），不是直接调 API —— 验的就是"用户点得到、点了有用"。
+  API.on('ql:update-probe', async () => {
+    state.probeMode = true;
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
+    const snap = async (f, tag) => {
+      const r = await API.probeShot(f);
+      console.log(`[update-probe] 截图 ${tag} =`, r && r.ok ? 'ok' : ('失败 ' + (r && r.msg)));
+    };
+    const dump = tag => {
+      const u = state.update || {};
+      const btn = id => {
+        const el = $(id);
+        return !el ? '(无)' : (el.hidden ? '隐藏' : (el.disabled ? '灰' : '可点'));
+      };
+      console.log(`[update-probe] --- ${tag} ---`);
+      console.log('[update-probe]   状态 =', u.status, '|', u.statusText,
+        '| 目标 =', u.latest || '-', '| 方案 =', u.plan ? `${u.plan.mode} ${u.plan.sizeText}` : '-');
+      console.log('[update-probe]   块内文案 =', JSON.stringify((($('#abUpdMsg') || {}).textContent) || ''));
+      console.log('[update-probe]   按钮：检查 =', btn('#abUpdCheck'), '| 下载 =', btn('#abUpdDown'),
+        '| 重启并更新 =', btn('#abUpdApply'));
+      const connTxt = $('#conn').querySelector('span').textContent;
+      console.log('[update-probe]   状态行 =', JSON.stringify(connTxt),
+        '| 带可更新标记 =', /可更新/.test(connTxt),
+        '| 点色 =', $('#conn').className);
+      return u;
+    };
+
+    await openAbout();
+    await sleep(300);
+    console.log('[update-probe] 关于窗口可见 =', !$('#aboutOverlay').hidden,
+      '| 更新块可见 =', !!$('#abUpd') && !$('#abUpd').hidden);
+    dump('① 检查之前');
+
+    // ② 点「检查更新」
+    $('#abUpdCheck').click();
+    await sleep(1200);
+    const u2 = dump('② 检查之后');
+    console.log('[update-probe] 检查后判定 =',
+      '发现新版本 =', u2.status === 'available',
+      '| 下载按钮出现 =', !$('#abUpdDown').hidden,
+      '| 提示 =', lastToast());
+    await snap('shot-upd-available.png', '发现新版本');
+
+    // ③ 点「下载」→ 下载 + 校验 + 摊进暂存区
+    $('#abUpdDown').click();
+    await sleep(2500);
+    const u3 = dump('③ 下载之后');
+    console.log('[update-probe] 下载后判定 =',
+      '已就绪 =', u3.status === 'staged',
+      '| 重启按钮出现 =', !$('#abUpdApply').hidden,
+      '| 下载按钮收起 =', $('#abUpdDown').hidden,
+      '| 提示 =', lastToast());
+    await snap('shot-upd-staged.png', '已就绪');
+
+    // ④ 诊断信息里必须带上更新一段，且没有 undefined
+    const lines = envLines(state.info);
+    const updAt = lines.indexOf('【更新】');
+    const seg = updAt < 0 ? [] : lines.slice(updAt, updAt + updateRows(state.update).length + 1);
+    console.log('[update-probe] 诊断信息含更新段 =', updAt > 0, '| 行数 =', seg.length);
+    seg.forEach(l => console.log('[update-probe]   ' + l));
+    console.log('[update-probe] 更新段无 undefined =', seg.every(l => !/undefined|null|NaN/.test(l)));
+    console.log('[update-probe] done');
   });
 
   // 单实例交接自检（仅 --second-probe 时由主进程触发）：截图看提示有没有出来
@@ -1993,6 +2256,18 @@ function createMockBridge() {
     toast('info', '预览模式', '原生右键菜单只在桌面版可用，这里仅演示界面。');
   };
 
+  /** 预览模式下的更新快照：桌面形态不支持的形态就是"不支持"，
+   *  所以这里给的就是用户真会在浏览器预览里看到的那种状态（而不是编一个假的"有新版本"）。 */
+  const mockUpdate = () => ({
+    supported: false, unsupportedReason: '预览模式（非桌面版）不做自更新',
+    form: 'dev', myVersion: '1.0.0', autoUpdate: true,
+    base: '（预览模式）', baseError: '', status: 'unsupported',
+    statusText: '当前形态不支持自动更新', latest: '', reason: '',
+    plan: null, progress: null, checkedAt: 0, checkedAtText: '',
+    busy: false, canCheck: false, canDownload: false, canApply: false,
+    notice: null, dir: '（预览模式）',
+  });
+
   return {
     __mock: true,
     getConfig: async () => { cfg.groups.forEach(g => g.items.forEach(i => { i._exists = true; })); return clone(cfg); },
@@ -2038,7 +2313,12 @@ function createMockBridge() {
       configFile: 'localStorage: ql-mock-config', configDir: '（预览模式）',
       dataDir: '（预览模式）', dataInProgramDir: false, dataNote: '预览模式',
       autostart: false, hotkeyFail: '', hotkeys: false,
+      update: mockUpdate(),
     }),
+    updateState: async () => mockUpdate(),
+    updateCheck: async () => ({ ok: false, unsupported: true, reason: '预览模式不做自更新' }),
+    updateDownload: async () => ({ ok: false, reason: '预览模式不做自更新' }),
+    updateApply: async () => ({ ok: false, reason: '预览模式不做自更新' }),
     openConfigDir: async () => ({ ok: true }),
     openExternal: async () => ({ ok: true }),
     quit: async () => ({ ok: true }),
@@ -2061,6 +2341,10 @@ function createMockBridge() {
 
   (async () => {
     try { state.info = await API.info(); } catch { /* 忽略 */ }
+    // 更新状态要主动要一次：主进程可能在渲染层注册监听之前就推过了
+    // （启动时的收尾与静默检查都比首次渲染早）。
+    if (state.info && state.info.update) applyUpdateState(state.info.update);
+    else await refreshUpdateState();
     await refresh({ initView: true });
     console.log(`[quicklaunch] 渲染层就绪 · ${PREVIEW ? 'preview' : 'desktop'} · `
       + `${state.config.groups.length} 组 / ${allItems().length} 项 · 起始视图 ${state.active}`);

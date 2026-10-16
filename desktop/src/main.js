@@ -13,6 +13,7 @@ const actions = require('./lib/actions');
 const scanner = require('./lib/scan');
 const menus = require('./lib/menus');
 const importer = require('./lib/importer');
+const { createUpdateService } = require('./lib/update-service');
 
 const ROOT = path.join(__dirname, '..');
 // ★ 打包后 build/ 不在 asar 里 —— 图标必须由 package.json 的 extraResources
@@ -58,6 +59,19 @@ const SELECT_PROBE = process.argv.includes('--select-probe');
 // 开发期自检：--second-probe 让本实例等一个「第二个实例」，验证单实例交接时的提示
 // （配合再启动一次 `electron .` 即可；本实例保持 opacity:0，不打扰用户）
 const SECOND_PROBE = process.argv.includes('--second-probe');
+// 开发期自检：--update-probe 用**完全离线**的假更新源把「检查 → 发现新版本 → 下载 → 已就绪」
+// 整条界面链路跑一遍并逐状态截图（真去 GitHub 拉一次的话，没网/没发清单都会让探针失去意义）
+const UPDATE_PROBE = !app.isPackaged && process.argv.includes('--update-probe');
+
+// ★ 任何自检都不许联网：探针必须可重复、可离线。一次真实请求就会让它变成"看运气"。
+//   所以启动时的静默检查只在**没有**任何探针时才会跑。
+// ★★ 加新探针时把这个常量一起改 —— 漏了的话新探针会带上一次不确定的网络请求。
+const ANY_PROBE = !!SHOT || MENU_PROBE || IMPORT_PROBE || DRAG_PROBE || GROUP_PROBE
+  || INFO_PROBE || RAIL_PROBE || SELECT_PROBE || SECOND_PROBE || UPDATE_PROBE;
+
+/** 启动后多久才去静默检查更新。★ 刻意晚一点：启动那一刻最该做的事是把窗口画出来，
+ *  而不是抢带宽；而且更新是"知道了就行"的信息，晚 8 秒没有任何损失。 */
+const START_CHECK_DELAY_MS = 8000;
 
 function probeMenu(kind, payload, tpl) {
   const acts = tpl.filter(i => typeof i.click === 'function').map(i => i.click());
@@ -269,7 +283,7 @@ function createWindow() {
   // 由渲染层在准确时刻主动触发（主进程自己掐 setTimeout 会被节流/漂移）。
   // ★ 加新探针时**必须把它的名字加进这个条件**，否则 ql:probe-shot 根本没注册，
   //   渲染层会报 "No handler registered for 'ql:probe-shot'"，探针等于白跑。
-  if (DRAG_PROBE || GROUP_PROBE || INFO_PROBE || RAIL_PROBE || SELECT_PROBE || SECOND_PROBE) {
+  if (DRAG_PROBE || GROUP_PROBE || INFO_PROBE || RAIL_PROBE || SELECT_PROBE || SECOND_PROBE || UPDATE_PROBE) {
     // 打包态下 ROOT 在 asar 内部，写不进去 —— 逐级找一个能写的目录，
     // 免得探针"静默失败"让人以为没问题。
     const shotBase = (() => {
@@ -373,6 +387,20 @@ function createWindow() {
       setTimeout(() => quitApp(), 30000);   // 兜底：探针异常时别把窗口挂死
     });
   }
+  // --update-probe：用离线夹具把「检查 → 发现新版本 → 下载 → 已就绪」跑一遍并逐状态截图。
+  // ★ 刻意**不**调 applyAndRestart：那会真的交接助手并退出本进程。换文件的正确性
+  //   由 scripts/verify-apply.mjs 去真跑一遍，界面探针只管界面。
+  if (UPDATE_PROBE) {
+    win.webContents.once('did-finish-load', () => {
+      setTimeout(async () => {
+        try { win.setOpacity(0); } catch { /* noop */ }
+        try { win.setFocusable(false); } catch { /* noop */ }
+        win.webContents.send('ql:update-probe');
+      }, 1200);
+      setTimeout(() => quitApp(), 60000);
+    });
+  }
+
   win.webContents.on('render-process-gone', (_e, details) => {
     console.error('[window] 渲染进程退出:', details && details.reason);
   });
@@ -446,6 +474,52 @@ function toggleWindow() {
   if (!win) return createWindow();
   if (win.isVisible() && win.isFocused() && !win.isMinimized()) win.hide();
   else showWindow();
+}
+
+/* ---------------------------------------------------- 自更新 */
+
+/**
+ * 自更新的编排实例。**依赖全部是函数**（而不是值），这样：
+ *   ① 设置改了、窗口重建了，它读到的永远是最新的；
+ *   ② `--update-probe` 能整体换成一套离线夹具，其余代码一行不用改。
+ * ★ 形态判断（form）走 appForm()：便携版会被 canSelfUpdate 直接判"不支持"。
+ */
+let svc = null;
+let probeFx = null;
+
+function probeFixture() {
+  if (!probeFx) {
+    const probe = require('./lib/update-probe');
+    probeFx = probe.makeFixture(path.join(ROOT, '.tmpdata', 'update-probe'), probe.bumpMinor(app.getVersion()));
+    console.log('[update-probe] 离线夹具已就绪 · 目标版本 v' + probeFx.manifest.version
+      + ' · 程序目录 ' + probeFx.progDir);
+  }
+  return probeFx;
+}
+
+function createUpdateSvc() {
+  const probe = UPDATE_PROBE ? require('./lib/update-probe') : null;
+  svc = createUpdateService({
+    version: () => app.getVersion(),
+    // 探针里假装自己是绿色版，否则 canSelfUpdate('dev') 会直接判"不支持"，界面就没得看了
+    form: () => (UPDATE_PROBE ? 'green' : appForm()),
+    programDir: () => (UPDATE_PROBE ? probeFixture().progDir : programDir()),
+    exePath: () => (UPDATE_PROBE ? path.join(probeFixture().progDir, 'QuickLaunch.exe') : launcherExePath()),
+    getSettings: () => store.load().settings,
+    setSettings: patch => {
+      try {
+        const c = store.load();
+        Object.assign(c.settings, patch);
+        store.save(c);
+      } catch { /* 记不住不影响更新本身 */ }
+    },
+    send: (channel, payload) => {
+      if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
+    },
+    quit: () => quitApp(),
+    getBuffer: UPDATE_PROBE ? probe.transport(probeFixture(), { slow: true }) : undefined,
+  });
+  return svc;
 }
 
 /* ---------------------------------------------------- 托盘 */
@@ -682,6 +756,11 @@ function registerIpc() {
       const r = applyAutostart(cfg.settings.autostart);
       if (!r.ok) out.ok = false, out.msg = r.msg;
     }
+    // 更新源/自动检查改了 → 立刻推一份新快照，免得界面上还留着按旧设置算出来的状态
+    if (svc && ('updateBase' in patch || 'autoUpdate' in patch)) {
+      out.update = svc.snapshot();
+      try { win?.webContents.send('ql:update-state', out.update); } catch { /* 窗口没了就算了 */ }
+    }
     buildTray();
     return out;
   });
@@ -693,6 +772,18 @@ function registerIpc() {
     else if (cmd === 'close') win.close();
     else if (cmd === 'toggle') toggleWindow();
     return { ok: true, maximized: win.isMaximized() };
+  });
+
+  /* 自更新。★ 四个通道的分工刻意写清：state 只读，check 只查，download 只下不下手，
+     apply 是唯一"会动手"的（它会交接助手并让本进程退出）。 */
+  ipcMain.handle('ql:update:state', () => (svc ? svc.snapshot() : null));
+  ipcMain.handle('ql:update:check', () => (svc ? svc.check({ silent: false }) : { ok: false, reason: '更新服务未就绪' }));
+  ipcMain.handle('ql:update:download', () => (svc ? svc.download() : { ok: false, reason: '更新服务未就绪' }));
+  ipcMain.handle('ql:update:apply', () => {
+    if (!svc) return { ok: false, reason: '更新服务未就绪' };
+    const r = svc.applyAndRestart();
+    console.log('[update] 交接结果 =', JSON.stringify(r));
+    return r;
   });
 
   ipcMain.handle('ql:info', () => ({
@@ -712,6 +803,9 @@ function registerIpc() {
     autostart: autostartState(),
     hotkeyFail,
     hotkeys: globalShortcut.isRegistered(store.load().settings.hotkey || ''),
+    // 自更新状态随「关于」一起给 —— 但**不联网**：给的是缓存快照，
+    // 真正的网络请求只发生在启动后那一次静默检查、或用户点「检查更新」时。
+    update: svc ? svc.snapshot() : null,
   }));
 
   ipcMain.handle('ql:open-config-dir', () => shell.openPath(store.configDir()));
@@ -781,6 +875,7 @@ if (!app.requestSingleInstanceLock()) {
 
   app.whenReady().then(() => {
     store.init();
+    createUpdateSvc();
     registerIpc();
     createWindow();
     createTray();
@@ -792,6 +887,29 @@ if (!app.requestSingleInstanceLock()) {
     }
     // 便携版首次运行：如配置里标记了自启，确保注册项指向当前 exe
     if (cfg.settings.autostart) applyAutostart(true);
+
+    // 上次更新的收尾（更新成功/失败/已下好没重启）—— 纯本地读盘，不发请求
+    svc.boot();
+
+    /* 启动时静默检查一次更新：**默认开**，但只在启动时查这一次 —— 不轮询、不常驻。
+       ★ 三处必须同时成立才会跑：设置里开着、不是探针、形态支持自更新。
+         探针必须离线可重复，所以 ANY_PROBE 时一律跳过。
+       ★ 查到也不自动下载：动手永远等用户点（见 update-service 顶部的约束）。 */
+    if (cfg.settings.autoUpdate !== false && !ANY_PROBE && svc.canSelfUpdate().ok) {
+      setTimeout(async () => {
+        try {
+          const r = await svc.check({ silent: true });
+          if (r && r.available) {
+            console.log('[update] 启动检查发现新版本 v' + r.version + '（计划：' + (r.plan && r.plan.mode) + '）');
+            try { win?.webContents.send('ql:update-available', { version: r.version, plan: r.plan }); } catch { /* noop */ }
+          } else {
+            console.log('[update] 启动检查：' + ((r && r.reason) || ''));
+          }
+        } catch (e) {
+          console.log('[update] 启动检查异常：' + e.message);
+        }
+      }, START_CHECK_DELAY_MS);
+    }
 
     app.on('activate', () => showWindow());
   });

@@ -8,7 +8,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 let webUtils = null;
 try { webUtils = require('electron').webUtils; } catch { /* 老版本或沙箱禁用时降级 */ }
 
-const EVENTS = ['ql:win-state', 'ql:focus-search', 'ql:config-changed', 'ql:settings-changed', 'ql:menu-probe', 'ql:import-probe', 'ql:drag-probe', 'ql:group-probe', 'ql:info-probe', 'ql:rail-probe', 'ql:select-probe', 'ql:second-instance', 'ql:second-probe'];
+const EVENTS = ['ql:win-state', 'ql:focus-search', 'ql:config-changed', 'ql:settings-changed', 'ql:menu-probe', 'ql:import-probe', 'ql:drag-probe', 'ql:group-probe', 'ql:info-probe', 'ql:rail-probe', 'ql:select-probe', 'ql:second-instance', 'ql:second-probe', 'ql:update-state', 'ql:update-available', 'ql:update-probe'];
 
 contextBridge.exposeInMainWorld('ql', {
   /* 配置 */
@@ -51,6 +51,12 @@ contextBridge.exposeInMainWorld('ql', {
   openConfigDir: () => ipcRenderer.invoke('ql:open-config-dir'),
   openExternal: url => ipcRenderer.invoke('ql:open-external', url),
   quit: () => ipcRenderer.invoke('ql:quit'),
+
+  /* 自更新（state 只读；check/download 不动本机；只有 apply 会动手并退出） */
+  updateState: () => ipcRenderer.invoke('ql:update:state'),
+  updateCheck: () => ipcRenderer.invoke('ql:update:check'),
+  updateDownload: () => ipcRenderer.invoke('ql:update:download'),
+  updateApply: () => ipcRenderer.invoke('ql:update:apply'),
 
   /* 事件订阅（白名单） */
   on: (channel, cb) => {

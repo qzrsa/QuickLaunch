@@ -240,6 +240,11 @@ input, select, textarea { outline: none; }
 .conn.ok i { background: var(--ok); box-shadow: 0 0 0 3px var(--ok-soft); }
 /* 红点：数据没落在程序目录（回落 %APPDATA%）—— 这一眼就能看出来 */
 .conn.warn i { background: var(--danger); box-shadow: 0 0 0 3px var(--danger-soft); }
+/* 蓝点：有新版本可更新（默认不自动下载，所以得有个常驻提示）*/
+.conn.upd i { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+/* ★ 窄窗口下侧栏只剩 76px（见文末 1080px 断点），这行长文案会折行把底部栏撑开。
+   裁掉比折行好：折行会顶掉「新建分组」，裁掉只是看不见后半截。 */
+.conn span { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 
 /* ---------------------------------------------- 顶栏（拖拽区） */
 .main { display: flex; flex-direction: column; min-width: 0; height: 100vh; }
@@ -633,6 +638,35 @@ body.edit-mode .content { padding-bottom: 108px; }
   font-size: 11.5px; color: var(--text-2);
   word-break: break-all; user-select: text;
 }
+
+/* 「关于」里的软件更新块。放在诊断表格下面，因为它不只是"看一眼" ——
+   还有三个按钮，是用户**唯一**动手更新程序的地方（下载与安装都不自动）。 */
+.upd-box {
+  margin-top: 4px; padding: 13px 14px; border-radius: var(--r-s);
+  background: var(--panel-2); border: 1px solid var(--line);
+}
+.upd-head { display: flex; align-items: baseline; gap: 10px; }
+.upd-head h3 {
+  font-size: 11px; font-weight: 700; letter-spacing: .08em;
+  color: var(--text-3); margin: 0;
+}
+.upd-state {
+  font-size: 11.5px; padding: 1px 8px; border-radius: 99px;
+  background: var(--panel-3); color: var(--text-3);
+}
+.upd-state.hot { background: var(--accent-soft); color: var(--accent); font-weight: 700; }
+.upd-state.bad { background: var(--danger-soft); color: var(--danger); font-weight: 700; }
+.upd-state.off { background: var(--panel-3); color: var(--text-3); }
+.upd-msg { margin: 9px 0 0; font-size: 12px; line-height: 1.7; color: var(--text-3); }
+.upd-msg b { display: block; font-weight: 600; color: var(--text-2); }
+.upd-msg span { display: block; word-break: break-all; }
+.upd-msg span.bad { color: var(--danger); }
+.upd-bar {
+  height: 5px; margin-top: 10px; border-radius: 99px;
+  background: var(--line-2); overflow: hidden;
+}
+.upd-bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .2s var(--ease); }
+.upd-acts { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
 
 /* 扫描列表 */
 .scan-bar { display: flex; align-items: center; gap: 10px; padding-bottom: 14px; border-bottom: 1px solid var(--line); margin-bottom: 12px; }
