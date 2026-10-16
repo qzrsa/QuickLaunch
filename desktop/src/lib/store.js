@@ -143,6 +143,14 @@ function defaultConfig() {
       closeAction: 'tray',
       trayQuick: 'top',
       hoverActions: false,
+      // 启动时停在哪个分组：
+      //   'last' = 记住上次打开的那个（默认，避免每次都被踢回「全部」）
+      //   'all' / 'recent' / 'fav' = 固定虚拟视图
+      //   'g:<分组id>' = 固定到某个真实分组
+      // lastGroup 只在 startGroup==='last' 时有意义，但一直跟着写，
+      // 这样用户切回「记住上次」时立刻就是上次的位置。
+      startGroup: 'last',
+      lastGroup: 'all',
     },
     groups: buildGroups(),
   };

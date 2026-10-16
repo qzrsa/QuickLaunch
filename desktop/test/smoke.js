@@ -133,6 +133,7 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
   ok(acts.includes('elevate'), 'app 类型含 以管理员身份运行');
   ok(acts.includes('folder'), '本地路径含 打开所在位置');
   ok(acts.includes('copy') && acts.includes('edit') && acts.includes('del'), '含 复制/编辑/删除');
+  ok(acts.includes('multiselect'), '卡片菜单含 多选编辑');
   ok(labels(ct).includes('加入收藏'), '未收藏时显示「加入收藏」');
 
   ct = menus.cardMenuTemplate({ type: 'app', path: 'C:\\Windows\\notepad.exe', favorite: true });
@@ -170,7 +171,7 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
   // —— 空白 ——
   const bt = menus.blankMenuTemplate();
   const bacts = bt.filter(i => typeof i.click === 'function').map(i => i.click());
-  ok(bacts.join(',') === 'new,newgroup,scan,settings', '空白菜单动作 = new,newgroup,scan,settings', bacts.join(','));
+  ok(bacts.join(',') === 'new,newgroup,multiselect,scan,settings', '空白菜单动作 = new,newgroup,multiselect,scan,settings', bacts.join(','));
 
   ok(menus.DEFAULT_COLORS.length === 8 && menus.DEFAULT_COLORS.every(c => c.name && /^#[0-9a-f]{6}$/i.test(c.value)),
     'DEFAULT_COLORS 均为合法 #rrggbb');
@@ -409,6 +410,143 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
   ok(/left:\s*0\b/.test(rule('.nav-item.active::before')) &&
     !/left:\s*-14px/.test(rule('.nav-item.active::before')),
     '选中竖条画在可视区内（left:0，而非会被裁剪的 -14px）');
+
+  /* ---- 「启动时打开哪个分组」的设置与解析 ----
+     解析函数直接**从 app.js 源码里抠出来跑**，不另写一份镜像实现
+     （镜像实现永远会通过，等于没测）。 */
+  section('startGroup 启动分组设置');
+  const fresh = store.defaultConfig();
+  ok(fresh.settings.startGroup === 'last', `默认 startGroup = ${fresh.settings.startGroup}（记住上次）`);
+  ok(fresh.settings.lastGroup === 'all', `默认 lastGroup = ${fresh.settings.lastGroup}`);
+  ok(cfg.settings.startGroup !== undefined, '已存在的配置文件也被补上 startGroup（load 时的默认合并）');
+
+  const appSrc = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'app.js'), 'utf8');
+  const grab = name => {
+    const m = appSrc.match(new RegExp(`function ${name}\\s*\\([^)]*\\)\\s*\\{[\\s\\S]*?\\n\\}`));
+    return m ? m[0] : '';
+  };
+  const srcViewId = grab('isViewId');
+  const srcFromCode = grab('viewFromCode');
+  const srcStart = grab('startViewFromSettings');
+  ok(!!srcViewId && !!srcFromCode && !!srcStart,
+    '能从 app.js 抠出 isViewId / viewFromCode / startViewFromSettings');
+  if (srcViewId && srcFromCode && srcStart) {
+    const stub = { config: { groups: [{ id: 'g1', name: '甲' }, { id: 'g2', name: '乙' }] } };
+    const fn = new Function('state',
+      `${srcViewId}\n${srcFromCode}\n${srcStart}\nreturn startViewFromSettings;`);
+    const resolve = fn(stub);
+    const table = [
+      // ★ lastGroup 也是带 g: 前缀写的，必须和 startGroup 一样被解码。
+      //   只解一处的话，「记住上次打开的分组」（默认值）永远回落到「全部」。
+      [{ startGroup: 'last', lastGroup: 'g:g2' }, 'g2', '记住上次 → 上次那个真实分组（g: 前缀要解）'],
+      [{ startGroup: 'last', lastGroup: 'fav' }, 'fav', '记住上次 → 上次停在虚拟视图'],
+      [{ startGroup: 'last' }, 'all', '记住上次但没记录过'],
+      [{ startGroup: 'fav' }, 'fav', '固定收藏'],
+      [{ startGroup: 'recent' }, 'recent', '固定最近使用'],
+      [{ startGroup: 'g:g1' }, 'g1', '固定到指定分组（g: 前缀要解）'],
+      [{ startGroup: 'g:已被删掉的分组' }, 'all', '指定的分组已不存在 → 兜底 all'],
+      [{ startGroup: 'last', lastGroup: 'g:已被删掉的分组' }, 'all', '上次的分组被删了 → 兜底 all'],
+      [{ startGroup: 'g:' }, 'all', '只有一个前缀没有 id → 兜底 all'],
+      [{ startGroup: '' }, 'all', '空串 → 兜底 all'],
+      [{}, 'all', '空 settings → 兜底 all'],
+    ];
+    let miss = 0;
+    table.forEach(([s, want]) => { if (resolve(s) !== want) miss++; });
+    ok(miss === 0, `${table.length} 条解析表全部命中（含已删分组的兜底）`, `未命中 ${miss}`);
+
+    // 写入侧（viewToCode）与读取侧（viewFromCode）必须严格互逆 ——
+    // 两侧各写一份编码规则的话，迟早会像上面那样只解一半。
+    const srcToCode = grab('viewToCode');
+    ok(!!srcToCode, '能从 app.js 抠出 viewToCode');
+    if (srcToCode) {
+      const codec = new Function('state',
+        `${srcFromCode}\n${srcToCode}\nreturn { viewToCode, viewFromCode };`)(stub);
+      const views = ['all', 'recent', 'fav', 'g1', 'g2', '某个真实分组 id'];
+      const bad = views.filter(v => codec.viewFromCode(codec.viewToCode(v)) !== v);
+      ok(bad.length === 0, `${views.length} 个视图编码↔解码往返一致`, bad.join(',') || 'ok');
+      ok(codec.viewToCode('g1') === 'g:g1' && codec.viewFromCode('g:g1') === 'g1',
+        '真实分组的编码格式为 g:<id>');
+      ok(codec.viewToCode('all') === 'all' &&
+        codec.viewToCode('recent') === 'recent' && codec.viewToCode('fav') === 'fav',
+        '三个虚拟视图原样存取（不加前缀）');
+    }
+  }
+  const htmlSrc = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'index.html'), 'utf8');
+  ok(/id="sStartGroup"/.test(htmlSrc), '设置面板有「启动时打开」下拉');
+  ok(/启动时打开/.test(htmlSrc), '下拉带中文标签');
+  ok(/renderStartGroupOptions/.test(appSrc) && /\$\('#sStartGroup'\)\.value/.test(appSrc),
+    '下拉由 renderStartGroupOptions 填充、由 saveSettings 读回');
+  ok(/value="\$\{esc\(viewToCode\(g\.id\)\)\}"/.test(appSrc),
+    '下拉 option.value 复用 viewToCode（不再手写 g: 前缀，杜绝编解码两边漂移）');
+  ok(/API\.setSettings\(\{ lastGroup: enc \}\)/.test(appSrc),
+    '切换视图时把当前分组记为 lastGroup（供「记住上次」用）');
+
+  /* ---- 多选编辑模式 ---- */
+  section('多选编辑模式');
+  ok(/id="btnSelect"/.test(htmlSrc), '顶栏有「多选」按钮');
+  ok(/id="editBar"/.test(htmlSrc), '底部有浮动操作栏 #editBar');
+  ['ebCount', 'ebAll', 'ebNone', 'ebFavOn', 'ebFavOff', 'ebMove', 'ebDel', 'ebDone']
+    .forEach(id => ok(new RegExp(`id="${id}"`).test(htmlSrc), `操作栏含 #${id}`));
+  ok(/id="editBar"[^>]*\shidden/.test(htmlSrc), '操作栏默认隐藏（不进编辑模式不占屏幕）');
+
+  const fns = ['setEditMode', 'updateEditBar', 'togglePick', 'pickedPairs', 'visibleItemIds',
+    'renderMoveOptions', 'batchFavorite', 'batchMove', 'batchDelete'];
+  const missingFn = fns.filter(n => !new RegExp(`function ${n}\\s*\\(`).test(appSrc));
+  ok(missingFn.length === 0, `编辑模式 9 个函数齐备`, missingFn.join(',') || 'ok');
+  ok(/case 'multiselect':\s*return setEditMode\(true, id\)/.test(appSrc),
+    '卡片右键「多选编辑」进模式并顺手选中该项');
+  ok(/if \(state\.editMode\) \{[\s\S]{0,260}togglePick\(pickable\.dataset\.id\)/.test(appSrc),
+    '编辑模式下点卡片 = 勾选（排在「新建卡片」与右上角按钮之前）');
+  ok(/function setEditMode[\s\S]{0,400}state\.picked = new Set\(\)/.test(appSrc),
+    '退出/进入编辑模式都清空勾选（防上一轮的隐形残留）');
+  ok(/state\.picked\.clear\(\)/.test(appSrc), '切换视图时会清空勾选');
+  ok(/function onGridPointerDown[\s\S]{0,160}state\.editMode\) return/.test(appSrc),
+    '编辑模式下不触发长按拖动');
+
+  /* ★ 快捷键守卫的两面：Esc 不能被输入框焦点挡住，Delete/Ctrl+A 必须被挡住。
+     反面案例：程序启动自动聚焦搜索框 → 右键进编辑模式不移焦点 → 按 Esc 被 typing
+     拦下后落到"清搜索词 / 隐藏窗口"分支，用户想退出编辑，窗口却没了。 */
+  ok(/if \(state\.editMode && !anyOpen\)/.test(appSrc),
+    '编辑模式快捷键只让弹窗开路，不让输入框焦点开路');
+  ok(/state\.editMode && !anyOpen\)[\s\S]{0,240}if \(e\.key === 'Escape'\)/.test(appSrc),
+    'Esc 退出编辑模式不受「焦点在输入框」影响');
+  ok(/state\.editMode && !anyOpen\)[\s\S]{0,900}if \(!typing\) \{/.test(appSrc),
+    'Delete / Ctrl+A 仍受 !typing 保护（打字不会被当成批量删除）');
+  const iEditEsc = appSrc.indexOf('if (state.editMode && !anyOpen)');
+  const iGlobalEsc = appSrc.indexOf("if (e.key === 'Escape') {\n      if (state.dlgCancel)");
+  ok(iEditEsc > 0 && iGlobalEsc > 0 && iEditEsc < iGlobalEsc,
+    '编辑模式的 Esc 处理排在全局 Esc 处理之前', `edit=${iEditEsc} global=${iGlobalEsc}`);
+  ok(/setEditMode\(false\);[\s\S]{0,200}activeElement\.blur\(\)/.test(appSrc),
+    '退出编辑模式时把焦点从输入框上摘掉（免得下一次 Esc 直接隐藏窗口）');
+  ok(/const canAdd = !state\.editMode/.test(appSrc) && /card\.add\[data-add\]/.test(htmlSrc + appSrc),
+    '编辑模式下隐藏「新建启动项」卡片');
+
+  /* 编辑模式的关键样式（几何/可见性约束，扫文本回归成本最低） */
+  ok(/position:\s*fixed/.test(rule('.editbar')), '.editbar 悬浮（fixed）');
+  ok(/z-index:\s*140/.test(rule('.editbar')), '.editbar 层级高于垃圾桶（两者不同时出现）');
+  ok(/bottom:\s*22px/.test(rule('.editbar')), '.editbar 贴底 22px');
+  ok(/editRise/.test(rule('.editbar')) || /@keyframes editRise/.test(css),
+    '.editbar 有入场动画 editRise');
+  ok(/data-empty="1"/.test(css) && /pointer-events:\s*none/.test(css),
+    '未勾选任何项时批量动作置灰（不会静默失败）');
+  ok(/position:\s*absolute/.test(rule('.pick')), '.pick 勾选标记绝对定位在卡片左上');
+  ok(/border-color:\s*var\(--accent\)/.test(rule('.card.picked')),
+    '.card.picked 有明确的选中描边');
+  ok(/body\.edit-mode\s+\.card\s+\.card-top\s*\{[^}]*padding-left/.test(css),
+    '编辑模式下卡片标题让位给勾选标记');
+  ok(/body\.edit-mode\s+\.content\s*\{[^}]*padding-bottom/.test(css),
+    '编辑模式下内容区留出底部空间（最后一行不会被操作栏挡住）');
+
+  /* 编辑栏的图标必须是内联 SVG：字体符号（☆ ★ 🗑）的宽度/基位取决于系统字体回退，
+     小字号下会变成"看不懂的方块"或粗细不匀的按钮。 */
+  const iBar = htmlSrc.indexOf('id="editBar"');
+  const iBarEnd = htmlSrc.indexOf('<!--', iBar);
+  const barHtml = htmlSrc.slice(iBar, iBarEnd > iBar ? iBarEnd : iBar + 3000);
+  ok(iBar > 0, '能定位到编辑栏 HTML 片段', `iBar=${iBar}`);
+  ok(!/[☆★🗑❐☐─]/.test(barHtml), '编辑栏不含字体符号图标');
+  ok((barHtml.match(/<svg/g) || []).length >= 3, '编辑栏的收藏/取消/删除都用内联 SVG');
+  ok(/\.btn\s+\.ic\.solid\s*\{[^}]*fill:\s*currentColor/.test(css),
+    '.ic.solid 显式放开 fill（CSS 会盖掉 SVG 自带的 fill 呈现属性）');
 
   section('结果');
   console.log(`  \x1b[32m通过 ${pass}\x1b[0m${fail ? ` / \x1b[31m失败 ${fail}\x1b[0m` : ''}`);

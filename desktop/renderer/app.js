@@ -55,6 +55,8 @@ const state = {
   suppressClick: false,
   dragDryRun: false,
   probeMode: false,
+  editMode: false,        // 多选编辑模式
+  picked: new Set(),      // 编辑模式下勾选的启动项 id
 };
 
 /* ------------------------------------------------------------ 基础 */
@@ -147,6 +149,35 @@ function navRow(id, ic, name, count) {
 
 /* ------------------------------------------------------------ 主区 */
 
+/** 视图 id 是否有效：三个内置视图，或一个真实存在的分组。
+ *  分组被删掉后，配置里可能还留着它的 id —— 这里必须兜底。 */
+function isViewId(v) {
+  if (v === 'all' || v === 'recent' || v === 'fav') return true;
+  return !!(state.config && state.config.groups.some(g => g.id === v));
+}
+
+/** 设置里存的分组编码 → 实际视图 id。
+ *  真实分组统一带 `g:` 前缀写入（见 persistLastGroup / renderStartGroupOptions），
+ *  为的是别让某个分组 id 撞上 all / recent / fav 这类保留字。
+ *  ★ startGroup 与 lastGroup **用的是同一套编码，两处都必须解** ——
+ *    只解 startGroup 会让「记住上次打开的分组」（默认值！）永远回落到「全部」。 */
+function viewFromCode(v) {
+  return String(v || '').startsWith('g:') ? String(v).slice(2) : String(v || '');
+}
+
+/** 实际视图 id → 设置里存的编码（与 viewFromCode 严格互逆） */
+function viewToCode(view) {
+  return (view === 'all' || view === 'recent' || view === 'fav') ? view : 'g:' + view;
+}
+
+/** 设置里存的分组选择 → 实际视图 id。 */
+function startViewFromSettings(s) {
+  s = s || {};
+  const raw = s.startGroup || 'last';
+  const want = viewFromCode(raw === 'last' ? (s.lastGroup || 'all') : raw);
+  return isViewId(want) ? want : 'all';
+}
+
 function viewGroups() {
   if (state.active === 'recent') {
     return [{ id: '_recent', name: '最近使用', icon: '🕘', color: PALETTE[7], items: recentItems().map(x => x.i) }];
@@ -182,7 +213,17 @@ function cardHTML(item, color, delay) {
   const foot = missing ? '<span class="missing">路径不存在</span>'
     : (item.favorite ? '<span class="star-on">★ 已收藏</span>' : '')
       + (item.useCount ? `<span class="uses">用过 ${item.useCount} 次</span>` : '');
-  return `<article class="card" tabindex="0" data-id="${esc(item.id)}" style="--c:${esc(color)};animation-delay:${delay}ms">
+  // 编辑模式：卡片变成"可勾选"，左上角显示勾选框。
+  // 勾选框只在编辑模式渲染（而不是常驻 + CSS 隐藏），这样非编辑态完全没有多余 DOM。
+  const picked = state.picked.has(item.id);
+  const cls = 'card' + (state.editMode ? ' pickable' : '') + (picked ? ' picked' : '');
+  const pickMark = state.editMode
+    ? '<span class="pick" aria-hidden="true"><svg viewBox="0 0 12 12"><path d="M2.4 6.2l2.3 2.4 4.7-5.2"/></svg></span>'
+    : '';
+  return `<article class="${cls}" tabindex="0" data-id="${esc(item.id)}"
+    aria-selected="${picked ? 'true' : 'false'}"
+    style="--c:${esc(color)};animation-delay:${delay}ms">
+    ${pickMark}
     <div class="card-acts">
       <button class="act" data-act="open" title="启动">▶</button>
       <button class="act" data-act="folder" title="打开所在位置">📂</button>
@@ -254,6 +295,8 @@ function render() {
   const perSection = state.active === 'all' && !state.q && state.sort === 'custom' && sections.length > 1;
   let html = '';
   let n = 0;
+  // 编辑模式下不显示「新建启动项」卡片：那一格点下去是"新建"而不是"勾选"，很容易误触
+  const canAdd = !state.editMode;
 
   if (perSection) {
     sections.forEach(({ g, items }) => {
@@ -263,10 +306,10 @@ function render() {
         + items.map(i => cardHTML(i, g.color || PALETTE[0], Math.min(n++ * 20, 400))).join('')
         + `</div>`;
     });
-    html += `<div class="grid">${ADD_CARD}</div>`;
+    if (canAdd) html += `<div class="grid">${ADD_CARD}</div>`;
   } else {
     const flat = sections.flatMap(s => s.items.map(i => cardHTML(i, s.g.color || PALETTE[0], Math.min(n++ * 20, 400))));
-    const showAdd = state.active !== 'recent' && state.active !== 'fav';
+    const showAdd = canAdd && state.active !== 'recent' && state.active !== 'fav';
     // 只有"整格恰好属于同一个真实分组"时才允许拖动排序，
     // 否则（搜索/非自定义排序把多个分组压平）顺序无法映射回数据
     const gids = new Set(sections.map(s => s.g.id));
@@ -274,6 +317,7 @@ function render() {
     html = `<div class="grid" data-gid="${esc(gridGid)}">${flat.join('')}${showAdd ? ADD_CARD : ''}</div>`;
   }
   host.innerHTML = html;
+  updateEditBar();
 }
 
 /* ------------------------------------------------------------ 主题 */
@@ -504,6 +548,8 @@ async function cardAction(act, id) {
     case 'fav': return toggleFav(id);
     case 'edit': return openEdit(it, f.g.id);
     case 'del': return deleteItem(id);
+    // 右键「多选编辑」：进编辑模式并顺手选中这一项，省得再点一下
+    case 'multiselect': return setEditMode(true, id);
     default: return undefined;
   }
 }
@@ -583,6 +629,7 @@ async function blankMenu() {
     openEdit(null, gid);
   } else if (act === 'newgroup') createGroup();
   else if (act === 'scan') openScan();
+  else if (act === 'multiselect') setEditMode(true);
   else if (act === 'settings') openSettings();
 }
 
@@ -599,6 +646,123 @@ async function deleteItem(id) {
   if (!r.ok) return toast('bad', '删除失败', r.msg);
   toast('ok', '已删除', f.i.name);
   await refresh();
+}
+
+/* ------------------------------------------------------------ 多选编辑模式 */
+
+/** 进入 / 退出多选编辑。
+ *  退出时一定清空勾选 —— 不然下次进来会带着上一次看不见的残留选中，
+ *  用户以为只删了自己刚点的那几个，实际连上次的一起删了。 */
+function setEditMode(on, preselectId) {
+  state.editMode = !!on;
+  state.picked = new Set();
+  if (state.editMode && preselectId && findItem(preselectId)) state.picked.add(preselectId);
+
+  document.body.classList.toggle('edit-mode', state.editMode);
+  $('#btnSelect').classList.toggle('on', state.editMode);
+  $('#btnSelect').setAttribute('aria-pressed', state.editMode ? 'true' : 'false');
+  $('#editBar').hidden = !state.editMode;
+  if (state.editMode) renderMoveOptions();
+  render();
+  updateEditBar();
+}
+
+/** 底部操作栏的可用状态：一个都没选时，批量动作变灰（点了也不会静默失败） */
+function updateEditBar() {
+  const bar = $('#editBar');
+  if (!bar) return;
+  const n = state.picked.size;
+  $('#ebCount').textContent = n ? `已选 ${n} 项` : '未选中';
+  bar.dataset.empty = n ? '0' : '1';
+}
+
+/** 勾选 / 取消勾选。只改这一张卡的 class，不整块重绘
+ *  （重绘会让所有卡片重新播一遍 pop 入场动画，多选时闪得厉害）。 */
+function togglePick(id) {
+  if (!id) return;
+  if (state.picked.has(id)) state.picked.delete(id);
+  else state.picked.add(id);
+  const card = $$('.card[data-id]').find(c => c.dataset.id === id);
+  if (card) {
+    const on = state.picked.has(id);
+    card.classList.toggle('picked', on);
+    card.setAttribute('aria-selected', on ? 'true' : 'false');
+  }
+  updateEditBar();
+}
+
+/** 当前勾选项对应的真实 {分组, 启动项}。
+ *  遍历真实 groups 而不是当前视图 —— 「最近使用 / 收藏」是虚拟视图，
+ *  里面的项其实散落在各个分组，按视图找会漏。 */
+function pickedPairs() {
+  const out = [];
+  state.config.groups.forEach(g => g.items.forEach(i => {
+    if (state.picked.has(i.id)) out.push({ g, i });
+  }));
+  return out;
+}
+
+/** 当前列表里可见的项（全选只选看得见的，而不是整个配置） */
+function visibleItemIds() {
+  return $$('.card[data-id]').map(c => c.dataset.id);
+}
+
+function renderMoveOptions() {
+  const sel = $('#ebMove');
+  if (!sel) return;
+  sel.innerHTML = '<option value="">移动到分组…</option>'
+    + state.config.groups.map(g =>
+      `<option value="${esc(g.id)}">${esc(g.icon || '📦')} ${esc(g.name)}</option>`).join('');
+}
+
+async function batchFavorite(on) {
+  const pairs = pickedPairs();
+  if (!pairs.length) return toast('bad', '先勾选要操作的启动项');
+  let changed = 0;
+  pairs.forEach(({ i }) => { if (!!i.favorite !== on) { i.favorite = on; changed++; } });
+  if (!changed) return toast('info', on ? '选中项都已经在收藏里' : '选中项都不在收藏里');
+  const r = await API.saveConfig(state.config);
+  if (!r.ok) return toast('bad', '保存失败', r.msg);
+  toast('ok', on ? `已收藏 ${changed} 项` : `已取消收藏 ${changed} 项`);
+  await refresh();      // 勾选状态在 state.picked 里，重绘后会自动带上
+}
+
+async function batchMove(gid) {
+  const pairs = pickedPairs();
+  if (!pairs.length) return toast('bad', '先勾选要操作的启动项');
+  const dest = state.config.groups.find(g => g.id === gid);
+  if (!dest) return toast('bad', '目标分组不存在');
+  const moving = pairs.filter(p => p.g.id !== gid);
+  if (!moving.length) return toast('info', '选中项已经都在这个分组里');
+  // 先摘后加：同一批里若有两项本来就在目标分组，不能既删又加它自己
+  moving.forEach(({ g, i }) => { g.items = g.items.filter(x => x.id !== i.id); });
+  moving.forEach(({ i }) => dest.items.push(i));
+  const r = await API.saveConfig(state.config);
+  if (!r.ok) return toast('bad', '移动失败', r.msg);
+  toast('ok', `已移动 ${moving.length} 项到「${dest.name}」`);
+  await refresh();
+}
+
+async function batchDelete() {
+  const pairs = pickedPairs();
+  if (!pairs.length) return toast('bad', '先勾选要删除的启动项');
+  const names = pairs.map(p => p.i.name || '未命名');
+  const head = names.slice(0, 5).join('、');
+  const ok = await confirmDialog({
+    icon: '🗑️',
+    title: `删除选中的 ${pairs.length} 个启动项？`,
+    text: names.length > 5 ? `${head} 等共 ${names.length} 项` : head,
+    okText: `删除 ${pairs.length} 项`,
+  });
+  if (!ok) return;
+  const ids = new Set(pairs.map(p => p.i.id));
+  pairs.forEach(({ g }) => { g.items = g.items.filter(x => !ids.has(x.id)); });
+  const r = await API.saveConfig(state.config);
+  if (!r.ok) return toast('bad', '删除失败', r.msg);
+  toast('ok', `已删除 ${ids.size} 项`);
+  state.picked.clear();
+  await refresh();
+  updateEditBar();
 }
 
 /* ------------------------------------------------------------ 长按拖动排序 */
@@ -632,6 +796,7 @@ function cancelHold(reason) {
 }
 
 function onGridPointerDown(e) {
+  if (state.editMode) return;                    // 编辑模式下长按不做拖动排序
   if (e.button !== 0) return;                    // 只认左键
   const card = e.target.closest('.card');
   if (!card || card.dataset.add || !card.dataset.id) return;
@@ -1067,6 +1232,29 @@ function accelFromEvent(e) {
   return mods.join('+') + '+' + key;
 }
 
+/** 填充「启动时打开」下拉。真实分组的 option.value 用 viewToCode 那套编码（g: 前缀）。 */
+function renderStartGroupOptions(current) {
+  const sel = $('#sStartGroup');
+  const fixed = [
+    ['last', '记住上次打开的分组（推荐）'],
+    ['all', '全部'],
+    ['recent', '最近使用'],
+    ['fav', '收藏'],
+  ];
+  let html = fixed.map(([v, t]) => `<option value="${v}">${esc(t)}</option>`).join('');
+  if (state.config.groups.length) {
+    html += '<optgroup label="指定分组">'
+      + state.config.groups.map(g =>
+        // option.value 走 viewToCode，和 startViewFromSettings 的读法是同一套编码
+        `<option value="${esc(viewToCode(g.id))}">${esc(g.icon || '📦')} ${esc(g.name)}</option>`).join('')
+      + '</optgroup>';
+  }
+  sel.innerHTML = html;
+  // 上次选的分组可能已经被删了 —— 退回「记住上次」，别留一个空选项
+  const want = current || 'last';
+  sel.value = [...sel.options].some(o => o.value === want) ? want : 'last';
+}
+
 async function openSettings() {
   const s = state.config.settings;
   $('#sHotkey').value = s.hotkey || '';
@@ -1075,6 +1263,7 @@ async function openSettings() {
   $('#sCloseAction').value = s.closeAction || 'tray';
   $('#sTrayQuick').value = s.trayQuick || 'top';
   $('#sHoverActs').checked = !!s.hoverActions;
+  renderStartGroupOptions(s.startGroup);
   state.capturedHotkey = s.hotkey || '';
   setHotkeyMsg('', '');
 
@@ -1130,6 +1319,7 @@ async function saveSettings() {
     closeAction: $('#sCloseAction').value,
     trayQuick: $('#sTrayQuick').value,
     hoverActions: $('#sHoverActs').checked,
+    startGroup: $('#sStartGroup').value || 'last',
     theme: document.documentElement.dataset.theme,
   };
   const r = await API.setSettings(patch);
@@ -1156,12 +1346,20 @@ async function saveSettings() {
 
 /* ------------------------------------------------------------ 数据 */
 
-async function refresh() {
+async function refresh(opts) {
   state.config = await API.getConfig();
   state.sort = state.config.settings.sort || 'custom';
   $('#sort').value = state.sort;
   applyTheme(state.config.settings.theme || 'light');
   applySettingsToDom(state.config.settings);
+  if (opts && opts.initView) {
+    // 只在首次加载时套用「启动时打开」设置 —— 之后的 refresh 不能把用户
+    // 手动切过去的视图又拽回来
+    state.active = startViewFromSettings(state.config.settings);
+  } else if (!isViewId(state.active)) {
+    // 当前视图可能已经不存在了（分组被删 / 被别处改掉），兜底回「全部」
+    state.active = 'all';
+  }
   renderNav();
   render();
   const conn = $('#conn');
@@ -1181,6 +1379,19 @@ async function persistSettings() {
   if (!r.ok) await API.saveConfig(state.config);
 }
 
+/** 记住当前视图，供「启动时打开 → 记住上次打开的分组」使用。
+ *  值与设置面板里的 startGroup 是同一套编码（见 viewToCode / viewFromCode）。
+ *  只在真的变了才写盘 —— 每次点侧栏都写一遍太浪费（主进程那边还会重建托盘）。 */
+function persistLastGroup(view) {
+  const s = state.config && state.config.settings;
+  if (!s) return;
+  const enc = viewToCode(view);
+  if (s.lastGroup === enc) return;
+  s.lastGroup = enc;
+  API.setSettings({ lastGroup: enc }).catch(() => { /* 记不住也不影响使用 */ });
+}
+const rememberGroup = persistLastGroup;
+
 /* ------------------------------------------------------------ 事件 */
 
 function bind() {
@@ -1192,6 +1403,14 @@ function bind() {
       e.preventDefault();
       e.stopPropagation();
       return;
+    }
+    // 编辑模式：点卡片 = 勾选/取消勾选。必须排在「新建卡片」和右上角按钮之前，
+    // 否则会误触发启动或编辑。
+    if (state.editMode) {
+      const pickable = e.target.closest('.card[data-id]');
+      if (!pickable) return;
+      e.preventDefault();
+      return togglePick(pickable.dataset.id);
     }
     const add = e.target.closest('[data-add]');
     if (add) {
@@ -1224,6 +1443,26 @@ function bind() {
     if (!card) return;
     const cards = $$('.card', $('#gridHost'));
     const idx = cards.indexOf(card);
+    // 编辑模式下 Enter/空格 = 勾选，而不是启动
+    if (state.editMode) {
+      if ((e.key === 'Enter' || e.key === ' ') && card.dataset.id) {
+        e.preventDefault();
+        return togglePick(card.dataset.id);
+      }
+      if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+        e.preventDefault();
+        const nx = cards[Math.min(idx + 1, cards.length - 1)];
+        if (nx) nx.focus();
+        return;
+      }
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        const pv = cards[Math.max(idx - 1, 0)];
+        if (pv) pv.focus();
+        return;
+      }
+      return;
+    }
     if (e.key === 'Enter') {
       e.preventDefault();
       if (card.dataset.add) {
@@ -1256,12 +1495,20 @@ function bind() {
     state.active = btn.dataset.nav;
     state.q = '';
     $('#q').value = '';
+    // 换了视图就把勾选清掉：不然不可见的选中项会被一起批量删/移，属于数据事故
+    if (state.editMode && state.picked.size) { state.picked.clear(); }
+    rememberGroup(state.active);
     render();
   });
 
   /* 搜索 */
   const q = $('#q');
-  q.addEventListener('input', () => { state.q = q.value.trim(); render(); });
+  q.addEventListener('input', () => {
+    state.q = q.value.trim();
+    // 同理：列表内容变了，看不见的勾选不能留
+    if (state.editMode && state.picked.size) state.picked.clear();
+    render();
+  });
   q.addEventListener('keydown', e => {
     if (e.key === 'ArrowDown') {
       e.preventDefault();
@@ -1283,6 +1530,28 @@ function bind() {
     persistSettings();
   });
   $('#btnSettings').addEventListener('click', openSettings);
+
+  /* 多选编辑 */
+  $('#btnSelect').addEventListener('click', () => setEditMode(!state.editMode));
+  $('#ebDone').addEventListener('click', () => setEditMode(false));
+  $('#ebAll').addEventListener('click', () => {
+    visibleItemIds().forEach(id => state.picked.add(id));
+    render();
+    updateEditBar();
+  });
+  $('#ebNone').addEventListener('click', () => {
+    state.picked.clear();
+    render();
+    updateEditBar();
+  });
+  $('#ebFavOn').addEventListener('click', () => batchFavorite(true));
+  $('#ebFavOff').addEventListener('click', () => batchFavorite(false));
+  $('#ebDel').addEventListener('click', batchDelete);
+  $('#ebMove').addEventListener('change', async e => {
+    const gid = e.target.value;
+    e.target.value = '';            // 立刻复位，避免"选过一次就不能再选同一项"
+    if (gid) await batchMove(gid);
+  });
 
   /* 窗口控制 */
   $('#wcMin').addEventListener('click', () => API.win('minimize'));
@@ -1491,6 +1760,39 @@ function bind() {
 
     if (e.key === '/' && !typing && !anyOpen) { e.preventDefault(); $('#q').focus(); $('#q').select(); return; }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); $('#q').focus(); $('#q').select(); return; }
+
+    /* 编辑模式下的快捷键。整块放在下面的 Esc 处理之前，
+       否则 Esc 会先去清搜索词 / 隐藏窗口，退不出编辑模式。
+
+       ★ Esc 这一条**不能**被 `typing` 挡住：程序启动就会自动聚焦搜索框，
+         而右键「多选编辑…」不会移走焦点 —— 此时按 Esc 若被拦下，就会落到
+         下面那条「清搜索词 / 隐藏窗口」上：用户想退出编辑，窗口却没了。
+         所以 Esc 只要求「没有弹窗」，并且顺手把焦点从输入框上摘掉。
+
+       其余按键必须保留 !typing：编辑模式下在搜索框里打字时，
+       Ctrl+A 会被当成"全选启动项"、退格会被当成"批量删除"，那是数据事故。 */
+    if (state.editMode && !anyOpen) {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setEditMode(false);
+        if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+        return;
+      }
+      if (!typing) {
+        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
+          e.preventDefault();
+          visibleItemIds().forEach(id => state.picked.add(id));
+          render();
+          return;
+        }
+        if ((e.key === 'Delete' || e.key === 'Backspace') && state.picked.size) {
+          e.preventDefault();
+          batchDelete();
+          return;
+        }
+      }
+    }
+
     if (e.key === 'Escape') {
       if (state.dlgCancel) { state.dlgCancel(); return; }
       if (anyOpen) {
@@ -1530,7 +1832,7 @@ function createMockBridge() {
   function demoConfig() {
     return {
       version: 2,
-      settings: { theme: 'light', sort: 'custom', hotkey: 'Ctrl+Alt+Space', hotkeyEnabled: true, autostart: false, closeAction: 'tray', trayQuick: 'top', hoverActions: false },
+      settings: { theme: 'light', sort: 'custom', hotkey: 'Ctrl+Alt+Space', hotkeyEnabled: true, autostart: false, closeAction: 'tray', trayQuick: 'top', hoverActions: false, startGroup: 'last', lastGroup: 'all' },
       groups: [
         {
           id: 'files', name: '文件与目录', icon: '📁', color: PALETTE[0],
@@ -1648,9 +1950,9 @@ function createMockBridge() {
 
   (async () => {
     try { state.info = await API.info(); } catch { /* 忽略 */ }
-    await refresh();
+    await refresh({ initView: true });
     console.log(`[quicklaunch] 渲染层就绪 · ${PREVIEW ? 'preview' : 'desktop'} · `
-      + `${state.config.groups.length} 组 / ${allItems().length} 项`);
+      + `${state.config.groups.length} 组 / ${allItems().length} 项 · 起始视图 ${state.active}`);
   })();
 
   // 右键菜单链路自检（仅 --menu-probe 时由主进程触发）：
@@ -1832,6 +2134,394 @@ function createMockBridge() {
     console.log('[rail-probe] 已还原分组数 =', state.config.groups.length,
       '| 侧栏行数 =', nav.querySelectorAll('.nav-item').length);
     console.log('[rail-probe] done');
+  });
+
+  // 「启动时打开哪个分组」+「多选编辑模式」自检（仅 --select-probe 时由主进程触发）：
+  //   A 段：startViewFromSettings 的解析表（纯函数，含"指定分组已被删"的兜底）
+  //         + 设置面板下拉 → 保存 → 真的落盘
+  //   B 段：合成「进多选 → 点卡片勾选 → 批量收藏 → 批量移动 → 批量删除 → Esc 退出」
+  //         **真的走 saveConfig**（只动 dev 的 .tmpdata/userData）
+  // 整段跑完把配置完完整整还原（内存 + 磁盘各一次），跑之前外面还会先备份 config.json。
+  API.on('ql:select-probe', async () => {
+    state.probeMode = true;
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
+    const $el = s => document.querySelector(s);
+    const cardEls = () => Array.from(document.querySelectorAll('.card[data-id]'));
+    /** 清掉搜索态。
+     *  ★ 探针窗口是 opacity:0 但仍然可聚焦的，用户在外面打字时按键会落进
+     *    搜索框 → state.q 变非空 → matches() 全假 → 网格渲染出 0 张卡，
+     *    整段探针会"无缘无故"失败（真踩过）。主进程那边已经把探针窗口设成
+     *    不可聚焦，这里再兜一层：每个阶段开始前把搜索态清零并记录。 */
+    const clearQuery = () => {
+      if (state.q) console.log('[select-probe] 搜索框被外部输入污染了:', JSON.stringify(state.q), '→ 已清空');
+      state.q = ''; $el('#q').value = ''; $el('#q').blur();
+    };
+    clearQuery();
+    await sleep(200);
+    if (!cardEls().length) render();
+    console.log('[select-probe] 起始 卡片数 =', cardEls().length,
+      '| active =', state.active, '| q =', JSON.stringify(state.q));
+    const lastToast = () => {
+      const ts = document.querySelectorAll('#toasts .toast');
+      const t = ts[ts.length - 1];
+      return t ? t.textContent.replace(/\s+/g, ' ').trim() : '(无)';
+    };
+    const snap = async (file, label) => {
+      const t0 = performance.now();
+      // 1) 截"干净"的图：提示气泡浮在操作栏右边，会盖住「完成」按钮。
+      //    ★ 不要写"轮询等它自己消失"——那是个几十次 sleep 的循环，慢且不确定；
+      //      直接临时藏起来、拍完还原，效果一样但代价是常数级。
+      const toastBox = $el('#toasts');
+      const prevVis = toastBox ? toastBox.style.visibility : '';
+      if (toastBox) toastBox.style.visibility = 'hidden';
+      // 2) 等卡片入场动画播完：卡片带 0~400ms 的 animation-delay 加一段 pop 时长，
+      //    抢在动画中间截会拍出"只有分组标题、卡片全是空白"的图（★ 真踩过：
+      //    拍出来的 README 配图里一张卡都没有）。这里不光等，还要验。
+      await sleep(800);
+      const opaqueNow = () => {
+        const cs = cardEls();
+        return { n: cs.length, painted: cs.filter(c => Number(getComputedStyle(c).opacity) > 0.98).length };
+      };
+      let st = opaqueNow();
+      if (st.n && st.painted < st.n) {
+        console.log('[select-probe] ★ 截图前有', st.n - st.painted, '/', st.n, '张卡片还没画出来 → 再等 800ms');
+        await sleep(800);
+        st = opaqueNow();
+      }
+      const r = await API.probeShot(file);
+      if (toastBox) toastBox.style.visibility = prevVis;
+      console.log('[select-probe] 截图', label, '->', r && r.ok ? 'ok' : ('失败 ' + (r && r.msg)),
+        '| 已画出卡片 =', st.painted, '/', st.n,
+        '| 耗时', Math.round(performance.now() - t0), 'ms',
+        st.n && st.painted < st.n ? '★ 截图可能是空的' : '');
+    };
+    // 只看磁盘上的真实内容 —— state 里自洽的断言没有意义
+    const disk = () => API.getConfig();
+
+    const backup = JSON.parse(JSON.stringify(state.config));
+    const restore = async () => {
+      if (state.editMode) setEditMode(false);
+      state.config = JSON.parse(JSON.stringify(backup));
+      const r = await API.saveConfig(state.config);
+      await refresh();
+      const d = await disk();
+      const same = JSON.stringify(d.groups) === JSON.stringify(backup.groups)
+        && JSON.stringify(d.settings) === JSON.stringify(backup.settings);
+      console.log('[select-probe] 还原配置 =', r.ok ? 'ok' : ('失败 ' + r.msg),
+        '| 与起始快照一致 =', same,
+        '| 启动分组 =', d.settings.startGroup, '| 上次分组 =', d.settings.lastGroup);
+    };
+
+    try {
+      await sleep(300);
+
+      /* ============ A：启动分组设置 ============ */
+      const gid = (state.config.groups[0] || {}).id;
+      console.log('[select-probe] A0 起始 settings.startGroup =',
+        state.config.settings.startGroup, '| lastGroup =', state.config.settings.lastGroup,
+        '| 分组数 =', state.config.groups.length, '| 首组 id =', gid || '(无)');
+
+      const cases = [
+        [{ startGroup: 'last', lastGroup: 'g:' + gid }, gid, '记住上次 → 上次那个分组'],
+        [{ startGroup: 'last', lastGroup: 'fav' }, 'fav', '记住上次 → 上次停在虚拟视图'],
+        [{ startGroup: 'last' }, 'all', '记住上次但没记录过'],
+        [{ startGroup: 'fav' }, 'fav', '固定收藏'],
+        [{ startGroup: 'all' }, 'all', '固定全部'],
+        [{ startGroup: 'recent' }, 'recent', '固定最近使用'],
+        [{ startGroup: 'g:' + gid }, gid, '固定到指定分组'],
+        [{ startGroup: 'g:不存在的分组' }, 'all', '指定的分组已被删'],
+        [{ startGroup: 'last', lastGroup: 'g:不存在的分组' }, 'all', '上次的分组已被删'],
+        [{}, 'all', '空的 settings'],
+      ];
+      let bad = 0;
+      cases.forEach(([s, want, label]) => {
+        const got = startViewFromSettings(s);
+        const okCase = got === want;
+        if (!okCase) bad++;
+        console.log('[select-probe] A1', okCase ? 'OK  ' : '★FAIL', label,
+          '=>', JSON.stringify(got), '（期望', want + '）');
+      });
+      console.log('[select-probe] A1 解析表通过 =', cases.length - bad, '/', cases.length);
+
+      if (!gid) { console.log('[select-probe] ★ 没有分组，跳过指定分组的界面链路'); }
+      else {
+        await openSettings();
+        await sleep(220);
+        const sel = $el('#sStartGroup');
+        const vals = Array.from(sel.options).map(o => o.value);
+        console.log('[select-probe] A2 下拉已填充 =', vals.length, '项',
+          '| 含 last/all/recent/fav =',
+          ['last', 'all', 'recent', 'fav'].every(v => vals.includes(v)),
+          '| 含指定分组 g:' + gid + ' =', vals.includes('g:' + gid),
+          '| 当前值 =', sel.value);
+        await snap('shot-select-startgroup.png', '设置面板「启动时打开」');
+
+        sel.value = 'g:' + gid;
+        $el('#btnSetSave').click();
+        await sleep(700);
+        const after = await disk();
+        console.log('[select-probe] A3 保存后 state.startGroup =', state.config.settings.startGroup,
+          '| 磁盘 startGroup =', after.settings.startGroup,
+          '| 面板已关闭 =', $el('#setOverlay').hidden,
+          '| 提示 =', lastToast());
+
+        // 首次加载才套用；之后手动切视图不能被拽回去
+        await refresh({ initView: true });
+        const applied = state.active;
+        state.active = 'all';
+        await refresh();
+        const keptManual = state.active;
+        await refresh({ initView: true });
+        const reapplied = state.active;
+        console.log('[select-probe] A4 initView 套用 =', applied === gid,
+          '| 之后手动切走不被拽回 =', keptManual === 'all',
+          '| 再次 initView 重新套用 =', reapplied === gid);
+        // 收尾：把 startGroup 还原成「记住上次」，别让后面的 B 段落在怪视图上
+        await API.setSettings({ startGroup: backup.settings.startGroup });
+        state.config.settings.startGroup = backup.settings.startGroup;
+        state.active = 'all';
+        await refresh();
+      }
+
+      /* ============ B：多选编辑模式 ============ */
+      clearQuery();        // 回到干净搜索态，别让外部干扰把列表抽空
+      await refresh();     // 回到「全部」，保证格子是满的
+      await sleep(200);
+      const ids0 = allItems().map(x => x.i.id);
+      console.log('[select-probe] B0 起始启动项 =', ids0.length, '| 卡片数 =', cardEls().length,
+        '| editMode =', state.editMode, '| 操作栏隐藏 =', $el('#editBar').hidden);
+      if (!ids0.length) {
+        console.log('[select-probe] ★ 没有启动项，B 段无法进行');
+      } else {
+        /* B1 进入编辑模式 */
+        $el('#btnSelect').click();
+        await sleep(260);
+        console.log('[select-probe] B1 editMode =', state.editMode,
+          '| body.edit-mode =', document.body.classList.contains('edit-mode'),
+          '| 按钮 .on =', $el('#btnSelect').classList.contains('on'),
+          '| aria-pressed =', $el('#btnSelect').getAttribute('aria-pressed'),
+          '| 操作栏可见 =', !$el('#editBar').hidden,
+          '| data-empty =', $el('#editBar').dataset.empty,
+          '| 计数 =', $el('#ebCount').textContent,
+          '| 「新建启动项」卡片数 =', document.querySelectorAll('.card.add[data-add]').length, '（应为 0）',
+          '| 勾选标记数 =', document.querySelectorAll('.card[data-id] .pick').length,
+          '| 移动下拉项 =', $el('#ebMove').options.length - 1, '（应等于分组数）');
+
+        /* B2 点卡片勾选（走真实 click 分支，不是直接调 togglePick） */
+        const cards = cardEls();
+        console.log('[select-probe] B2 点击前 卡片数 =', cards.length,
+          '| active =', state.active, '| q =', JSON.stringify(state.q),
+          '| editMode =', state.editMode,
+          '| suppressClick =', state.suppressClick,
+          '| 首张 id =', cards[0] ? cards[0].dataset.id : '(无)');
+        const pickIds = cards.slice(0, Math.min(3, cards.length)).map(c => c.dataset.id);
+        pickIds.forEach((id, k) => {
+          // 每轮都重新查一次：万一中间有 refresh() 把卡片换掉，
+          // 还拿着旧引用点会打在已脱离文档的节点上（事件不会冒泡到 #gridHost），
+          // 表现为"点了没反应"，很难查。
+          const c = cardEls().find(x => x.dataset.id === id);
+          if (!c) {
+            console.log('[select-probe] B2 第', k + 1, '张（' + id + '）已不在 DOM 里，跳过');
+            return;
+          }
+          c.click();
+          console.log('[select-probe] B2 点第', k + 1, '张（' + id + '）→ 勾选数 =', state.picked.size,
+            '| 该卡有 .picked =', c.classList.contains('picked'));
+        });
+        await sleep(260);
+        console.log('[select-probe] B2 勾选数 =', state.picked.size, '/', pickIds.length,
+          '| 与点击目标一致 =', pickIds.every(id => state.picked.has(id)),
+          '| .card.picked 数 =', document.querySelectorAll('.card.picked').length,
+          '| data-empty =', $el('#editBar').dataset.empty,
+          '| 计数 =', $el('#ebCount').textContent,
+          '| 视图未被切走 =', state.active,
+          '| 无「启动失败」提示 =', !/启动|失败|不存在/.test(lastToast()));
+        await snap('shot-select-picked.png', '多选：已勾选 3 项');
+
+        /* B3 取消勾选一张，确认能反选 */
+        const first = cardEls().find(x => x.dataset.id === pickIds[0]);
+        if (first) first.click();
+        await sleep(200);
+        console.log('[select-probe] B3 反选后勾选数 =', state.picked.size,
+          '（应为', pickIds.length - 1, '）| .card.picked =', document.querySelectorAll('.card.picked').length);
+        if (first) first.click();
+        await sleep(180);
+
+        /* B4 全选 / 清空 */
+        $el('#ebAll').click();
+        await sleep(220);
+        const allN = state.picked.size;
+        const visN = cardEls().length;
+        console.log('[select-probe] B4 全选后 =', allN, '/ 可见卡片', visN,
+          '| 一致 =', allN === visN && visN > 0,
+          visN === 0 ? '★ 列表里一张卡都没有（active=' + state.active + ' q=' + JSON.stringify(state.q) + '）' : '');
+        $el('#ebNone').click();
+        await sleep(220);
+        console.log('[select-probe] B4 清空后 =', state.picked.size, '（应为 0）',
+          '| data-empty =', $el('#editBar').dataset.empty,
+          '| 批量动作已置灰 =',
+          getComputedStyle($el('#ebDel')).pointerEvents === 'none');
+
+        /* B5 批量收藏 / 取消收藏 */
+        pickIds.forEach(id => { const c = cardEls().find(x => x.dataset.id === id); if (c) c.click(); });
+        await sleep(220);
+        if (!state.picked.size) {
+          // 勾不上就不许往下走：后面的批量操作在"零选中"下会"通过"得毫无意义
+          console.log('[select-probe] ★ B5 一项都没勾上，批量收藏 / 移动 / 删除全部跳过（不算通过）',
+            '| 卡片数 =', cardEls().length, '| active =', state.active, '| q =', JSON.stringify(state.q));
+        } else {
+          $el('#ebFavOn').click();
+          await sleep(700);
+          let d1 = await disk();
+          const favOn = pickIds.every(id => {
+            const f = d1.groups.flatMap(g => g.items).find(i => i.id === id);
+            return f && f.favorite === true;
+          });
+          console.log('[select-probe] B5 收藏 =', favOn, '| 提示 =', lastToast());
+          $el('#ebFavOff').click();
+          await sleep(700);
+          d1 = await disk();
+          const favOff = pickIds.every(id => {
+            const f = d1.groups.flatMap(g => g.items).find(i => i.id === id);
+            return f && f.favorite === false;
+          });
+          console.log('[select-probe] B5 取消收藏 =', favOff, '| 提示 =', lastToast());
+
+          /* B6 批量移动分组 */
+          const pairs = pickedPairs();
+          const fromIds = [...new Set(pairs.map(p => p.g.id))];
+          const dest = state.config.groups.find(g => !fromIds.includes(g.id));
+          if (!pairs.length || !dest) {
+            console.log('[select-probe] B6 跳过批量移动 | 选中项 =', pairs.length, '| 可用目标组 =', dest ? 1 : 0);
+          } else {
+            const moveIds = pairs.map(p => p.i.id);
+            const mv = $el('#ebMove');
+            mv.value = dest.id;
+            mv.dispatchEvent(new Event('change', { bubbles: true }));
+            await sleep(800);
+            const d2 = await disk();
+            const landed = moveIds.every(id =>
+              (d2.groups.find(g => g.id === dest.id).items || []).some(i => i.id === id));
+            const left = fromIds.every(o =>
+              !(d2.groups.find(g => g.id === o).items || []).some(i => moveIds.includes(i.id)));
+            console.log('[select-probe] B6 移动', moveIds.length, '项 → 目标 =', dest.name,
+              '| 已落进目标组 =', landed, '| 已离开原组 =', left,
+              '| 提示 =', lastToast(), '| 下拉已复位 =', mv.value === '');
+            await snap('shot-select-moved.png', '多选：批量移动之后');
+          }
+
+          /* B7 批量删除（确认框那一关也要走） */
+          const remaining = cardEls();
+          const delIds = remaining.slice(0, 2).map(c => c.dataset.id);
+          $el('#ebNone').click();
+          await sleep(200);
+          delIds.forEach(id => { const c = cardEls().find(x => x.dataset.id === id); if (c) c.click(); });
+          await sleep(220);
+          console.log('[select-probe] B7 待删 =', delIds.length, '| 勾选 =', state.picked.size);
+          $el('#ebDel').click();
+          await sleep(400);
+          const cf = $el('#confirmOverlay');
+          console.log('[select-probe] B7 确认框可见 =', !!cf && !cf.hidden,
+            '| 标题 =', ($el('#cfTitle') || {}).textContent || '(空)',
+            '| 文案 =', ($el('#cfText') || {}).textContent || '(空)',
+            '| 按钮 =', ($el('#cfYes') || {}).textContent || '(空)');
+          await snap('shot-select-del.png', '多选：批量删除确认');
+          $el('#cfYes').click();
+          await sleep(1000);
+          const d3 = await disk();
+          const gone = delIds.length > 0 &&
+            delIds.every(id => !d3.groups.flatMap(g => g.items).some(i => i.id === id));
+          console.log('[select-probe] B7 已从磁盘删除 =', gone,
+            '| 勾选已清空 =', state.picked.size === 0,
+            '| 提示 =', lastToast());
+        }
+
+        /* B8 切视图会清空勾选（避免"以为只删了眼前这几个"） */
+        await refresh();
+        await sleep(200);
+        const c8 = cardEls()[0];
+        if (c8) c8.click();
+        await sleep(180);
+        const before8 = state.picked.size;
+        const otherNav = $el('[data-nav="recent"]');
+        if (otherNav) otherNav.click();
+        await sleep(300);
+        console.log('[select-probe] B8 切视图前勾选 =', before8,
+          '→ 切视图后 =', state.picked.size, '（应为 0）',
+          '| 仍处于编辑模式 =', state.editMode);
+
+        /* B9 Esc 退出编辑模式。
+           ★ 刻意把焦点放回搜索框、并留一个非空搜索词：程序启动会自动聚焦搜索框，
+             而右键「多选编辑…」不会移走焦点，所以"进编辑模式时焦点在搜索框里"
+             是真实会走到的路径。曾经 Esc 被 typing 挡住 → 落到"清搜索词 / 隐藏窗口"
+             那条分支上：用户想退出编辑，窗口却没了。这里用非空搜索词把它抓出来。 */
+        const qBox = $el('#q');
+        qBox.value = 'probe-esc';
+        state.q = 'probe-esc';
+        qBox.focus();
+        const aeTag = document.activeElement
+          ? document.activeElement.tagName + (document.activeElement.id ? '#' + document.activeElement.id : '')
+          : '(null)';
+        const openOv = $$('.overlay').filter(o => !o.hidden).map(o => o.id);
+        console.log('[select-probe] B9 派发 Esc 前 activeElement =', aeTag,
+          '| 未关闭的 overlay =', openOv.join(',') || '(无)',
+          '| 搜索词 =', JSON.stringify(state.q));
+        document.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true,
+        }));
+        await sleep(300);
+        console.log('[select-probe] B9 Esc 后 editMode =', state.editMode,
+          '| body.edit-mode =', document.body.classList.contains('edit-mode'),
+          '| 操作栏隐藏 =', $el('#editBar').hidden,
+          '| 按钮 .on =', $el('#btnSelect').classList.contains('on'),
+          '| 勾选残留 =', state.picked.size,
+          '| 卡片上 .pick 残留 =', document.querySelectorAll('.card .pick').length,
+          '| 焦点已从搜索框摘掉 =', document.activeElement !== qBox,
+          '| 搜索词没被 Esc 清掉 =', state.q === 'probe-esc');
+        // 收尾：把搜索词清掉，好检查「新建启动项」卡片有没有回来
+        state.q = ''; qBox.value = '';
+        await refresh();
+        await sleep(200);
+        console.log('[select-probe] B9 退出后「新建启动项」卡片已回来 =',
+          document.querySelectorAll('.card.add[data-add]').length > 0,
+          '| 启动项数 =', allItems().length);
+
+        /* B10 反向验证：编辑模式下在搜索框里打字时，Delete / Ctrl+A 必须被拦住 ——
+           否则"想删几个字"会变成"批量删启动项"，属于数据事故。 */
+        setEditMode(true);
+        await sleep(240);
+        const c10 = cardEls()[0];
+        if (c10) c10.click();
+        await sleep(180);
+        $el('#q').focus();
+        const n10 = state.picked.size;
+        document.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'Delete', code: 'Delete', keyCode: 46, bubbles: true,
+        }));
+        await sleep(300);
+        console.log('[select-probe] B10 搜索框聚焦时按 Delete：勾选', n10, '→', state.picked.size,
+          '（应保持不变）| 弹出了删除确认框 =', !$el('#confirmOverlay').hidden);
+        document.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'a', code: 'KeyA', keyCode: 65, ctrlKey: true, bubbles: true,
+        }));
+        await sleep(250);
+        console.log('[select-probe] B10 搜索框聚焦时按 Ctrl+A：勾选仍为', state.picked.size,
+          '（应保持不变，没被当成"全选启动项"）');
+        $el('#q').blur();
+        setEditMode(false);
+        await sleep(200);
+      }
+    } catch (e) {
+      console.log('[select-probe] ★ 异常:', (e && e.message) || e);
+    } finally {
+      await restore();
+      console.log('[select-probe] done');
+      // ★ 探针跑完自己退出，不要靠主进程的看门狗当"结束信号"：
+      //   看门狗定小了会把探针掐在"还原配置"之前（dev 配置留污染），
+      //   定大了又白等。自己宣布结束才是确定的。
+      //   不 await：进程一开始退出，这个 invoke 的应答就可能永远回不来。
+      API.quit().catch(() => { /* 进程正在退出，属正常 */ });
+    }
   });
 
   // 分组增删自检（仅 --group-probe 时由主进程触发）：

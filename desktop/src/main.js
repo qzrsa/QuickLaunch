@@ -53,6 +53,8 @@ const INFO_PROBE = process.argv.includes('--info-probe');
 // 开发期自检：--rail-probe 灌一大堆分组，量侧栏几何（溢出/滚动条/底部栏/新建分组是否可见）
 // （只在内存里改 groups，不写盘）
 const RAIL_PROBE = process.argv.includes('--rail-probe');
+// 开发期自检：--select-probe 验「启动分组设置」+「多选编辑模式」整条链路（会写 dev 配置）
+const SELECT_PROBE = process.argv.includes('--select-probe');
 
 function probeMenu(kind, payload, tpl) {
   const acts = tpl.filter(i => typeof i.click === 'function').map(i => i.click());
@@ -262,7 +264,7 @@ function createWindow() {
 
   // --drag-probe / --group-probe 共用的截图通道：
   // 由渲染层在准确时刻主动触发（主进程自己掐 setTimeout 会被节流/漂移）
-  if (DRAG_PROBE || GROUP_PROBE || INFO_PROBE || RAIL_PROBE) {
+  if (DRAG_PROBE || GROUP_PROBE || INFO_PROBE || RAIL_PROBE || SELECT_PROBE) {
     // 打包态下 ROOT 在 asar 内部，写不进去 —— 逐级找一个能写的目录，
     // 免得探针"静默失败"让人以为没问题。
     const shotBase = (() => {
@@ -306,6 +308,29 @@ function createWindow() {
         win.webContents.send('ql:rail-probe');
       }, 1200);
       setTimeout(() => quitApp(), 25000);
+    });
+  }
+
+  // --select-probe：验「启动分组设置」+「多选编辑模式」整条链路 → 截图
+  if (SELECT_PROBE) {
+    win.webContents.once('did-finish-load', () => {
+      setTimeout(() => {
+        try { win.setOpacity(0); } catch { /* noop */ }
+        // ★ 探针期间把窗口设成不可聚焦：opacity:0 只是"看不见"，窗口仍然是
+        //   可聚焦的 —— 用户在外面打字时按键会落到这个隐形窗口里（实测会打进
+        //   搜索框，把列表过滤成 0 张卡，探针就"莫名其妙"全绿/全红）。
+        try { win.setFocusable(false); } catch { /* noop */ }
+        win.webContents.send('ql:select-probe');
+      }, 1200);
+      // ★ 看门狗必须比探针最坏耗时宽裕得多：这条探针有 4 次截图，每次都要
+      //   等 toast 散掉 + 卡片入场动画播完（最多 ~4s），跑满约 25~30s。
+      //   之前给 40s，结果两次被掐在"还原配置"之前 —— 探针结果不可信不说，
+      //   dev 配置还留了污染（18 项变 14 项）。掐死前一定要吼一声。
+      setTimeout(() => {
+        console.error('[probe] ★ select-probe 超时 90s 仍未跑完，强制退出：'
+          + '本次结果不可信，且 dev 配置可能没还原（先用 .tmpdata/cfg.snap.bak 恢复）');
+        quitApp();
+      }, 90000);
     });
   }
 
@@ -392,6 +417,10 @@ function showWindow() {
   if (win.isMinimized()) win.restore();
   win.show();
   win.focus();
+  // 留一条启动日志：窗口到底有没有真的显示出来，是"启动就静默退出 / 只进托盘"
+  // 这类问题唯一能一眼看出来的信号（外面用 Win32 查 MainWindowHandle 对
+  // 无边框窗口并不可靠，实测正常显示时也常常读到 0）。
+  console.log('[win] 已显示窗口 isVisible=' + win.isVisible() + ' title=' + JSON.stringify(win.getTitle()));
   if (!win.webContents.isLoading()) win.webContents.send('ql:focus-search');
 }
 

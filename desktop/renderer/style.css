@@ -289,6 +289,19 @@ input, select, textarea { outline: none; }
 .btn.danger:hover { background: var(--danger); color: #fff; border-color: transparent; }
 .btn.sm { height: 34px; padding: 0 12px; font-size: 13px; border-radius: 10px; }
 
+/* 按钮里的图标一律内联 SVG（字体符号在部分系统上会变豆腐块），
+   stroke 走 currentColor，跟着按钮文字色自动变。 */
+.btn .ic {
+  width: 14px; height: 14px; flex: none;
+  fill: none; stroke: currentColor; stroke-width: 1.25;
+  stroke-linecap: round; stroke-linejoin: round;
+}
+/* 实心图标（如"已收藏"的实心星）：CSS 的 fill:none 会盖掉 SVG 自带的
+   fill 呈现属性，所以要在这里显式放开，不能只写在标签上。 */
+.btn .ic.solid { fill: currentColor; stroke: none; }
+/* 多选按钮：进入编辑模式后高亮，状态一眼可见 */
+.btn.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+
 /* 窗口控制按钮 */
 .win-ctrls {
   display: flex; align-self: stretch; margin-left: 6px;
@@ -410,6 +423,34 @@ body.hover-actions .card:focus-within .card-acts {
 }
 .act:hover { background: var(--panel-3); color: var(--text); }
 .act.del:hover { background: var(--danger-soft); color: var(--danger); }
+
+/* ---------------- 多选编辑模式 ---------------- */
+/* 编辑模式下的卡片：不再"可启动"，而是"可勾选" */
+.card.pickable { cursor: pointer; }
+/* 悬停时不再上浮 —— 上浮会被误读成"点击启动"的反馈 */
+.card.pickable:hover { transform: none; box-shadow: var(--shadow-s); }
+.card.picked {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 7%, var(--panel));
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+/* 左上角勾选标记 */
+.pick {
+  position: absolute; top: 10px; left: 10px; z-index: 3;
+  width: 19px; height: 19px; display: grid; place-items: center;
+  border-radius: 6px; border: 1.6px solid var(--line-2);
+  background: var(--panel); color: transparent;
+  transition: background .14s var(--ease), border-color .14s var(--ease), color .14s var(--ease);
+}
+.pick svg {
+  width: 12px; height: 12px; fill: none;
+  stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round;
+}
+.card.picked .pick { background: var(--accent); border-color: var(--accent); color: #fff; }
+/* 编辑模式下缩进卡片内容，给左上角的勾选标记让位 */
+body.edit-mode .card .card-top { padding-left: 25px; }
+/* 编辑模式下底部操作栏会压住内容，给它留出空间（和拖动垃圾桶同一套思路） */
+body.edit-mode .content { padding-bottom: 108px; }
 
 .card.add {
   align-items: center; justify-content: center; gap: 8px;
@@ -714,6 +755,32 @@ body.card-dragging .content { margin-bottom: 88px; }
 .trash.hot { transform: translateX(-50%) scale(1.14); background: #c72c31; }
 .trash.hot .ti { animation: shake .32s var(--ease) infinite alternate; }
 @keyframes shake { from { transform: rotate(-14deg); } to { transform: rotate(14deg); } }
+
+/* 多选编辑：底部批量操作栏。与垃圾桶一样是浮动条，
+   但它是真实可点的（垃圾桶靠矩形判定，故意 pointer-events:none）。 */
+.editbar {
+  position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%);
+  z-index: 140;                      /* 高于垃圾桶，两者不会同时出现 */
+  display: flex; align-items: center; gap: 6px;
+  padding: 9px 12px; border-radius: 16px;
+  background: var(--panel); border: 1px solid var(--line);
+  box-shadow: var(--shadow-l);
+  animation: editRise .2s var(--ease);
+  max-width: calc(100vw - 32px);
+}
+@keyframes editRise {
+  from { opacity: 0; transform: translateX(-50%) translateY(14px) scale(.98); }
+  to   { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
+}
+.editbar .eb-count {
+  font-size: 13px; font-weight: 700; color: var(--accent);
+  padding: 0 4px; white-space: nowrap; min-width: 74px; text-align: center;
+}
+.editbar .eb-sep { width: 1px; height: 22px; background: var(--line); flex: none; }
+.editbar .mini-select { height: 34px; max-width: 168px; }
+/* 没有选中任何项时，批量动作不可用（避免点了没反应） */
+.editbar[data-empty="1"] .btn:not(#ebAll):not(#ebDone),
+.editbar[data-empty="1"] .mini-select { opacity: .45; pointer-events: none; }
 
 .toast {
   display: flex; align-items: center; gap: 10px;

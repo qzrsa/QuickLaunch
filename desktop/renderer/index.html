@@ -52,6 +52,14 @@
         <option value="name">按名称</option>
       </select>
 
+      <button class="btn nodrag" id="btnSelect" title="多选编辑：批量收藏 / 移动分组 / 删除">
+        <svg class="ic" viewBox="0 0 12 12" aria-hidden="true">
+          <rect x="1.6" y="1.6" width="8.8" height="8.8" rx="2.2"/>
+          <path d="M3.7 6.1l1.6 1.7 3.1-3.5"/>
+        </svg>
+        <span>多选</span>
+      </button>
+
       <button class="btn primary nodrag" id="btnAdd">＋ 新建</button>
 
       <!-- 窗口控制（自绘）
@@ -255,6 +263,11 @@
           </label>
         </div>
 
+        <div class="field">
+          <label>启动时打开 <span class="hint">每次打开程序停在这个分组，不必固定是「全部」</span></label>
+          <select id="sStartGroup"></select>
+        </div>
+
         <div class="row2">
           <div class="field">
             <label>点击关闭按钮时</label>
@@ -276,6 +289,9 @@
         <div class="tip">
           <div>
             <b>右键</b>：在卡片上右键可启动 / 提权 / 打开所在位置 / 收藏 / 编辑 / 删除；在左侧分组上右键可新建 / 重命名 / 换色 / 删除分组；在空白处右键可新建或扫描。<br>
+            <b>多选</b>：点右上角<b>多选</b>（或空白处右键 →「多选编辑…」）进入编辑模式，
+            勾选若干项后可批量<b>收藏 / 取消收藏 / 移动分组 / 删除</b>，按 <b>Esc</b> 或「完成」退出。<br>
+            <b>启动分组</b>：这里可以指定每次打开程序停在哪个分组，默认「记住上次打开的分组」。<br>
             <b>托盘</b>：单击托盘图标显示 / 隐藏窗口，右键可快速启动与退出，关闭窗口不会退出程序。<br>
             <b>热键</b>：默认 <b>Ctrl+Alt+Space</b> 呼出，再按一次隐藏。若被其他程序占用，这里会提示注册失败。<br>
             <b>开机自启</b>：写入当前可执行文件路径，便携版移动位置后请重新勾选一次。<br>
@@ -352,6 +368,38 @@
     <b id="dropTitle">松开即可导入</b>
     <span id="dropSub">支持快捷方式、程序、文件夹与网址</span>
   </div>
+</div>
+
+<!-- ===================== 多选编辑：底部操作栏 ===================== -->
+<div class="editbar" id="editBar" hidden>
+  <span class="eb-count" id="ebCount">已选 0 项</span>
+  <i class="eb-sep"></i>
+  <button class="btn sm" id="ebAll" title="选中当前列表里的全部项">全选</button>
+  <button class="btn sm" id="ebNone">清空</button>
+  <i class="eb-sep"></i>
+        <button class="btn sm" id="ebFavOn" title="把选中项加入收藏">
+          <svg class="ic" viewBox="0 0 12 12" aria-hidden="true">
+            <path d="M6 1.6l1.35 2.74 3.02.44-2.19 2.13.52 3.01L6 8.5l-2.7 1.42.52-3.01L1.63 4.78l3.02-.44z"/>
+          </svg>
+          <span>收藏</span>
+        </button>
+        <button class="btn sm" id="ebFavOff" title="把选中项移出收藏">
+          <svg class="ic solid" viewBox="0 0 12 12" aria-hidden="true">
+            <path d="M6 1.6l1.35 2.74 3.02.44-2.19 2.13.52 3.01L6 8.5l-2.7 1.42.52-3.01L1.63 4.78l3.02-.44z"/>
+          </svg>
+          <span>取消</span>
+        </button>
+        <select class="mini-select" id="ebMove" title="把选中项移动到某个分组">
+          <option value="">移动到分组…</option>
+        </select>
+        <button class="btn sm danger" id="ebDel" title="删除选中项">
+          <svg class="ic" viewBox="0 0 12 12" aria-hidden="true">
+            <path d="M2.2 3.3h7.6M4.6 3.3V2.2h2.8v1.1M3.3 3.3l.5 6.5h4.4l.5-6.5M5 5.4v2.6M7 5.4v2.6"/>
+          </svg>
+          <span>删除</span>
+        </button>
+  <i class="eb-sep"></i>
+  <button class="btn sm primary" id="ebDone" title="退出多选编辑（Esc）">完成</button>
 </div>
 
 <!-- ===================== 拖动排序 / 删除垃圾桶 ===================== -->

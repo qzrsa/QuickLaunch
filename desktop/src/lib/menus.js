@@ -3,9 +3,9 @@
  * 原生右键菜单模板（纯数据，不依赖 electron，便于单测）。
  * click 返回「动作名」字符串，由主进程 popupMenu 回传给渲染层执行。
  *
- * 卡片动作： launch | elevate | folder | copy | fav | edit | del
+ * 卡片动作： launch | elevate | folder | copy | fav | edit | multiselect | del
  * 分组动作： new | newgroup | rename | color:#rrggbb | del
- * 空白动作： new | newgroup | scan | settings
+ * 空白动作： new | newgroup | multiselect | scan | settings
  */
 
 const DEFAULT_COLORS = [
@@ -30,6 +30,7 @@ function cardMenuTemplate(item) {
   tpl.push({ label: '复制路径', click: () => 'copy' });
   tpl.push({ label: (item && item.favorite) ? '取消收藏' : '加入收藏', click: () => 'fav' });
   tpl.push({ label: '编辑…', click: () => 'edit' });
+  tpl.push({ label: '多选编辑…', click: () => 'multiselect' });
   tpl.push({ type: 'separator' });
   tpl.push({ label: '删除', click: () => 'del' });
   return tpl;
@@ -63,6 +64,8 @@ function blankMenuTemplate() {
   return [
     { label: '新建启动项', click: () => 'new' },
     { label: '新建分组…', click: () => 'newgroup' },
+    { type: 'separator' },
+    { label: '多选编辑…', click: () => 'multiselect' },
     { type: 'separator' },
     { label: '扫描本机软件…', click: () => 'scan' },
     { type: 'separator' },
