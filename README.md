@@ -99,7 +99,7 @@ CI 与本地产出的两个文件**版本号与文件名一致**（两台机器�
 
 窗口底部还有**复制诊断信息** —— 一键把上面这些内容拷进剪贴板，反馈问题时贴出来就行。
 
-> 侧栏左下角那行显示的是 `v版本 · 运行形态`（如 `v1.1.0 · 安装版`），不是网络状态：
+> 侧栏左下角那行显示的是 `v版本 · 运行形态`（如 `v1.1.1 · 安装版`），不是网络状态：
 > 本程序**完全离线**，没有任何服务端连接。
 
 ## 下载
@@ -124,9 +124,9 @@ npm run release      # = check + test + 打三种产物 + 压绿色版 zip
 
 ```
 dist/
-├── QuickLaunch-Setup-1.1.0.exe
-├── QuickLaunch-Portable-1.1.0.exe
-├── QuickLaunch-Green-1.1.0.zip
+├── QuickLaunch-Setup-1.1.1.exe
+├── QuickLaunch-Portable-1.1.1.exe
+├── QuickLaunch-Green-1.1.1.zip
 └── win-unpacked/            # 绿色版的原始目录
 ```
 
