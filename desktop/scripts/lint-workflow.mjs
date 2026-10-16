@@ -63,6 +63,10 @@ ok(src.includes('test -f node_modules/electron/dist/electron.exe'),
   '有 electronDist 兜底断言（test -f ... || ::error::）');
 ok(src.includes('cygpath -w -a'), 'RELEASE_DIR 用 cygpath -w -a 求');
 ok(src.includes('RELEASE_DIR 仍含 ..'), '有「含 .. 就 ::error::」守卫');
+// 退出后助手（PowerShell 换文件）必须在 CI 里真跑一遍：它唯一会出事的方式就是
+// "悄悄没生效 / 悄悄删了 data/"，只做语法检查是发现不了的。
+ok(/npm run check[\s\S]{0,200}npm run test[\s\S]{0,300}npm run verify:apply/.test(src),
+  'CI 静态自检里跑 verify:apply（真跑退出后助手，不是只 node --check）');
 
 console.log('--- action 版本 ---');
 const wantVer = [

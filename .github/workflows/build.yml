@@ -59,6 +59,9 @@ jobs:
         run: |
           npm run check
           npm run test
+          # 退出后助手（PowerShell 换文件那段）必须**真的跑一遍**：
+          # 任何静态断言都证不了"它真的等了进程退出""真的没碰 data/"。
+          npm run verify:apply
 
       - name: 打包
         shell: bash

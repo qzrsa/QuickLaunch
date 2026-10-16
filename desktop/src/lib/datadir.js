@@ -24,8 +24,11 @@ const DATA_DIR_NAME = 'data';
  *   1. 打绿色版 zip 时整棵跳过（否则把用户私人配置随 Release 发出去）；
  *   2. 生成 update.json 清单时跳过（否则客户端会把 data/config.json 当成程序文件去校验/覆盖）；
  *   3. 自更新落盘/删除时拒绝（**最要命的一条**：更新器少写一个判断就会删掉用户数据）。
+ * ★ `.update` 是自更新的暂存区（`<程序目录>/.update/<版本>/`）。它必须在这份名单里：
+ *   加这一行，上面三处就同时排除了它 —— 否则"打绿版 zip"会把暂存的新版本一起打包发出去，
+ *   而"生成清单"会把它当成待校验的程序文件。
  */
-const PROTECTED_TOP = Object.freeze([DATA_DIR_NAME, '.probe-shot', '.tmpdata']);
+const PROTECTED_TOP = Object.freeze([DATA_DIR_NAME, '.probe-shot', '.tmpdata', '.update']);
 
 /** rel 是用 `/` 分隔的相对路径。任何一段命中 PROTECTED_TOP 都算受保护。 */
 function isProtectedPath(rel) {

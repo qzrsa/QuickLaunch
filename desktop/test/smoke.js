@@ -899,6 +899,246 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
     '内容不符会被 verifyDir 单独列进 differ');
   ok(/v2\.0\.0/.test(core.summarize(man)), 'summarize 里带版本号', core.summarize(man));
 
+  /* ------------------------------------------------------------------
+   * 自更新 执行层（updater.js）—— 传输层注入，全程离线
+   * ------------------------------------------------------------------ */
+  section('自更新 执行层 updater');
+  const updater = require('../src/lib/updater');
+
+  // ---- 版本比较 ----
+  ok(updater.isNewer('1.2.0', '1.1.1') === true, '1.2.0 比 1.1.1 新');
+  ok(updater.isNewer('1.1.1', '1.1.1') === false, '同版本不算新');
+  ok(updater.isNewer('1.1.0', '1.1.1') === false, '旧版本不算新');
+  ok(updater.isNewer('2.0.0', '1.9.9') === true, '主版本号优先');
+  ok(updater.isNewer('1.10.0', '1.9.0') === true, '1.10.0 > 1.9.0（按数字比，不是按字符串比）');
+  // ★ 解析不出来时必须"不算新"：假报有更新会把用户引向一个不存在的资产
+  ok(updater.isNewer('abc', '1.0.0') === false, '版本号解析不出来 → 保守地判"不是新版"');
+  ok(updater.isNewer('1.0.0', '') === false, '本机版本为空 → 判"不是新版"');
+  ok(updater.parseVer('v1.2.3') === null && updater.parseVer('1.2.3') !== null, 'parseVer 只认裸三段数字');
+
+  // ---- 更新源 ----
+  ok(updater.normalizeBase('') === updater.DEFAULT_BASE, '空更新源 → 默认 GitHub latest');
+  ok(updater.DEFAULT_BASE.includes('/releases/latest/download'),
+    '默认走 releases/latest/download（会 302 到最新 Release 的资产）');
+  ok(updater.normalizeBase(' https://mirror.example/ql/ ') === 'https://mirror.example/ql',
+    '更新源去掉首尾空白与尾部斜杠');
+  let nbaseErr = null;
+  try { updater.normalizeBase('ftp://x'); } catch (e) { nbaseErr = e.message; }
+  ok(!!nbaseErr && /http\(s\)/.test(nbaseErr), '非 http(s) 的更新源直接报错', nbaseErr || '');
+  ok(updater.feedUrl('https://m') === 'https://m/update.json', 'feedUrl 拼的是 update.json');
+
+  // ---- 形态支持 ----
+  ok(updater.canSelfUpdate('installed').ok && updater.canSelfUpdate('green').ok,
+    '安装版与绿色版都支持自更新');
+  ok(updater.canSelfUpdate('portable').ok === false, '便携版不做自更新（单文件 exe 换不了自己）');
+  ok(/单文件/.test(updater.canSelfUpdate('portable').reason), '便携版给出人话原因',
+    updater.canSelfUpdate('portable').reason);
+  ok(updater.canSelfUpdate('dev').ok === false, '开发模式不做自更新');
+
+  // ---- 扫本机程序目录：受保护目录必须整棵跳过 ----
+  const PROG = path.join(TMP, 'prog');
+  const put = (rel, content) => {
+    const p = path.join(PROG, ...rel.split('/'));
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, content);
+  };
+  put('QuickLaunch.exe', 'EXE');
+  put('resources/app.asar', 'ASAR');
+  put('locales/zh-CN.pak', 'PAK');
+  put('data/config.json', '{"secret":1}');          // 诱饵：绝不能进清单
+  put('data/nested/deep.bin', 'DEEP');
+  put('.probe-shot/shot.png', 'SHOT');              // 诱饵
+  put('.update/1.0.0/files/x', 'STAGE');            // 诱饵：暂存区
+  const scanned = updater.scanProgramDir(PROG);
+  const rels = scanned.map(f => f.path);
+  ok(rels.length === 3, `扫到 3 个程序文件（实际 ${rels.length}：${rels.join(',')}）`);
+  ok(rels.includes('QuickLaunch.exe') && rels.includes('resources/app.asar'), '程序文件在清单里');
+  ok(rels.every(p => !p.startsWith('data/')), '★ data/ 下的文件一个都没进清单');
+  ok(rels.every(p => !p.startsWith('.probe-shot/') && !p.startsWith('.update/')),
+    '★ .probe-shot / .update 也没进清单');
+  ok(scanned.every(f => f.sha256 === vc.sha256hex(fs.readFileSync(path.join(PROG, ...f.path.split('/'))))),
+    '每个文件的 sha256 与磁盘上的真实内容一致（不是占位值）');
+  ok(scanned.every(f => typeof f.size === 'number' && /^[0-9a-f]{64}$/.test(f.sha256)), '每项都有 size 与 sha256');
+
+  // ---- check()：注入传输，把各种上游情况都走一遍 ----
+  const feed = (payload, opts = {}) => async (url, o) => {
+    if (opts.throwStatus) { const e = new Error('HTTP ' + opts.throwStatus); e.status = opts.throwStatus; throw e; }
+    if (opts.throwMsg) throw new Error(opts.throwMsg);
+    if (payload === null) return Buffer.from('not json at all');
+    void url; void o;
+    return Buffer.from(typeof payload === 'string' ? payload : JSON.stringify(payload));
+  };
+
+  const mkUpd = (over = {}) => Object.assign({
+    schema: 1, app: 'QuickLaunch', channel: 'green', version: '2.0.0',
+    full: { asset: 'QuickLaunch-Green-2.0.0.zip', size: 1000, sha256: 'a'.repeat(64) },
+    files: [{ path: 'QuickLaunch.exe', size: 3, sha256: vc.sha256hex(Buffer.from('EXE')) }],
+    patches: [],
+  }, over);
+
+  const c404 = await updater.check({ myVersion: '1.1.1', programDir: PROG, getBuffer: feed(null, { throwStatus: 404 }) });
+  ok(c404.ok === true && c404.available === false, '★ 更新源 404（还没有清单）不算错误');
+  ok(/还没有发布更新清单/.test(c404.reason), '404 给出人话原因', c404.reason);
+
+  const cNet = await updater.check({ myVersion: '1.1.1', programDir: PROG, getBuffer: feed(null, { throwMsg: 'socket hang up' }) });
+  ok(cNet.ok === false && cNet.available === false, '网络失败 → ok:false 但不算"有更新"');
+  ok(/取更新清单失败/.test(cNet.reason), '网络失败的原因可读', cNet.reason);
+
+  const cBad = await updater.check({ myVersion: '1.1.1', programDir: PROG, getBuffer: feed(null) });
+  ok(cBad.ok === false && /不是合法 JSON/.test(cBad.reason), '清单不是 JSON → 明确报错', cBad.reason);
+
+  const cShape = await updater.check({ myVersion: '1.1.1', programDir: PROG, getBuffer: feed({ schema: 9 }) });
+  ok(cShape.ok === false && /格式不认识/.test(cShape.reason), '清单形状不认识 → 明确报错', cShape.reason);
+
+  const cChan = await updater.check({ myVersion: '1.1.1', programDir: PROG, getBuffer: feed(mkUpd({ channel: 'nsis' })) });
+  ok(cChan.ok === true && cChan.available === false && /渠道/.test(cChan.reason),
+    '渠道不符（不是 green/installed/any）→ 不算有更新', cChan.reason);
+
+  const cSame = await updater.check({ myVersion: '2.0.0', programDir: PROG, getBuffer: feed(mkUpd()) });
+  ok(cSame.ok === true && cSame.available === false && /已是最新/.test(cSame.reason), '同版本 → 已是最新');
+
+  // ★ 没有对应本机版本的差量时，绝不该去扫本机目录（扫一次要读 500 MB）
+  const cFull = await updater.check({ myVersion: '1.1.1', programDir: PROG, getBuffer: feed(mkUpd()) });
+  ok(cFull.available === true && cFull.plan.mode === 'full', '没有差量清单 → 走全量');
+  ok(cFull.scanned === 0, '★ 走全量时没有扫本机目录（启动路径不能被 500 MB 读盘拖慢）');
+  ok(/没有 1\.1\.1 → 2\.0\.0/.test(cFull.plan.reason), '退回全量的原因是人话', cFull.plan.reason);
+
+  // 有对应差量时才扫；本机文件与补丁基准不符 → 仍然退回全量
+  //   ★ 这里必须给一条**真的对不上**的 olds：给空 olds 的话 selectPlan 会合理地判"能走增量"，
+  //     那条断言就会因为错误的原因变绿（第一次就是这么写错的）。
+  const cCand = await updater.check({
+    myVersion: '1.1.1', programDir: PROG,
+    getBuffer: feed(mkUpd({
+      patches: [{
+        from: '1.1.1', asset: 'p.bin', size: 100, sha256: 'b'.repeat(64),
+        plan: { version: 1, olds: [{ path: 'QuickLaunch.exe', size: 999999, sha256: 'c'.repeat(64) }], files: [], removed: [] },
+      }],
+    })),
+  });
+  ok(cCand.available === true, '有对应差量时认为有更新');
+  ok(cCand.scanned > 0, `有对应差量时会扫本机目录（扫到 ${cCand.scanned} 个文件）`);
+  ok(cCand.plan.mode === 'full', '★ 基准与补丁清单不符 → 仍然自动退回全量', cCand.plan.reason);
+  ok(/不符|被改动/.test(cCand.plan.reason), '退回全量的原因指出了是基准不符', cCand.plan.reason);
+
+  // ---- downloadAsset：三种失败都要能兜住，且不留垃圾 ----
+  // ★ 注入的传输层必须**遵守真实传输层的约定**：给了 destPath 就要往那里写盘。
+  //   只返回 Buffer、不落盘的假实现会让这条链路"看起来通过、其实根本没验到写盘"。
+  const DL = path.join(TMP, 'dl.bin');
+  const dlSha = vc.sha256hex(Buffer.from('PAYLOAD'));
+  const serveFile = (body) => async (url, o) => {
+    void url;
+    if (o && o.destPath) {
+      fs.writeFileSync(o.destPath, body);
+      return { path: o.destPath, size: body.length, total: body.length };
+    }
+    return Buffer.from(body);
+  };
+  const dlOk = await updater.downloadAsset({
+    base: 'https://m', asset: 'p.bin', size: 7, sha256: dlSha, dest: DL,
+    getBuffer: serveFile('PAYLOAD'),
+  });
+  ok(dlOk.ok && fs.readFileSync(DL, 'utf8') === 'PAYLOAD', '下载正常路径通过（真的落了盘）');
+
+  const dlShaBad = await updater.downloadAsset({
+    base: 'https://m', asset: 'p.bin', size: 7, sha256: 'f'.repeat(64), dest: DL,
+    getBuffer: serveFile('PAYLOAD'),
+  });
+  ok(dlShaBad.ok === false && /sha256/.test(dlShaBad.reason), 'sha256 不符 → 失败并说明原因', dlShaBad.reason);
+  ok(!fs.existsSync(DL), '★ 校验失败的文件被立刻删掉（绝不留一个看似下好的坏包）');
+
+  const dlSizeBad = await updater.downloadAsset({
+    base: 'https://m', asset: 'p.bin', size: 999, sha256: dlSha, dest: DL,
+    getBuffer: serveFile('PAYLOAD'),
+  });
+  ok(dlSizeBad.ok === false && /大小不符/.test(dlSizeBad.reason), '大小不符 → 失败', dlSizeBad.reason);
+
+  const dlErr = await updater.downloadAsset({
+    base: 'https://m', asset: 'p.bin', size: 7, sha256: dlSha, dest: DL,
+    getBuffer: async () => { throw new Error('ECONNRESET'); },
+  });
+  ok(dlErr.ok === false && /ECONNRESET/.test(dlErr.reason), '传输异常 → 失败并带上原始原因', dlErr.reason);
+  ok(!fs.existsSync(DL), '传输异常后也没有残留文件');
+
+  // ---- stage()：用真引擎造真差量，端到端摊进暂存区 ----
+  const oldExe = Buffer.from('OLD-EXE-'.repeat(300));
+  const newExe = Buffer.from(oldExe); newExe.write('NEW', 100, 'utf8');
+  const newPak = Buffer.from('BRAND-NEW-PAK');
+  const made = vc.makeDirPatch(
+    [{ path: 'QuickLaunch.exe', data: oldExe }, { path: 'old-only.txt', data: Buffer.from('bye') }],
+    [{ path: 'QuickLaunch.exe', data: newExe }, { path: 'locales/new.pak', data: newPak }]);
+  const patchEntry = {
+    from: '1.1.1', asset: 'QuickLaunch-Delta-1.1.1-to-2.0.0.bin',
+    size: made.pack.length, sha256: vc.sha256hex(made.pack), plan: made.manifest,
+  };
+  const stManifest = mkUpd({
+    // ★ 清单的 files 是"目标版本的权威文件列表"，applyDelta 会拒绝产出清单之外的文件。
+    //   所以这里必须把两个目标文件都声明上 —— 少写一个，stage 会（正确地）拒绝。
+    files: [
+      { path: 'QuickLaunch.exe', size: newExe.length, sha256: vc.sha256hex(newExe) },
+      { path: 'locales/new.pak', size: newPak.length, sha256: vc.sha256hex(newPak) },
+    ],
+    patches: [patchEntry],
+  });
+  // ★ 本机真实文件必须与补丁基准**逐字节**一致 —— applyDirPatch 会校验旧清单里的每一个文件
+  //   （包括本次不参与 COPY 的 old-only.txt）。基准不对只会得到"补丁打不上"，
+  //   那就验不到我们想验的路径了。
+  put('QuickLaunch.exe', oldExe);
+  put('old-only.txt', 'bye');
+  const stg = updater.stage({
+    manifest: stManifest, mode: 'delta', patch: patchEntry, pack: made.pack,
+    programDir: PROG, myVersion: '1.1.1', exePath: path.join(PROG, 'QuickLaunch.exe'),
+  });
+  ok(stg.ok === true, 'stage 成功', stg.reason || '');
+  // stg.stage 在失败时不存在；用防御式读取让后续断言**变红**，而不是把整个套件崩掉
+  // （崩溃会把后面几十条断言一起吞掉，看起来像"改动只坏了一条"）。
+  const stgRoot = stg.stage || path.join(TMP, 'stage-missing');
+  const readIf = (p) => { try { return fs.readFileSync(p); } catch { return null; } };
+  const stgExe = readIf(path.join(stgRoot, 'files', 'QuickLaunch.exe'));
+  ok(!!stgExe && stgExe.equals(newExe), '★ 暂存的 exe 是真引擎还原出来的新版（逐字节等于目标）');
+  const stgPak = readIf(path.join(stgRoot, 'files', 'locales', 'new.pak'));
+  ok(!!stgPak && stgPak.equals(newPak), '新增文件也摊进暂存区了');
+  ok(!fs.existsSync(path.join(stgRoot, 'files', 'old-only.txt')), '旧版本独有的文件不会被摊进暂存区');
+  const ajRaw = readIf(path.join(stgRoot, 'apply.json'));
+  const aj = ajRaw ? (JSON.parse(ajRaw.toString('utf8')) || {}) : {};
+  ok(aj.schema === 1 && aj.to === '2.0.0' && aj.from === '1.1.1', 'apply.json 带 schema/版本');
+  ok((aj.writes || []).length === 2 && (aj.writes || []).every(w => /^[0-9a-f]{64}$/.test(w.sha256)),
+    'apply.json 的 writes 带 sha256（助手会照着再校一遍）');
+  ok((aj.deletes || []).join(',') === 'old-only.txt', 'apply.json 的 deletes 是"新版没有了的旧文件"');
+  ok(Array.isArray(aj.protectedTop) && JSON.stringify(aj.protectedTop) === JSON.stringify(datadir.PROTECTED_TOP),
+    '★ apply.json 的受保护名单与 datadir.PROTECTED_TOP 完全一致（没有第二份定义）',
+    JSON.stringify(aj.protectedTop));
+  ok((aj.protectedTop || []).includes('.update'), '★ 名单里含 .update（暂存区自己也算运行时目录）');
+  const stStateRaw = readIf(path.join(PROG, '.update', 'state.json'));
+  const stState = stStateRaw ? JSON.parse(stStateRaw.toString('utf8')) : {};
+  ok(stState.state === 'staged' && stState.to === '2.0.0', 'state.json 记为 staged');
+  // ★ 暂存区自己也在受保护名单里 —— 否则它会被算成"程序文件"打进下一个清单
+  ok(datadir.isProtectedPath('.update/2.0.0/files/QuickLaunch.exe'), '★ 暂存区路径被判为受保护');
+
+  // 本机基准被动过 → stage 必须失败而不是硬打
+  put('QuickLaunch.exe', 'TAMPERED-BEFORE-STAGE');
+  const stgBad = updater.stage({
+    manifest: stManifest, mode: 'delta', patch: patchEntry, pack: made.pack,
+    programDir: PROG, myVersion: '1.1.1',
+  });
+  ok(stgBad.ok === false && /无法应用/.test(stgBad.reason), '★ 本机基准被改过 → stage 拒绝，绝不硬打半残', stgBad.reason);
+  put('QuickLaunch.exe', oldExe);
+
+  // 补丁包被改一个字节 → stage 也必须拒绝
+  const tamperedPack = Buffer.from(made.pack); tamperedPack[0] ^= 0xff;
+  const stgPack = updater.stage({
+    manifest: stManifest, mode: 'delta', patch: patchEntry, pack: tamperedPack,
+    programDir: PROG, myVersion: '1.1.1',
+  });
+  ok(stgPack.ok === false, '★ 补丁包被篡改 → stage 拒绝');
+
+  // 清单少声明了一个目标文件 → 也必须拒绝（补丁不得产出"清单之外"的东西）
+  const stgUnder = updater.stage({
+    manifest: mkUpd({ files: [stManifest.files[0]], patches: [patchEntry] }),
+    mode: 'delta', patch: patchEntry, pack: made.pack, programDir: PROG, myVersion: '1.1.1',
+  });
+  ok(stgUnder.ok === false && /清单之外/.test(stgUnder.reason),
+    '★ 补丁产出了清单里没声明的文件 → 拒绝', stgUnder.reason);
+
   section('结果');
   console.log(`  \x1b[32m通过 ${pass}\x1b[0m${fail ? ` / \x1b[31m失败 ${fail}\x1b[0m` : ''}`);
   fs.rmSync(TMP, { recursive: true, force: true });
