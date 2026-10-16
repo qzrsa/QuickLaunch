@@ -47,8 +47,8 @@ const DRAG_PROBE = !!DRAG_PROBE_ARG;
 const DRAG_PROBE_REAL = DRAG_PROBE_ARG === '--drag-probe=real';
 // 开发期自检：--group-probe 合成「新建分组 → 重名拦截 → 删除分组」，验证侧栏增删链路（会写 dev 配置）
 const GROUP_PROBE = process.argv.includes('--group-probe');
-// 开发期自检：--info-probe 打开设置面板，打印「运行环境」文本并截图
-// （验的是数据目录落在哪、三种运行形态标签对不对）
+// 开发期自检：--info-probe 打开「关于」窗口 + 设置面板，打印运行环境信息并各截一张图
+// （验的是数据目录落在哪、四种运行形态标签对不对、状态行文案、设置里已无环境块）
 const INFO_PROBE = process.argv.includes('--info-probe');
 // 开发期自检：--rail-probe 灌一大堆分组，量侧栏几何（溢出/滚动条/底部栏/新建分组是否可见）
 // （只在内存里改 groups，不写盘）
@@ -289,7 +289,7 @@ function createWindow() {
     });
   }
 
-  // --info-probe：打开设置面板 → 打印「运行环境」→ 截图
+  // --info-probe：打开「关于」→ 打印运行环境 → 截图 → 关掉再开设置面板 → 截图
   if (INFO_PROBE) {
     win.webContents.once('did-finish-load', () => {
       setTimeout(() => {

@@ -25,7 +25,9 @@
       <button class="ghost-btn" id="btnScan">🔍<span>扫描本机软件</span></button>
       <button class="ghost-btn" id="btnTheme">🌙<span>深色模式</span></button>
       <button class="ghost-btn" id="btnSettings">⚙️<span>设置</span></button>
-      <div class="conn" id="conn"><i></i><span>初始化…</span></div>
+      <!-- 状态行 = 「关于」的入口（版本 + 运行形态，点它看运行环境）。
+           之前写的是「已连接」，容易被读成"连上了服务器"——程序根本不联网。 -->
+      <button type="button" class="conn" id="conn" title="查看版本与运行环境"><i></i><span>初始化…</span></button>
     </div>
   </aside>
 
@@ -242,6 +244,11 @@
 
     <div class="modal-body">
       <div class="form">
+        <!-- 只在数据没能落在程序目录（回落 %APPDATA%）时出现。
+             这是设置面板里唯一需要用户知道并可能采取行动的环境信息 ——
+             其余运行环境细节一律搬去「关于」，别把只读诊断块塞进可改的表单里。 -->
+        <div class="warn-box" id="setDataWarn" hidden></div>
+
         <div class="field">
           <label>全局热键 <span class="hint">点击输入框后直接按下组合键</span></label>
           <div class="path-row">
@@ -298,21 +305,46 @@
             <b>数据</b>：安装版写在<b>安装目录</b>、绿色版写在<b>运行目录</b>、便携版写在<b>便携版 exe 所在目录</b>，
             统一落在程序目录下的 <b>data\</b> 子目录里，拷走整个目录即可搬家。
             仅当程序目录不可写（例如装进了 C:\Program Files 又没提权）才回落到 %APPDATA%\QuickLaunch。
+            当前实际落在哪，点左下角的<b>版本号</b>（「关于」）就能看到。<br>
           </div>
-        </div>
-
-        <div class="field">
-          <label>运行环境</label>
-          <div class="env-box" id="envBox">读取中…</div>
         </div>
       </div>
     </div>
 
     <div class="modal-foot">
-      <button class="btn sm" id="btnOpenCfg">打开配置目录</button>
+      <button class="btn sm" id="btnAbout">关于</button>
       <div class="spacer"></div>
       <button class="btn sm" data-close>关闭</button>
       <button class="btn primary sm" id="btnSetSave">保存设置</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== 关于 ===================== -->
+<!-- 版本 / 运行形态 / 环境 / 数据落点。这些是「看一眼」而不是「改一下」的信息，
+     所以独立成窗，不再占用设置面板；入口是侧栏底部的状态行，以及设置页脚的「关于」。 -->
+<div class="overlay" id="aboutOverlay" hidden>
+  <div class="modal about">
+    <div class="modal-head">
+      <div class="mh-ic">🚀</div>
+      <div>
+        <h2>快速启动 <span class="about-ver" id="abVer">v—</span></h2>
+        <p id="abSub">桌面启动器</p>
+      </div>
+      <div class="spacer"></div>
+      <button class="x-btn" data-close>✕</button>
+    </div>
+
+    <div class="modal-body">
+      <div id="abGrid"></div>
+      <div class="warn-box" id="abWarn" hidden></div>
+    </div>
+
+    <div class="modal-foot">
+      <button class="btn sm" id="btnAboutCopy">复制诊断信息</button>
+      <button class="btn sm" id="btnOpenCfg">打开配置目录</button>
+      <div class="spacer"></div>
+      <button class="btn sm" data-close>关闭</button>
     </div>
   </div>
 </div>

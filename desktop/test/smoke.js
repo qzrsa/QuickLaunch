@@ -518,7 +518,10 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
   ok(/state\.editMode && !anyOpen\)[\s\S]{0,900}if \(!typing\) \{/.test(appSrc),
     'Delete / Ctrl+A 仍受 !typing 保护（打字不会被当成批量删除）');
   const iEditEsc = appSrc.indexOf('if (state.editMode && !anyOpen)');
-  const iGlobalEsc = appSrc.indexOf("if (e.key === 'Escape') {\n      if (state.dlgCancel)");
+  // ★ 用正则而不是 indexOf 找那个多行字面量：一旦文件被某个工具改写成 CRLF，
+  //   带 `\n` 的 indexOf 会返回 -1，这条断言就会假报红（真踩过，排查了半天）。
+  const mGlobalEsc = appSrc.match(/if \(e\.key === 'Escape'\) \{\r?\n\s*if \(state\.dlgCancel\)/);
+  const iGlobalEsc = mGlobalEsc ? mGlobalEsc.index : -1;
   ok(iEditEsc > 0 && iGlobalEsc > 0 && iEditEsc < iGlobalEsc,
     '编辑模式的 Esc 处理排在全局 Esc 处理之前', `edit=${iEditEsc} global=${iGlobalEsc}`);
   ok(/setEditMode\(false\);[\s\S]{0,200}activeElement\.blur\(\)/.test(appSrc),
@@ -552,6 +555,124 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
   ok((barHtml.match(/<svg/g) || []).length >= 3, '编辑栏的收藏/取消/删除都用内联 SVG');
   ok(/\.btn\s+\.ic\.solid\s*\{[^}]*fill:\s*currentColor/.test(css),
     '.ic.solid 显式放开 fill（CSS 会盖掉 SVG 自带的 fill 呈现属性）');
+
+  /* ------------------------------------------------------------------
+   * 「关于」窗口 / 运行环境归属 —— 设置面板只放"能改的东西"
+   *   历史：设置面板底部原有一整块只读的「运行环境」文本（9 行，含
+   *   Electron/Chromium/Node 版本与两个绝对路径），既不可点也不可改，
+   *   还把弹窗撑得老长（自检脚本得先 scrollIntoView 才能截全）。
+   *   现在搬进独立的「关于」窗口，入口是侧栏底部状态行和设置页脚的「关于」。
+   * ------------------------------------------------------------------ */
+  section('关于窗口 / 运行环境归属');
+  ok(/id="aboutOverlay"/.test(htmlSrc), '有独立的「关于」弹窗 #aboutOverlay');
+  ['abGrid', 'abVer', 'abWarn', 'btnAboutCopy', 'btnOpenCfg'].forEach(id =>
+    ok(new RegExp(`id="${id}"`).test(htmlSrc), `「关于」里含 #${id}`));
+  ok(/id="aboutOverlay"[^>]*\shidden/.test(htmlSrc), '「关于」默认隐藏');
+
+  // 设置面板里不该再有那块只读文本 —— 这是本轮改动的核心，写死成回归守卫
+  ok(!/id="envBox"/.test(htmlSrc), '设置面板已无 #envBox（只读运行环境块已搬走）');
+  ok(!/env-box/.test(css), 'style.css 里 .env-box 死样式已删除');
+  ok(/id="setDataWarn"[^>]*\shidden/.test(htmlSrc) && /id="setDataWarn"/.test(htmlSrc),
+    '设置面板有警示条 #setDataWarn 且默认隐藏（不占位）');
+  ok(css.match(/\.warn-box\s*\{[^}]*var\(--danger-soft\)/) !== null,
+    '.warn-box 用 danger-soft 底色（一眼看出是"要留意"）');
+
+  // 「打开配置目录」搬去了「关于」；设置页脚换成「关于」
+  const iSet = htmlSrc.indexOf('id="setOverlay"');
+  const iAbout = htmlSrc.indexOf('id="aboutOverlay"');
+  const iCfgBtn = htmlSrc.indexOf('id="btnOpenCfg"');
+  ok(iSet > 0 && iAbout > iSet && iCfgBtn > iAbout,
+    '「打开配置目录」在「关于」窗口里，不再占设置页脚', `set=${iSet} about=${iAbout} cfg=${iCfgBtn}`);
+  ok(/id="btnAbout"/.test(htmlSrc), '设置页脚有「关于」入口');
+  ok(/<button[^>]*class="conn"\s+id="conn"/.test(htmlSrc),
+    '侧栏状态行是 <button>（可点、可键盘触发，不是死文本）');
+  ok(/\.conn\s*\{[^}]*width:\s*100%/.test(css) && /\.conn\s*\{[^}]*text-align:\s*left/.test(css),
+    '.conn 补了按钮需要的 width/text-align（按钮默认居中）');
+  ok(/\.conn\.warn\s+i\s*\{[^}]*var\(--danger\)/.test(css),
+    '.conn.warn 的红点用 danger 色（数据没落在程序目录时一眼可见）');
+
+  /* ★ 从源码里抠出这几个纯函数真跑，不另写"镜像实现"（镜像实现永远通过 = 没测）。
+     它们只依赖 FORM_TXT / PREVIEW，抠出来就能跑。 */
+  const fnSrc = n => {
+    const m = appSrc.match(new RegExp(`function ${n}\\s*\\([^)]*\\)\\s*\\{[\\s\\S]*?\\n\\}`));
+    return m ? m[0] : '';
+  };
+  const formMapSrc = (appSrc.match(/const FORM_TXT = \{[\s\S]*?\n\};/) || [''])[0];
+  const parts = ['FORM_TXT', 'formText', 'statusText', 'dataWarnText', 'aboutGroups', 'envLines'];
+  const got = {
+    FORM_TXT: formMapSrc,
+    formText: fnSrc('formText'),
+    statusText: fnSrc('statusText'),
+    dataWarnText: fnSrc('dataWarnText'),
+    aboutGroups: fnSrc('aboutGroups'),
+    envLines: fnSrc('envLines'),
+  };
+  const missingSrc = parts.filter(n => !got[n]);
+  ok(missingSrc.length === 0, '6 段源码都抠出来了', missingSrc.join(',') || 'ok');
+  ok((appSrc.match(/FORM_TXT/g) || []).length === 2,
+    'FORM_TXT 只有一份（定义 + formText 里取用）；状态行和「关于」共用它',
+    `出现 ${(appSrc.match(/FORM_TXT/g) || []).length} 次`);
+
+  if (missingSrc.length === 0) {
+    const mk = preview => new Function('PREVIEW',
+      [formMapSrc, got.formText, got.statusText, got.dataWarnText, got.aboutGroups, got.envLines].join('\n')
+      + '\nreturn { formText, statusText, dataWarnText, aboutGroups, envLines };')(preview);
+    const A = mk(false);
+
+    // 运行形态四种标签
+    ok(A.formText({ form: 'installed' }) === '安装版', 'installed → 安装版');
+    ok(A.formText({ form: 'green' }) === '绿色版', 'green → 绿色版');
+    ok(/便携版/.test(A.formText({ form: 'portable' })), 'portable → 便携版');
+    ok(A.formText({ form: 'dev' }) === '开发模式', 'dev → 开发模式');
+    ok(A.formText({ packaged: true }) === '已打包' && A.formText({}) === '开发模式',
+      '未知 form 时按 packaged 兜底');
+
+    // 状态行：版本 · 运行形态，且绝不出现「已连接」
+    ok(A.statusText({ version: '1.0.2', form: 'installed' }) === 'v1.0.2 · 安装版',
+      '状态行 = 「v版本 · 运行形态」');
+    ok(!/已连接/.test(A.statusText({ version: '1.0.2', form: 'installed' })),
+      '状态行不再出现「已连接」（程序不联网，那词会被读成在线状态）');
+    ok(A.statusText({ version: '1.0.2', form: 'green' }) === 'v1.0.2 · 绿色版', '绿色版状态行');
+    ok(A.statusText(null) === '初始化…', 'info 还没到手时说「初始化…」，不谎报运行形态');
+    ok(mk(true).statusText({ version: '1.0.2', form: 'installed' }) === '预览模式（非桌面版）',
+      '预览模式（浏览器打开）显示预览文案');
+
+    // 数据回落提示：四处共用这一份判断
+    ok(A.dataWarnText({ packaged: true, dataInProgramDir: false, dataNote: '已回落到 X' }) === '已回落到 X',
+      '数据没落在程序目录时给出说明');
+    ok(A.dataWarnText({ packaged: true, dataInProgramDir: false }) === '数据未写在程序目录',
+      '没有 dataNote 时用默认说明（不会打出 undefined）');
+    ok(A.dataWarnText({ packaged: true, dataInProgramDir: true }) === '',
+      '数据落在程序目录 → 无警示（正常情况不打扰用户）');
+    ok(A.dataWarnText({ packaged: false, dataInProgramDir: false, dataNote: 'x' }) === '',
+      '开发/预览形态不报数据回落（那本来就不落程序目录）');
+    ok(A.dataWarnText(null) === '', '没有 info 时不报警示');
+    ok((appSrc.match(/dataWarnText\(/g) || []).length >= 4,
+      '警示条 / 状态行红点 / 关于提示 / 复制文本四处共用 dataWarnText',
+      `用了 ${(appSrc.match(/dataWarnText\(/g) || []).length} 次`);
+
+    // 「关于」的分组与复制文本
+    const info = {
+      version: '1.0.2', electron: '44.7.2', chrome: '152.0.0.0', node: '22.0.0',
+      packaged: true, form: 'installed', exePath: 'C:\\App\\QuickLaunch.exe',
+      configFile: 'C:\\App\\data\\config.json', dataDir: 'C:\\App\\data',
+      dataInProgramDir: true, dataNote: '', autostart: false,
+    };
+    const gs = A.aboutGroups(info);
+    ok(gs.length === 3, '「关于」分三组（程序 / 环境 / 数据）');
+    const rows = gs.reduce((n, g) => n + g.rows.length, 0);
+    ok(rows === 9, '三组共 9 条（版本/形态/exe/三个版本号/数据目录/配置/自启）');
+    ok(gs.every(g => g.title && g.rows.every(r => r.k && typeof r.v === 'string')),
+      '每条都有键和有值的字符串（主进程少给字段会在这里露馅）');
+    const text = A.envLines(info).join('\n');
+    ok(!/undefined|null|NaN/.test(text), '复制的诊断信息里没有 undefined/null/NaN');
+    ok(/v1\.0\.2/.test(text) && /安装版/.test(text), '诊断信息含版本与运行形态');
+    const warnInfo = { ...info, dataInProgramDir: false, dataNote: '程序目录不可写' };
+    ok(/注意\s+程序目录不可写/.test(A.envLines(warnInfo).join('\n')),
+      '数据回落时诊断信息里带一行「注意」（用户贴出来就能定位问题）');
+    ok(!/注意/.test(text), '数据正常时诊断信息里不带「注意」');
+  }
+
 
   /* ------------------------------------------------------------------
    * 差量引擎 vcdiff —— 纯函数、不碰 fs，所以能直接在这里跑

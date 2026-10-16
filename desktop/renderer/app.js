@@ -1269,40 +1269,111 @@ async function openSettings() {
 
   state.info = await API.info();
   const i = state.info;
-  $('#envBox').textContent = envLines(i).join('\n');
+  // 设置里只保留「数据没落在程序目录」这一条需要用户知道的信息；
+  // 其余运行环境细节在「关于」窗口里（点左下角版本号）。
+  const warn = dataWarnText(i);
+  const dw = $('#setDataWarn');
+  dw.hidden = !warn;
+  if (warn) dw.innerHTML = `<b>数据未写在程序目录</b>　${esc(warn)}`;
 
   if (i.hotkeyFail) setHotkeyMsg(`热键注册失败：${i.hotkeyFail}`, 'warn');
   $('#setOverlay').hidden = false;
 }
 
-/** 组装设置面板「运行环境」的文本。
- *  抽成独立函数是为了让 --info-probe 能直接验它（渲染层最容易出的错就是
- *  主进程少给一个字段 → 这里打出 undefined）。 */
-function envLines(i) {
-  // 运行形态要分清三种打包形态，不能一律写「便携版」
-  const FORM_TXT = {
-    dev: '开发模式',
-    portable: '便携版（单文件 exe）',
-    installed: '安装版',
-    green: '绿色版',
-  };
-  const formTxt = FORM_TXT[i.form] || (i.packaged ? '已打包' : '开发模式');
-  const lines = [
-    `程序版本    v${i.version}`,
-    `运行形态    ${formTxt}`,
-    `数据目录    ${i.dataDir || '(未知)'}`,
-    `Electron    ${i.electron}`,
-    `Chromium    ${i.chrome}`,
-    `Node        ${i.node}`,
-    `可执行文件  ${i.exePath}`,
-    `配置文件    ${i.configFile}`,
-    `开机自启    ${i.autostart ? '已启用' : '未启用'}`,
+/** 运行形态的中文名。**只有这一份** —— 侧栏状态行、「关于」窗口、复制的诊断信息
+ *  全从 formText() 取，免得两边各写一套、迟早不一致。 */
+const FORM_TXT = {
+  dev: '开发模式',
+  portable: '便携版（单文件 exe）',
+  installed: '安装版',
+  green: '绿色版',
+};
+
+function formText(i) {
+  const f = i && i.form;
+  return FORM_TXT[f] || ((i && i.packaged) ? '已打包' : '开发模式');
+}
+
+/** 侧栏底部状态行的文案。**它不是网络状态** —— 程序不联网，
+ *  这里表达的是「哪个版本 + 什么运行形态」，点它打开「关于」。
+ *  state.info 还没到手时只能说「初始化…」，不能谎报一个运行形态。 */
+function statusText(i) {
+  if (PREVIEW) return '预览模式（非桌面版）';
+  if (!i || !i.form) return '初始化…';
+  return `v${i.version} · ${formText(i)}`;
+}
+
+/** 「关于」窗口的内容，按语义分三组。抽成独立函数有两个原因：
+ *  ① --info-probe 能直接验它（渲染层最容易出的错就是主进程少给一个字段 → 打出 undefined）；
+ *  ② 界面渲染和「复制诊断信息」共用同一份数据，不会一个改了另一个没改。 */
+function aboutGroups(i) {
+  return [
+    { title: '程序', rows: [
+      { k: '版本', v: `v${i.version}` },
+      { k: '运行形态', v: formText(i) },
+      { k: '可执行文件', v: i.exePath },
+    ] },
+    { title: '环境', rows: [
+      { k: 'Electron', v: i.electron },
+      { k: 'Chromium', v: i.chrome },
+      { k: 'Node', v: i.node },
+    ] },
+    { title: '数据', rows: [
+      { k: '数据目录', v: i.dataDir || '(未知)' },
+      { k: '配置文件', v: i.configFile },
+      { k: '开机自启', v: i.autostart ? '已启用' : '未启用' },
+    ] },
   ];
-  // 数据没能落在程序目录时必须说出来，不能让用户以为在程序目录里
-  if (i.packaged && !i.dataInProgramDir) {
-    lines.push(`注意        ${i.dataNote || '数据未写在程序目录'}`);
-  }
+}
+
+/** 数据没落在程序目录时的说明文字；正常情况返回空串。
+ *  设置面板的警示条、状态行的黄点、「关于」里的提示、复制的诊断信息
+ *  四处共用它 —— 判断条件只写一遍。 */
+function dataWarnText(i) {
+  return (i && i.packaged && !i.dataInProgramDir) ? (i.dataNote || '数据未写在程序目录') : '';
+}
+
+/** 组装「关于」的纯文本。「复制诊断信息」和 --info-probe 都走它，
+ *  验的就是用户真会贴出去的那段字（不能有 undefined）。 */
+function envLines(i) {
+  const lines = [];
+  aboutGroups(i).forEach(g => {
+    lines.push(`【${g.title}】`);
+    g.rows.forEach(r => lines.push(`${r.k.padEnd(10)}${r.v}`));
+  });
+  const warn = dataWarnText(i);
+  if (warn) lines.push(`注意      ${warn}`);
   return lines;
+}
+
+/** 打开「关于」：渲染分组表格 + 数据回落提示。 */
+async function openAbout() {
+  state.info = await API.info();
+  const i = state.info;
+  $('#abVer').textContent = `v${i.version}`;
+  $('#abSub').textContent = `${formText(i)} · Electron ${i.electron}`;
+  $('#abGrid').innerHTML = aboutGroups(i).map(g => `
+    <section class="about-sec">
+      <h3>${esc(g.title)}</h3>
+      ${g.rows.map(r => `<div class="about-row"><span class="k">${esc(r.k)}</span>`
+        + `<span class="v">${esc(r.v)}</span></div>`).join('')}
+    </section>`).join('');
+  const warn = dataWarnText(i);
+  const wb = $('#abWarn');
+  wb.hidden = !warn;
+  if (warn) wb.innerHTML = `<b>数据未写在程序目录</b>　${esc(warn)}`;
+  $('#aboutOverlay').hidden = false;
+  return i;
+}
+
+/** 复制诊断信息到剪贴板（走主进程 clipboard，file:// 下 navigator.clipboard 不稳）。 */
+async function copyDiag() {
+  if (!state.info) { try { state.info = await API.info(); } catch { /* 忽略 */ } }
+  if (!state.info) { toast('bad', '拿不到运行环境信息'); return; }
+  let r = null;
+  try { r = await API.copyText(envLines(state.info).join('\n')); } catch { /* 忽略 */ }
+  if (r && r.ok) toast('ok', '诊断信息已复制');
+  else toast('bad', '复制失败', '可以手动选中文字后 Ctrl+C。');
 }
 
 function setHotkeyMsg(msg, cls) {
@@ -1363,10 +1434,13 @@ async function refresh(opts) {
   renderNav();
   render();
   const conn = $('#conn');
-  conn.className = 'conn ok';
-  conn.querySelector('span').textContent = PREVIEW
-    ? '预览模式（非桌面版）'
-    : `v${(state.info && state.info.version) || '1.0'} · 已连接`;
+  // 绿点 = 一切正常；黄点 = 数据没落在程序目录（回落 %APPDATA%）。
+  // 文案是「版本 · 运行形态」，点它打开「关于」。★ 这里曾经写「已连接」，
+  // 会被读成"连上了服务器"——程序根本不联网，已改掉。
+  const warn = state.info ? dataWarnText(state.info) : '';
+  conn.className = 'conn ' + (warn ? 'warn' : 'ok');
+  conn.querySelector('span').textContent = statusText(state.info);
+  conn.title = warn ? `查看版本与运行环境（${warn}）` : '查看版本与运行环境';
 }
 
 async function persistSettings() {
@@ -1738,6 +1812,12 @@ function bind() {
   $('#btnOpenCfg').addEventListener('click', () => API.openConfigDir());
   $('#btnSetSave').addEventListener('click', saveSettings);
 
+  /* 「关于」的两个入口：设置页脚的按钮，和侧栏底部那条状态行。
+     状态行只在桌面版可点 —— 预览模式没有主进程，点开也拿不到真信息。 */
+  $('#btnAbout').addEventListener('click', () => { openAbout(); });
+  $('#btnAboutCopy').addEventListener('click', copyDiag);
+  $('#conn').addEventListener('click', () => { if (!PREVIEW) openAbout(); });
+
   /* 弹窗关闭 */
   $$('[data-close]').forEach(b => b.addEventListener('click', () => {
     b.closest('.overlay').hidden = true;
@@ -2032,22 +2112,49 @@ function createMockBridge() {
   API.on('ql:info-probe', async () => {
     state.probeMode = true;
     const sleep = ms => new Promise(r => setTimeout(r, ms));
-    await openSettings();
+    const i = await openAbout();
     await sleep(200);
-    const i = await API.info();
+
+    console.log('[info-probe] 关于窗口可见 =', !$('#aboutOverlay').hidden);
     const lines = envLines(i);
-    console.log('[info-probe] 面板可见 =', !$('#setOverlay').hidden);
     lines.forEach(l => console.log('[info-probe]   ' + l));
     const bad = lines.filter(l => /undefined|null|NaN/.test(l));
     console.log('[info-probe] 字段完整 =', bad.length === 0,
       bad.length ? '| 可疑行 = ' + bad.join(' / ') : '');
+
+    // 表格是真的画出来了，不只是数据对了
+    const want = aboutGroups(i).reduce((n, g) => n + g.rows.length, 0);
+    const got = document.querySelectorAll('#abGrid .about-row').length;
+    console.log('[info-probe] 关于窗口条目 =', got, '/ 期望', want, '| 一致 =', got === want);
+
+    // 状态行必须是「版本 · 运行形态」，不能再出现误导人的「已连接」
+    const connTxt = $('#conn').querySelector('span').textContent;
+    const wantConn = statusText(i);
+    console.log('[info-probe] 状态行 =', JSON.stringify(connTxt),
+      '| 期望 =', JSON.stringify(wantConn),
+      '| 通过 =', connTxt === wantConn && !/已连接/.test(connTxt));
+
+    // 回归守卫：设置面板里不该再有那块只读的运行环境文本
+    console.log('[info-probe] 设置面板已无环境块 =', !$('#envBox'));
     console.log('[info-probe] 数据随程序走 =', !!i.dataInProgramDir, '| 说明 =', i.dataNote);
-    // 「运行环境」在弹窗底部，不滚进来截图就被裁掉了
-    const env = $('#envBox');
-    if (env) { env.scrollIntoView({ block: 'center' }); }
+
     await sleep(200);
-    const r = await API.probeShot('shot-env.png');
-    console.log('[info-probe] 截图 =', r && r.ok ? 'ok' : ('失败 ' + (r && r.msg)));
+    const r1 = await API.probeShot('shot-about.png');
+    console.log('[info-probe] 截图 关于 =', r1 && r1.ok ? 'ok' : ('失败 ' + (r1 && r1.msg)));
+
+    // 设置面板：数据回落时才有警示条 + 状态行黄点，正常情况两者都不出现。
+    // 这一条同时验「警示条和状态点是同一份判断」（dataWarnText）。
+    $('#aboutOverlay').hidden = true;
+    await openSettings();
+    await sleep(200);
+    const wantWarn = !!dataWarnText(i);
+    const dotWarn = $('#conn').classList.contains('warn');
+    console.log('[info-probe] 设置面板可见 =', !$('#setOverlay').hidden,
+      '| 警示条显示 =', !$('#setDataWarn').hidden, '(期望', wantWarn + ')',
+      '| 状态点 =', dotWarn ? 'warn' : 'ok', '| 与警示条一致 =', dotWarn === wantWarn);
+    await sleep(200);
+    const r2 = await API.probeShot('shot-settings.png');
+    console.log('[info-probe] 截图 设置 =', r2 && r2.ok ? 'ok' : ('失败 ' + (r2 && r2.msg)));
     console.log('[info-probe] done');
   });
 
