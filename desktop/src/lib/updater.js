@@ -24,6 +24,7 @@ const nodeHttp = require('http');
 
 const vcdiff = require('./vcdiff.js');
 const core = require('./updater-core.js');
+const unzip = require('./unzip.js');
 const { PROTECTED_TOP, isProtectedPath } = require('./datadir.js');
 
 /* ------------------------------------------------------------------ 常量 */
@@ -340,40 +341,73 @@ function stageDirOf(programDir, version) {
 }
 
 /**
- * 把目标版本摊进暂存区，并写下 apply.json（退出后助手照着它干活）。
- * ★ 暂存区在程序目录内：不用求父目录可写、不跨卷、清理也归自己。
- *
+ * ★ 唯一写 apply.json / state.json 的地方 —— 差量与全量两条路都从这里出去。
+ *   两处各写一份的话，一边加了字段另一边迟早忘（这个项目已经在别的地方吃过这个亏）。
+ *   受保护路径的最后一道闸也在这里，所以不可能有哪条路绕过去。
+ */
+function writeApply(o, { stage, writes, deletes, mode }) {
+  const fs = o.fs || nodeFs;
+  const manifest = o.manifest || {};
+
+  const bad = writes.map(w => w.path).concat(deletes).filter(isProtectedPath);
+  if (bad.length) return { ok: false, reason: `更新涉及受保护路径，已中止：${bad.slice(0, 3).join(', ')}` };
+
+  const apply = {
+    schema: 1,
+    app: manifest.app || 'QuickLaunch',
+    from: o.myVersion || '',
+    to: String(o.version || manifest.version),
+    programDir: o.programDir,
+    stageDir: stage,
+    exe: o.exePath || '',
+    restart: !!o.restart,
+    mode,
+    // ★ 助手会拿这份名单**再挡一次**（纵深防御）。名单本身来自 datadir.PROTECTED_TOP，
+    //   不是在这里另写一份，所以不会漂移。
+    protectedTop: PROTECTED_TOP.slice(),
+    writes: writes.map(w => ({ path: w.path, size: w.size, sha256: w.sha256 })),
+    deletes: deletes.slice(),
+  };
+
+  try {
+    fs.writeFileSync(nodePath.join(stage, 'apply.json'), JSON.stringify(apply, null, 2) + '\n');
+    fs.writeFileSync(nodePath.join(o.programDir, STAGE_DIR, 'state.json'),
+      JSON.stringify({ state: 'staged', to: apply.to, from: apply.from, at: Date.now() }, null, 2) + '\n');
+  } catch (e) {
+    return { ok: false, reason: '写 apply.json 失败：' + e.message };
+  }
+  return { ok: true, stage, plan: apply };
+}
+
+/**
+ * 差量路径：字节已经在内存里（`applyDirPatch` 刚还原出来），落盘即可。
  * @returns {{ok:boolean, reason?:string, stage?:string, plan?:object}}
  */
 function stage(o) {
   const fs = o.fs || nodeFs;
-  const programDir = o.programDir;
   const manifest = o.manifest;
-  const version = o.version || (manifest && manifest.version);
-  const stage = stageDirOf(programDir, version);
+  const stageRoot = stageDirOf(o.programDir, o.version || manifest.version);
 
   let writes, deletes = [];
   if (o.mode === 'delta') {
     let produced;
     try {
-      produced = core.applyDelta(manifest, o.patch, o.pack, lazyLocalStore(programDir, fs));
+      produced = core.applyDelta(manifest, o.patch, o.pack, lazyLocalStore(o.programDir, fs));
     } catch (e) {
       // 打不上就是打不上：交给上层退回全量，绝不硬写出一个半残的程序
       return { ok: false, reason: '差量补丁无法应用：' + e.message };
     }
     writes = produced.map(f => ({ path: f.path, data: f.data }));
-    const rem = core.removalList(o.patch);
-    deletes = rem.paths;
+    deletes = core.removalList(o.patch).paths;
   } else {
-    // 全量：文件由调用方解包/或直接跑安装器提供，这里只做受保护路径把关
     writes = (o.files || []).map(f => ({ path: f.path, data: f.data }));
   }
 
-  // 受保护路径最后一道闸：写盘与删除都不许碰 data/ 等
-  const bad = writes.map(f => f.path).concat(deletes).filter(isProtectedPath);
-  if (bad.length) return { ok: false, reason: `更新涉及受保护路径，已中止：${bad.slice(0, 3).join(', ')}` };
+  // ★ 受保护路径**先挡一次**，别白写一堆字节到磁盘上再拒绝（writeApply 里还会挡一次）
+  const bad0 = writes.map(f => f.path).concat(deletes).filter(isProtectedPath);
+  if (bad0.length) return { ok: false, reason: `更新涉及受保护路径，已中止：${bad0.slice(0, 3).join(', ')}` };
 
-  const filesRoot = nodePath.join(stage, 'files');
+  const filesRoot = nodePath.join(stageRoot, 'files');
   try {
     fs.mkdirSync(filesRoot, { recursive: true });
   } catch (e) {
@@ -382,6 +416,10 @@ function stage(o) {
 
   const planWrites = [];
   for (const w of writes) {
+    // ★ size 与 sha256 一律**从真正写下去的字节现算**，不从调用方接 ——
+    //   两个人各传一份迟早对不上（重构时就断过一次：差量那边只给了 data）。
+    //   助手换文件前会拿这里的 sha256 再校一遍，所以它必须是"磁盘上那份"的哈希。
+    if (!Buffer.isBuffer(w.data)) return { ok: false, reason: `内部错误：${w.path} 没有字节内容` };
     const dest = nodePath.join(filesRoot, ...String(w.path).split('/'));
     try {
       fs.mkdirSync(nodePath.dirname(dest), { recursive: true });
@@ -392,32 +430,85 @@ function stage(o) {
     planWrites.push({ path: w.path, size: w.data.length, sha256: sha256hex(w.data) });
   }
 
-  const apply = {
-    schema: 1,
-    app: manifest.app || 'QuickLaunch',
-    from: o.myVersion || '',
-    to: String(version),
-    programDir,
-    stageDir: stage,
-    exe: o.exePath || '',
-    restart: !!o.restart,
-    mode: o.mode,
-    // ★ 助手会拿这份名单**再挡一次**（纵深防御）。名单本身来自 datadir.PROTECTED_TOP，
-    //   不是在这里另写一份，所以不会漂移。
-    protectedTop: PROTECTED_TOP.slice(),
-    writes: planWrites,
-    deletes: deletes.slice(),
-  };
+  return writeApply(o, { stage: stageRoot, writes: planWrites, deletes, mode: o.mode || 'full' });
+}
 
-  try {
-    fs.writeFileSync(nodePath.join(stage, 'apply.json'), JSON.stringify(apply, null, 2) + '\n');
-    fs.writeFileSync(nodePath.join(programDir, STAGE_DIR, 'state.json'),
-      JSON.stringify({ state: 'staged', to: version, from: apply.from, at: Date.now() }, null, 2) + '\n');
-  } catch (e) {
-    return { ok: false, reason: '写 apply.json 失败：' + e.message };
+/** 暂存目录整棵删掉（失败或无事可做时清场，别把几百 MB 留在用户盘上） */
+function dropStage(dir, fs = nodeFs) {
+  try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* 删不掉也不能盖住原始原因 */ }
+}
+
+/**
+ * 全量回退：下绿色版 zip → 解开 → 逐文件对清单 → **只摊真正变了的文件**。
+ *
+ * ★ 为什么"全量"也摊进暂存区而不是就地解压：下载完就地解压等于改到一半就开始覆盖运行中的
+ *   文件。摊进暂存区、由退出后的助手统一换，才能保证"要么全换要么全不换"。
+ * ★ 只摊变了的文件（下载已经是全量 160 MB，没必要再写 500 MB）：所以要先扫一遍本机目录比对。
+ * ★ deletes 恒为空：全量包只知道"新版本该有什么"，不知道"本机多出来的那些是什么" ——
+ *   更新器**绝不主动删它看不懂的文件**（那可能是用户自己放的）。
+ * ★ 内存：解包**直接解到暂存区**（不是先解进内存），峰值只有那个 zip 本身（约 160 MB）。
+ */
+async function stageFull(o) {
+  const fs = o.fs || nodeFs;
+  const get = o.getBuffer || httpGetBuffer;
+  const manifest = o.manifest;
+  const stageRoot = stageDirOf(o.programDir, o.version || manifest.version);
+  const filesRoot = nodePath.join(stageRoot, 'files');
+
+  try { fs.mkdirSync(stageRoot, { recursive: true }); } catch (e) {
+    return { ok: false, reason: '暂存区创建失败：' + e.message };
   }
 
-  return { ok: true, stage, plan: apply };
+  // 1. 下 zip（落在暂存区里 —— 那里是受保护目录，不会被当成程序文件）
+  const zipPath = nodePath.join(stageRoot, manifest.full.asset);
+  const dl = await downloadAsset({
+    base: o.base, asset: manifest.full.asset,
+    size: manifest.full.size, sha256: manifest.full.sha256,
+    dest: zipPath, fs, getBuffer: get, onChunk: o.onChunk, timeout: o.timeout,
+  });
+  if (!dl.ok) { dropStage(stageRoot, fs); return { ok: false, reason: dl.reason }; }
+
+  // 2. 解包（unzip 里自带 zip slip / 受保护路径守卫 + 逐条 CRC）
+  let all;
+  try {
+    const buf = fs.readFileSync(zipPath);
+    all = unzip.extractToDir(buf, filesRoot, { fs, isProtected: isProtectedPath });
+  } catch (e) {
+    dropStage(stageRoot, fs);
+    return { ok: false, reason: '绿色版包解不开：' + e.message };
+  }
+  try { fs.unlinkSync(zipPath); } catch { /* 删除失败不影响（它在受保护目录里） */ }
+
+  // 3. 从**磁盘上的字节**算清单（不是从解包返回值里抄），再整包对一遍
+  const staged = scanProgramDir(filesRoot, { fs });
+  const vr = core.verifyDir(manifest, staged);
+  if (!vr.ok) {
+    dropStage(stageRoot, fs);
+    return {
+      ok: false,
+      reason: `绿色版包与更新清单不符（缺 ${vr.missing.length} 个 / 内容不一致 ${vr.differ.length} 个）`,
+    };
+  }
+  void all;
+
+  // 4. 本机已经跟目标一模一样的文件不必再换一遍
+  const local = new Map(scanProgramDir(o.programDir, { fs }).map(f => [f.path, f]));
+  const need = [];
+  for (const f of staged) {
+    const cur = local.get(f.path);
+    if (cur && cur.size === f.size && cur.sha256 === f.sha256) {
+      try { fs.unlinkSync(nodePath.join(filesRoot, ...f.path.split('/'))); } catch { /* noop */ }
+      continue;
+    }
+    need.push(f);
+  }
+
+  if (!need.length) {
+    dropStage(stageRoot, fs);
+    return { ok: true, nothingToDo: true, reason: '本机文件已与目标版本逐一致，无需替换' };
+  }
+
+  return writeApply(o, { stage: stageRoot, writes: need, deletes: [], mode: 'full' });
 }
 
 /** 更新只支持这两种形态：便携版是**单文件 exe**，自己就是数据源，只能整份换，不做自更新。 */
@@ -437,6 +528,6 @@ module.exports = {
   scanProgramDir,
   check, isNewer, parseVer,
   downloadAsset,
-  lazyLocalStore, stageDirOf, stage,
+  lazyLocalStore, stageDirOf, stage, stageFull, writeApply, dropStage,
   canSelfUpdate,
 };

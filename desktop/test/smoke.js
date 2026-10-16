@@ -1093,6 +1093,7 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
   // （崩溃会把后面几十条断言一起吞掉，看起来像"改动只坏了一条"）。
   const stgRoot = stg.stage || path.join(TMP, 'stage-missing');
   const readIf = (p) => { try { return fs.readFileSync(p); } catch { return null; } };
+  const readJsonIf = (p) => { const b = readIf(p); return b ? JSON.parse(b.toString('utf8')) : null; };
   const stgExe = readIf(path.join(stgRoot, 'files', 'QuickLaunch.exe'));
   ok(!!stgExe && stgExe.equals(newExe), '★ 暂存的 exe 是真引擎还原出来的新版（逐字节等于目标）');
   const stgPak = readIf(path.join(stgRoot, 'files', 'locales', 'new.pak'));
@@ -1138,6 +1139,190 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
   });
   ok(stgUnder.ok === false && /清单之外/.test(stgUnder.reason),
     '★ 补丁产出了清单里没声明的文件 → 拒绝', stgUnder.reason);
+
+  /* ------------------------------------------------------------------
+   * ZIP 读取器 + 全量回退 stageFull —— 用**真写器**产 zip，避免自己造自己的假数据
+   * ------------------------------------------------------------------ */
+  section('ZIP 读取器 unzip + 全量回退 stageFull');
+  const uz = require('../src/lib/unzip.js');
+  const cp = require('child_process');
+
+  // 造"目标版本"目录：big.bin 用**压不动**的字节（→ 走 store 分支），
+  // app.asar 用高重复文本（→ 走 deflate 分支）。两个分支都要跑到。
+  // ★ 这里踩过坑：原先写 `(i * 2654435761) & 0xff`，看着像伪随机，其实是**256 字节的循环**
+  //   —— deflate 把 70000 压成 597，于是整包没有一条走 store，断言红；更要命的是包因此只有
+  //   1 KB 出头，后面"截断的 zip"那条用 subarray(0, 2000) 压根没截到，等于什么都没测。
+  //   写器选 store 的判据是 `deflated.length < raw.length`，所以测试数据必须真的不可压缩。
+  const NEWDIR = path.join(TMP, 'newver');
+  const putNew = (rel, content) => {
+    const p = path.join(NEWDIR, ...rel.split('/'));
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, content);
+  };
+  const bigRnd = Buffer.alloc(70000);
+  {
+    let seed = 0x2545f491;
+    for (let i = 0; i < bigRnd.length; i++) {
+      seed ^= seed << 13; seed >>>= 0;
+      seed ^= seed >>> 17;
+      seed ^= seed << 5; seed >>>= 0;
+      bigRnd[i] = seed & 0xff;
+    }
+  }
+  const asarTxt = Buffer.from('ASAR-CONTENT-'.repeat(900));
+  putNew('big.bin', bigRnd);
+  putNew('resources/app.asar', asarTxt);
+  putNew('locales/zh-CN.pak', Buffer.from('中文内容'.repeat(400)));
+  putNew('data/secret.json', '{"must":"not be packed"}');   // 诱饵：写器必须排除
+
+  const ZIP = path.join(TMP, 'green.zip');
+  const pg = cp.spawnSync(process.execPath,
+    [path.join(__dirname, '..', 'scripts', 'pack-green.mjs'), '--src', NEWDIR, '--out', ZIP, '--need', 'resources/app.asar'],
+    { encoding: 'utf8', cwd: path.join(__dirname, '..') });
+  ok(pg.status === 0, '用真写器（pack-green.mjs）成功打出 zip', String(pg.stderr || '').split('\n')[0]);
+  const zipBuf = fs.readFileSync(ZIP);
+  const zlist = uz.listZip(zipBuf);
+  ok(zlist.length === 3, `zip 里 3 个条目（实际 ${zlist.length}）`);
+  ok(!zlist.some(e => e.name.startsWith('data/')), '★ 运行时目录 data/ 没被打进 zip（写器的排除守卫生效）');
+  // ★ 先证明 fixture 本身合格，再看 store/deflate 分支 —— 否则"没走到 store"会被误读成写器的 bug
+  ok(require('zlib').deflateRawSync(bigRnd, { level: 9 }).length >= bigRnd.length,
+    'fixture 的 big.bin 真的压不动（写器才会选 store）');
+  ok(zlist.some(e => e.method === 0) && zlist.some(e => e.method === 8),
+    '两种压缩方式都覆盖到了（store + deflate），两个分支都真跑过',
+    zlist.map(e => `${e.name}=${e.method}`).join(' '));
+  ok(zipBuf.length > 2000, `整包比"截断测试"的截断长度还长（实际 ${zipBuf.length} 字节）`);
+  const zall = uz.extractAll(zipBuf);
+  const srcOf = (rel) => fs.readFileSync(path.join(NEWDIR, ...rel.split('/')));
+  ok(zall.every(f => f.data.equals(srcOf(f.name))), '★ 逐字节读回来与源文件一致',
+    zall.filter(f => !f.data.equals(srcOf(f.name))).map(f => f.name).join(','));
+  const EXTRACTED = path.join(TMP, 'unzipped');
+  const wrote = uz.extractToDir(zipBuf, EXTRACTED);
+  ok(wrote.length === 3 && wrote.every(f => fs.readFileSync(path.join(EXTRACTED, ...f.path.split('/'))).equals(srcOf(f.path))),
+    '解包到目录也逐字节一致');
+  ok(uz.crc32(Buffer.from('123456789')) === 0xCBF43926, 'CRC32 标准向量对得上（0xCBF43926）');
+
+  // 坏一个数据字节 → 必须抛（不能悄悄写进程序目录）
+  {
+    const bad = Buffer.from(zipBuf);
+    const e0 = zlist[0];
+    bad[e0.localOffset + 30 + Buffer.byteLength(e0.name) + 2] ^= 0xff;
+    let err = null;
+    try { uz.extractEntry(bad, e0); } catch (e) { err = e.message; }
+    ok(!!err && /CRC|解压/.test(err), '★ 数据被改一个字节 → 抛错（不是"尽力而为"地解出半残文件）', err || '');
+  }
+  // 不认识的压缩方式 → 明确抛
+  {
+    const bad = Buffer.from(zipBuf);
+    const eocd = uz.findEocd(bad);
+    const cdOff = bad.readUInt32LE(eocd + 16);
+    bad.writeUInt16LE(99, cdOff + 10);
+    let err = null;
+    try { uz.listZip(bad); } catch (e) { err = e.message; }
+    ok(!!err && /压缩方式/.test(err), '不认识的压缩方式 → 明确报错', err || '');
+  }
+  // zip slip / 受保护路径（纯函数直测）
+  {
+    const bad = (n) => { try { uz.assertSafeName(n, datadir.isProtectedPath); return 'ok'; } catch (e) { return e.message; } };
+    ok(/绝对路径/.test(bad('/etc/passwd')), '绝对路径条目名被拒');
+    ok(/绝对路径/.test(bad('C:/win.exe')), '盘符开头的条目名被拒');
+    ok(/含 \.\./.test(bad('../evil.txt')) || /\.\./.test(bad('../evil.txt')), '.. 穿越条目名被拒');
+    ok(/反斜杠/.test(bad('a\\b.txt')), '反斜杠条目名被拒');
+    ok(/受保护/.test(bad('data/config.json')), '★ 落在受保护目录的条目名被拒');
+    ok(bad('resources/app.asar') === 'ok', '正常条目名放行');
+  }
+
+  // ---- stageFull：全量回退的端到端 ----
+  const PROG2 = path.join(TMP, 'prog2');
+  const putP = (rel, content) => {
+    const p = path.join(PROG2, ...rel.split('/'));
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, content);
+  };
+  const mkFullManifest = (zipB, files) => ({
+    schema: 1, app: 'QuickLaunch', channel: 'green', version: '2.0.0',
+    full: { asset: 'QuickLaunch-Green-2.0.0.zip', size: zipB.length, sha256: vc.sha256hex(zipB) },
+    files: files.map(f => ({ path: f.name, size: f.data.length, sha256: vc.sha256hex(f.data) })),
+    patches: [],
+  });
+  const FULL_MAN = mkFullManifest(zipBuf, zall);
+
+  // 本机：big.bin 与目标**完全相同**、app.asar 是旧的、locales/new.pak 缺
+  putP('big.bin', bigRnd);
+  putP('resources/app.asar', Buffer.from('OLD-ASAR'));
+  const sf = await updater.stageFull({
+    manifest: FULL_MAN, base: 'https://m', programDir: PROG2, myVersion: '1.1.1',
+    getBuffer: serveFile(zipBuf),
+  });
+  ok(sf.ok === true, 'stageFull 成功', sf.reason || '');
+  const sfRoot = sf.stage || path.join(TMP, 'sf-missing');
+  const sfAj = readJsonIf(path.join(sfRoot, 'apply.json'));
+  ok(!!sfAj && sfAj.mode === 'full', 'apply.json 记的是 full 模式');
+  const sfPaths = ((sfAj && sfAj.writes) || []).map(w => w.path).sort();
+  ok(sfPaths.join(',') === 'locales/zh-CN.pak,resources/app.asar',
+    '★ 只摊了真正变了的文件（big.bin 本机已一致，没有被重复写）', sfPaths.join(','));
+  ok(!!sfAj && Array.isArray(sfAj.deletes) && sfAj.deletes.length === 0,
+    '★ 全量路径的 deletes 恒为空（不知道本机多出来的是什么，就绝不删）');
+  ok(!!sfAj && JSON.stringify(sfAj.protectedTop) === JSON.stringify(datadir.PROTECTED_TOP),
+    '★ 全量路径写出的受保护名单同样来自 datadir（两条路都过同一道闸）');
+  ok(!fs.existsSync(path.join(sfRoot, 'QuickLaunch-Green-2.0.0.zip')), 'zip 用完就删（不把 160 MB 留在用户盘上）');
+  ok(fs.readFileSync(path.join(PROG2, 'big.bin')).equals(bigRnd), '本机没被动的文件仍然原样');
+
+  // 本机已经全对 → 什么都不做，并且不留暂存区
+  putP('resources/app.asar', asarTxt);
+  putP('locales/zh-CN.pak', Buffer.from('中文内容'.repeat(400)));
+  const sfSame = await updater.stageFull({
+    manifest: FULL_MAN, base: 'https://m', programDir: PROG2, myVersion: '1.1.1',
+    getBuffer: serveFile(zipBuf),
+  });
+  ok(sfSame.ok === true && sfSame.nothingToDo === true, '★ 本机已与目标一致 → 明确返回"无需替换"', sfSame.reason);
+  ok(!fs.existsSync(path.join(PROG2, '.update', '2.0.0')), '★ 无事可做时暂存区被清掉（不留几百 MB）');
+
+  // 包与清单不符 → 必须拒绝，并清场
+  {
+    const wrong = JSON.parse(JSON.stringify(FULL_MAN));
+    wrong.files.find(f => f.path === 'resources/app.asar').sha256 = 'd'.repeat(64);
+    const r = await updater.stageFull({
+      manifest: wrong, base: 'https://m', programDir: PROG2, myVersion: '1.1.1', getBuffer: serveFile(zipBuf),
+    });
+    ok(r.ok === false && /不符/.test(r.reason), '★ 包内容与清单不符 → 拒绝替换', r.reason);
+    ok(!fs.existsSync(path.join(PROG2, '.update', '2.0.0')), '失败后暂存区被清场');
+  }
+  // 坏 zip → 明确报"解不开"，并清场
+  {
+    // ★ 按比例截：原先写死 subarray(0, 2000)，而当时的包只有 1 KB 出头 —— 等于**没有截**，
+    //   这条断言在"产品代码完全正常"和"解包完全不校验"两种情况下都是绿的。
+    const cut = zipBuf.subarray(0, Math.floor(zipBuf.length / 2));
+    ok(cut.length < zipBuf.length, `截断体确实比整包短（${cut.length} < ${zipBuf.length}）`);
+
+    // ① 清单仍按整包描述 → 第 1 步的大小校验就该拦住，连解都不去解
+    const r1 = await updater.stageFull({
+      manifest: FULL_MAN, base: 'https://m', programDir: PROG2, myVersion: '1.1.1',
+      getBuffer: serveFile(cut),
+    });
+    ok(r1.ok === false && /大小不符/.test(r1.reason),
+      '★ 下到一半的包在第 1 步就被拦住（不浪费时间去解它）', r1.reason);
+
+    // ② 清单也按截断体描述（模拟"包本身就是坏的/清单被改过"）→ 必须倒在解包这一步
+    const cutMan = JSON.parse(JSON.stringify(FULL_MAN));
+    cutMan.full.size = cut.length;
+    cutMan.full.sha256 = vc.sha256hex(cut);
+    const r2 = await updater.stageFull({
+      manifest: cutMan, base: 'https://m', programDir: PROG2, myVersion: '1.1.1',
+      getBuffer: serveFile(cut),
+    });
+    ok(r2.ok === false && /解不开/.test(r2.reason),
+      '★ 坏包 → 明说解不开（绝不尽力解出半残文件）', r2.reason);
+    ok(!fs.existsSync(path.join(PROG2, '.update', '2.0.0')), '坏包失败后暂存区同样被清场');
+  }
+  // hash 不符的 zip → downloadAsset 就该拦住
+  {
+    const wrong = JSON.parse(JSON.stringify(FULL_MAN));
+    wrong.full.sha256 = 'e'.repeat(64);
+    const r = await updater.stageFull({
+      manifest: wrong, base: 'https://m', programDir: PROG2, myVersion: '1.1.1', getBuffer: serveFile(zipBuf),
+    });
+    ok(r.ok === false && /sha256/.test(r.reason), '★ zip 校验失败在第 1 步就被拦住（不会解一个坏包）', r.reason);
+  }
 
   section('结果');
   console.log(`  \x1b[32m通过 ${pass}\x1b[0m${fail ? ` / \x1b[31m失败 ${fail}\x1b[0m` : ''}`);

@@ -61,20 +61,11 @@ const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.ur
 const OUT = arg('--out') || path.join(SRC, '..', `QuickLaunch-Green-${pkg.version}.zip`);
 
 /* ------------------------------------------------------------------ CRC32 */
-const CRC_TABLE = (() => {
-  const t = new Int32Array(256);
-  for (let n = 0; n < 256; n++) {
-    let c = n;
-    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
-    t[n] = c;
-  }
-  return t;
-})();
-function crc32(buf) {
-  let c = 0xFFFFFFFF;
-  for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xFF] ^ (c >>> 8);
-  return (c ^ 0xFFFFFFFF) >>> 0;
-}
+// ★ 从 src/lib/unzip.js 引同一份实现：读写两边各算一套 CRC32 的话，
+//   哪天对不上根本查不出是谁算错了（读的那半在更新器里跑，出问题只表现为"包坏了"）。
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+const { crc32 } = require('../src/lib/unzip.js');
 
 /* ---------------------------------------------------- DOS 时间 / 日期编码 */
 function dosDateTime(d) {
