@@ -19,6 +19,21 @@ const nodeFs = require('fs');
 const DATA_DIR_NAME = 'data';
 
 /**
+ * 程序目录里**属于运行时、绝不能被当成"程序文件"**的顶层目录。
+ * 出现在三处，所以只留一份定义（各写一份迟早漂移）：
+ *   1. 打绿色版 zip 时整棵跳过（否则把用户私人配置随 Release 发出去）；
+ *   2. 生成 update.json 清单时跳过（否则客户端会把 data/config.json 当成程序文件去校验/覆盖）；
+ *   3. 自更新落盘/删除时拒绝（**最要命的一条**：更新器少写一个判断就会删掉用户数据）。
+ */
+const PROTECTED_TOP = Object.freeze([DATA_DIR_NAME, '.probe-shot', '.tmpdata']);
+
+/** rel 是用 `/` 分隔的相对路径。任何一段命中 PROTECTED_TOP 都算受保护。 */
+function isProtectedPath(rel) {
+  const parts = String(rel || '').split('/').filter(Boolean);
+  return parts.some(p => PROTECTED_TOP.includes(p));
+}
+
+/**
  * 目录能建且能写才算可写。
  * 探测文件删不掉**不算**致命 —— 我们要的是「能写」，删不掉多半只是回收站策略问题。
  */
@@ -85,4 +100,7 @@ function migrateLegacyConfig(targetDir, legacyDir, fs = nodeFs) {
   }
 }
 
-module.exports = { DATA_DIR_NAME, ensureWritable, resolveDataDir, migrateLegacyConfig };
+module.exports = {
+  DATA_DIR_NAME, PROTECTED_TOP, isProtectedPath,
+  ensureWritable, resolveDataDir, migrateLegacyConfig,
+};

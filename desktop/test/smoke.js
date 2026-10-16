@@ -666,6 +666,92 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
   ok(vc.shouldUseDelta(100 * 1048576, 153 * 1048576, 0.6) === false, '差量占 65% → 超过阈值，走全量');
   ok(vc.shouldUseDelta(1024, 0, 0.6) === false, '全量大小未知/为 0 → 不冒险，走全量');
 
+  /* ------------------------------------------------------------------
+   * 自更新纯逻辑 updater-core —— 决定「走增量还是走全量」以及各种拒绝条件
+   * ------------------------------------------------------------------ */
+  section('自更新 决策与校验 updater-core');
+  const core = require('../src/lib/updater-core');
+
+  // 拿真实引擎造一份小清单，别手写假数据（手写的假数据只能证明假数据自洽）
+  const o1 = Buffer.from('hello quicklaunch '.repeat(4000));          // 约 68 KB
+  const n1 = Buffer.from(o1);
+  n1.write('CHANGED', 30000, 'utf8');
+  const pk = vc.makeDirPatch([{ path: 'f.bin', data: o1 }], [{ path: 'f.bin', data: n1 }]);
+  const mkManifest = (over = {}) => Object.assign({
+    schema: 1,
+    app: 'QuickLaunch',
+    channel: 'green',
+    version: '2.0.0',
+    unpackedSize: n1.length,
+    full: { asset: 'QuickLaunch-Green-2.0.0.zip', size: pk.pack.length * 20, sha256: 'f'.repeat(64) },
+    files: [{ path: 'f.bin', size: n1.length, sha256: vc.sha256hex(n1) }],
+    patches: [{
+      from: '1.0.0',
+      asset: 'QuickLaunch-Delta-1.0.0-to-2.0.0.bin',
+      size: pk.pack.length,
+      sha256: vc.sha256hex(pk.pack),
+      plan: pk.manifest,
+    }],
+  }, over);
+
+  const localOk = [{ path: 'f.bin', size: o1.length, sha256: vc.sha256hex(o1) }];
+  const man = mkManifest();
+
+  ok(core.validManifest(man) === man, '合法清单通过校验');
+  ok(core.validManifest(null) === null, 'null 清单 → 判为不可用（上层退全量，而不是崩）');
+  ok(core.validManifest({ ...man, schema: 9 }) === null, 'schema 不认识 → 判为不可用（不猜格式）');
+  ok(core.validManifest({ ...man, full: { asset: 'x.zip' } }) === null, '全量包缺 sha256 → 判为不可用（没法验签就不敢下）');
+  ok(core.validManifest({ ...man, files: 'oops' }) === null, 'files 不是数组 → 判为不可用');
+
+  const okPlan = core.selectPlan(man, '1.0.0', localOk);
+  ok(okPlan.mode === 'delta', '本机版本有对应差量 + 基准全对 → 走增量', `mode=${okPlan.mode}`);
+  ok(core.selectPlan(man, '0.9.0', localOk).mode === 'full', '本机版本没有对应差量 → 走全量');
+  ok(core.selectPlan(man, '', localOk).mode === 'full', '本机版本未知 → 走全量');
+  ok(core.selectPlan(man, '1.0.0', []).mode === 'full', '没有任何本地文件可比对 → 走全量');
+  ok(core.selectPlan(man, '1.0.0', [{ path: 'f.bin', size: o1.length, sha256: 'a'.repeat(64) }]).mode === 'full',
+    '本地文件哈希对不上旧清单 → 走全量（被改过或版本不符）');
+  ok(core.selectPlan(man, '1.0.0', [{ path: 'f.bin', size: o1.length + 1, sha256: vc.sha256hex(o1) }]).mode === 'full',
+    '本地文件大小对不上 → 走全量');
+  const tooBig = mkManifest();
+  tooBig.patches[0].size = Math.ceil(tooBig.full.size * 0.7);
+  const tb = core.selectPlan(tooBig, '1.0.0', localOk);
+  ok(tb.mode === 'full' && /阈值/.test(tb.reason), '差量占 70% → 走全量，且 reason 说明是阈值问题', tb.reason);
+  ok(core.DELTA_LIMIT === 0.6, '默认阈值是 60%');
+
+  // 增量产出必须落在清单内；applyDelta 会拒收清单之外/受保护路径
+  const applied = core.applyDelta(man, man.patches[0], pk.pack,
+    new Map([['f.bin', o1]]));
+  ok(applied.length === 1 && applied[0].data.equals(n1), 'applyDelta 产出逐字节等于目标文件');
+
+  const badPlan = JSON.parse(JSON.stringify(man));
+  badPlan.patches[0].plan.files = [{ path: 'data/config.json', size: 4, sha256: 'x', action: 'patch', ops: [[1, 0, 0, 4]] }];
+  let pe2 = null;
+  try { core.applyDelta(badPlan, badPlan.patches[0], pk.pack, new Map()); } catch (e) { pe2 = e; }
+  ok(!!pe2, '差量清单里出现 data/ 下的文件 → 直接抛错拒做（更新器绝不碰用户数据）');
+
+  const outside = JSON.parse(JSON.stringify(man));
+  outside.patches[0].plan.files = [{ path: 'not/in/manifest.bin', size: 1, sha256: 'x', action: 'patch', ops: [[1, 0, 0, 1]] }];
+  let pe3 = null;
+  try { core.applyDelta(outside, outside.patches[0], pk.pack, new Map()); } catch (e) { pe3 = e; }
+  ok(!!pe3, '补丁产出清单之外的文件 → 抛错');
+
+  const rl = core.removalList({ plan: { removed: ['data/config.json', 'old.txt'] } });
+  ok(rl.paths.length === 1 && rl.paths[0] === 'old.txt', '待删列表只留非受保护路径');
+  ok(rl.skipped.length === 1 && rl.skipped[0] === 'data/config.json', '受保护路径进 skipped：只报告、绝不删');
+
+  const vv = core.verifyDir(man, [{ path: 'f.bin', size: n1.length, sha256: vc.sha256hex(n1) }]);
+  ok(vv.ok && vv.checked === 1, '完整正确的目录 → verifyDir 通过');
+  ok(!core.verifyDir(man, []).ok, '空目录 → verifyDir 不通过（会报 missing）');
+  ok(core.verifyDir(man, []).missing.length === 1, '空目录报出缺失的文件');
+  const ve = core.verifyDir(man, [
+    { path: 'f.bin', size: n1.length, sha256: vc.sha256hex(n1) },
+    { path: 'user-added.txt', size: 3, sha256: 'z'.repeat(64) },
+  ]);
+  ok(ve.ok && ve.extra.length === 1, '多出来的文件不算失败，但要报出来（更新器不主动删看不懂的文件）');
+  ok(core.verifyDir(man, [{ path: 'f.bin', size: n1.length, sha256: 'b'.repeat(64) }]).differ.length === 1,
+    '内容不符会被 verifyDir 单独列进 differ');
+  ok(/v2\.0\.0/.test(core.summarize(man)), 'summarize 里带版本号', core.summarize(man));
+
   section('结果');
   console.log(`  \x1b[32m通过 ${pass}\x1b[0m${fail ? ` / \x1b[31m失败 ${fail}\x1b[0m` : ''}`);
   fs.rmSync(TMP, { recursive: true, force: true });

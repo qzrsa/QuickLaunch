@@ -10,9 +10,11 @@
   "scripts": {
     "start": "electron .",
     "start:visible": "electron . --dev",
-    "check": "node --check src/main.js && node --check src/preload.js && node --check src/lib/menus.js && node --check src/lib/store.js && node --check src/lib/datadir.js && node --check src/lib/vcdiff.js && node --check renderer/app.js && node --check scripts/pack-green.mjs && node --check scripts/delta-bench.mjs && node --check scripts/lint-workflow.mjs && node scripts/lint-workflow.mjs",
+    "check": "node --check src/main.js && node --check src/preload.js && node --check src/lib/menus.js && node --check src/lib/store.js && node --check src/lib/datadir.js && node --check src/lib/vcdiff.js && node --check src/lib/updater-core.js && node --check renderer/app.js && node --check scripts/pack-green.mjs && node --check scripts/delta-bench.mjs && node --check scripts/make-update-manifest.mjs && node --check scripts/verify-update.mjs && node --check scripts/lib/dist-walk.mjs && node --check scripts/lint-workflow.mjs && node scripts/lint-workflow.mjs",
     "test": "node test/smoke.js",
     "bench:delta": "node scripts/delta-bench.mjs",
+    "manifest:update": "node scripts/make-update-manifest.mjs --new ../dist/win-unpacked --out ../dist",
+    "verify:update": "node scripts/verify-update.mjs --manifest ../dist/update.json",
     "dist": "electron-builder --win nsis portable dir --x64 --publish never",
     "dist:nsis": "electron-builder --win nsis --x64 --publish never",
     "dist:portable": "electron-builder --win portable --x64 --publish never",
