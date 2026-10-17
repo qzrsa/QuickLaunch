@@ -10,8 +10,6 @@ const fs = require('fs');
 const store = require('./store');
 const resolveLib = require('./resolve');
 
-const IS_WIN = process.platform === 'win32';
-
 /* ---------------------------------------------------- 小工具 */
 
 /** PowerShell 单引号转义 */
@@ -25,6 +23,25 @@ function systemCmd() {
 
 function fileExists(p) {
   try { return fs.existsSync(p); } catch { return false; }
+}
+
+/** 工作目录不存在就别传 —— 传了 Node 会异步报错，而那个错误没人接 */
+function safeCwd(cwd) {
+  if (!cwd) return undefined;
+  return fileExists(cwd) ? cwd : undefined;
+}
+
+/** 派生失败是**异步事件**，没监听器会直接把主进程抛崩；这里统一吞掉并返回 false */
+function spawnQuiet(file, args, opts) {
+  try {
+    const child = spawn(file, args, opts);
+    child.on('error', e => console.warn('[launch] 派生失败:', file, e && e.message));
+    child.unref();
+    return child.pid;
+  } catch (e) {
+    console.warn('[launch] 派生异常:', file, e && e.message);
+    return 0;
+  }
 }
 
 /**
@@ -70,14 +87,12 @@ function whichPython() {
  */
 function runShell(command, { cwd = null, visible = false } = {}) {
   const line = visible ? `start "" ${command}` : command;
-  const child = spawn(line, {
+  return spawnQuiet(line, [], {
     shell: true,
     stdio: 'ignore',
     windowsHide: true,
-    cwd: cwd || undefined,
+    cwd: safeCwd(cwd),
   });
-  child.unref();
-  return child.pid;
 }
 
 /**
@@ -92,16 +107,13 @@ function runShell(command, { cwd = null, visible = false } = {}) {
  */
 function runStart(target, args, { cwd = null } = {}) {
   const command = `"${target}"${args ? ' ' + args : ''}`;
-  const child = spawn(systemCmd(), [`/c start "" ${command}`], {
+  return spawnQuiet(systemCmd(), [`/c start "" ${command}`], {
     stdio: 'ignore',
     windowsHide: true,
     windowsVerbatimArguments: true,
-    cwd: cwd || undefined,
+    cwd: safeCwd(cwd),
   });
-  child.unref();
-  return child.pid;
 }
-
 
 /* ---------------------------------------------------- 主入口 */
 
@@ -137,10 +149,7 @@ async function launch(item) {
       const line = args
         ? `Start-Process -FilePath ${psQuote(target)} -ArgumentList ${psQuote(args)} -Verb RunAs`
         : `Start-Process -FilePath ${psQuote(target)} -Verb RunAs`;
-      const child = spawn(ps, ['-NoProfile', '-Command', line], {
-        stdio: 'ignore', windowsHide: true,
-      });
-      child.unref();
+      spawnQuiet(ps, ['-NoProfile', '-Command', line], { stdio: 'ignore', windowsHide: true });
       return { ok: true, msg: '已请求管理员权限启动' };
     }
 
