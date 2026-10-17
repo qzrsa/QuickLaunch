@@ -545,6 +545,69 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
   ok(urlsc.readUrlShortcut(badUrlP) === null, '不是快捷方式的文件 → null');
 
   /* ---------------------------------------------------------- 图标提取 */
+  /* ---- 从 PE 资源里抠图标（v1.4.5 的核心：不再信 app.getFileIcon）---- */
+  section('exeicon 从 PE 里抠图标');
+  const exeicon = require('../src/lib/exeicon');
+  ok(typeof exeicon.parseIcon === 'function' && typeof exeicon.readIconResource === 'function',
+    'exeicon 暴露 parseIcon / readIconResource');
+  const selfBuf = fs.readFileSync(process.execPath);
+  const selfIco = exeicon.parseIcon(exeicon.bufferReader(selfBuf));
+  ok(Buffer.isBuffer(selfIco) && selfIco.length > 100, '真 exe（本进程自己）解出 ICO 字节');
+  ok(selfIco && selfIco.readUInt16LE(0) === 0 && selfIco.readUInt16LE(2) === 1,
+    '★ 拼出来的头是合法 ICONDIR（reserved=0 / type=1）');
+  ok(selfIco && selfIco.readUInt16LE(4) >= 1, '至少含 1 张图', selfIco && String(selfIco.readUInt16LE(4)));
+  ok(exeicon.parseIcon(exeicon.bufferReader(Buffer.from('MZ'))) === null,
+    '只有 MZ 头的残片 → null（不抛）');
+  ok(exeicon.parseIcon(exeicon.bufferReader(Buffer.from('not a pe at all'))) === null, '不是 PE → null');
+  ok(exeicon.parseIcon(exeicon.bufferReader(Buffer.alloc(0))) === null, '空 buffer → null');
+  // 指定一个不存在的组 → null（不许"猜"一张别的图顶上）
+  ok(exeicon.parseIcon(exeicon.bufferReader(selfBuf), { group: 99 }) === null,
+    '★ 指定的图标组不存在 → null（不拿别组的图凑数）');
+  // .url 的 IconIndex 0 就该拿到东西（大多数程序只有一组，组 0 就是主图标）
+  ok(Buffer.isBuffer(exeicon.parseIcon(exeicon.bufferReader(selfBuf), { group: 0 })),
+    'group=0 取第一组图标');
+  ok(exeicon.readIconResource(process.execPath) === null || Buffer.isBuffer(exeicon.readIconResource(process.execPath)),
+    'readIconResource 对真文件返回 Buffer / null 之一');
+  ok(Buffer.isBuffer(exeicon.readIconResource(process.execPath)), 'readIconResource 读真 exe 有结果');
+  ok(exeicon.readIconResource('C:\\__nope__\\x.exe') === null, '不存在的文件 → null（不抛）');
+  ok(exeicon.readIconResource('') === null, '空路径 → null');
+  const cacheA = exeicon.readIconResource(process.execPath);
+  exeicon.clearCache();
+  const cacheB = exeicon.readIconResource(process.execPath);
+  ok(cacheA && cacheB && cacheA.equals(cacheB), '清了缓存重读，结果一致（幂等）');
+  ok(exeicon.MAX_ICO_BYTES > 0 && exeicon.MAX_ICO_BYTES <= 4 * 1024 * 1024,
+    'MAX_ICO_BYTES 有上限（防巨型资源）', String(exeicon.MAX_ICO_BYTES));
+
+  /* ---- Win10/11 的「图标搬家」：%SystemRoot%\SystemResources\<名字>.mun ----
+     本机实测：notepad.exe / mspaint.exe / mstsc.exe / magnify.exe / dfrgui.exe / shell32.dll
+     这些文件的资源表里**一张图标都没有**（只剩 RT_VERSION / RT_MANIFEST），图标全在
+     同名的 .mun MUI 文件里。不接这条路，记事本/画图/远程桌面就是永远修不好的通用图。 */
+  ok(typeof exeicon.munFor === 'function', 'exeicon 暴露 munFor');
+  const npMun = exeicon.munFor(path.join(process.env.SystemRoot, 'System32', 'notepad.exe'), fs);
+  ok(/SystemResources/i.test(npMun) && /notepad\.exe\.mun$/i.test(npMun),
+    '★ notepad.exe → 找到 SystemResources\\notepad.exe.mun', npMun);
+  ok(exeicon.munFor('C:\\__nope__\\x.exe', fs) === '', '找不到 .mun → 空串（不抛）');
+  ok(exeicon.munFor(path.join(process.env.SystemRoot, 'SystemResources', 'a.dll.mun'), fs) === '',
+    '.mun 自己不再去套 .mun（不然无限递归）');
+  const npIco = exeicon.readIconResource(path.join(process.env.SystemRoot, 'System32', 'notepad.exe'));
+  ok(Buffer.isBuffer(npIco) && npIco.length > 1000,
+    '★ 记事本（资源表里没有图标）→ 从 .mun 里抠到了图标', npIco && String(npIco.length));
+  ok(Buffer.isBuffer(exeicon.readIconResource(path.join(process.env.SystemRoot, 'System32', 'mspaint.exe'))),
+    '画图同理（同一条 .mun 回退链）');
+  const munSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'lib', 'exeicon.js'), 'utf8');
+  ok(/SystemResources/.test(munSrc), '★ 源码里写死了 SystemResources（唯一的 .mun 位置）');
+  ok(/deps\.mun !== false/.test(munSrc), '回退可关闭（单测/诊断要能只看文件本身）');
+  // ★ 静态对账：icon.js 取 exe 图标必须经 exeicon，不许退回 getFileIcon
+  const iconLibSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'lib', 'icon.js'), 'utf8');
+  ok(/require\('\.\/exeicon'\)/.test(iconLibSrc), 'icon.js 引入 exeicon（唯一实现）');
+  ok(/\.\(exe\|dll\|cpl\|scr\|ocx\)\$/.test(iconLibSrc), 'icon.js 对可执行扩展名走 PE 解析');
+  ok(/createFromBuffer/.test(iconLibSrc) === false || /不支持/.test(iconLibSrc),
+    '★ 没有拿 createFromBuffer 去喂 ICO（它不认，会得到空图）');
+  ok(/unlinkSync/.test(iconLibSrc), '临时 ico 读完就删（不往系统临时目录堆垃圾）');
+  const mainSrcPe = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  ok(/require\('\.\/lib\/icon'\)/.test(mainSrcPe) || /lib\/icon/.test(mainSrcPe),
+    'main.js 的图标 IPC 仍走 lib/icon（不要在 main 里另开一份实现）');
+
   section('icon.js 图标提取与判定');
   const iconMod = require('../src/lib/icon');
   ok(typeof iconMod.isImageIcon === 'function', 'icon.js 暴露 isImageIcon');
@@ -560,15 +623,22 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
   ok(typeof iconMod.MAX_NATIVE === 'number' && iconMod.MAX_NATIVE > 0, 'MAX_NATIVE 有合理值');
   ok(typeof iconMod.fileDefaultIconToDataUrl === 'function', 'icon.js 暴露 fileDefaultIconToDataUrl');
   ok(typeof iconMod.imageFileToDataUrl === 'function', 'icon.js 暴露 imageFileToDataUrl');
-  // 真实存在的文件 → 走桩 getFileIcon → 得到图片型 dataURL
-  const icReal = await iconMod.fileDefaultIconToDataUrl(exeP, 128);
-  ok(icReal === 'data:image/png;base64,ICON', '已存在路径 → 提取出 dataURL', icReal);
+  /* v1.4.5：`.exe` 不再问系统，自己解 PE 资源。
+     ★ app.getFileIcon 在本机对 notepad.exe / QuickLaunch.exe / clash-verge.exe 只回同一张
+       32×32 通用图（哈希相同），对 python.exe / WeaselServer.exe 又给 48×48 真图 —— 不能依赖。 */
+  stub.__lastIconPath = null;
+  const icReal = await iconMod.fileDefaultIconToDataUrl(process.execPath, 128);
+  ok(icReal === 'data:image/png;base64,ICO', '真 exe → 解 PE 拿到图标', icReal);
+  ok(stub.__lastIconPath === null, '★ 取 exe 图标时**没有**走 getFileIcon（它就爱回通用图）');
+  // 没有图标资源的 exe（假文件）→ 空，保持 emoji，别拿通用图糊
+  const icFake = await iconMod.fileDefaultIconToDataUrl(exeP, 128);
+  ok(icFake === '', '没有图标资源的 exe → 空（不拿通用图糊上去）', icFake);
   // ★ 不存在的路径必须返回空（否则会给"稍后才接入的盘"挂上通用白板图标，而不是保持 emoji）
   const icMissing = await iconMod.fileDefaultIconToDataUrl('C:\\__nope__\\x.exe', 128);
   ok(icMissing === '', '不存在的路径 → 空（不会拿到通用假图标）', icMissing);
   // %ENV% 展开：%SystemRoot%\explorer.exe 应被当成真实存在
   const icEnv = await iconMod.fileDefaultIconToDataUrl('%SystemRoot%\\explorer.exe', 128);
-  ok(icEnv === 'data:image/png;base64,ICON', '%ENV% 展开后按存在处理', icEnv);
+  ok(icEnv === 'data:image/png;base64,ICO', '%ENV% 展开后按存在处理', icEnv);
 
   /* ---- .url 的 IconFile：只能 nativeImage 直读 ----
      1.4.3 之前的真实事故：11 个桌面游戏快捷方式（Steam / FeverGames）全是同一个 🌐。
@@ -593,11 +663,18 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
   const tgtP = mk('target-app.exe');
   stub.__lnk = { [lnkP]: { target: tgtP, icon: '', args: '' } };
   ok(iconMod.shortcutTarget(lnkP) === tgtP, '.lnk → 解析出真实目标');
+  /* v1.4.5：目标既然是 .exe，就去解它的 PE —— 桩里 tgtP 是随便写的假文件（没有资源），
+     于是返回空。真正要守的是「.lnk 的图标只能来自它解析出的目标」，所以再拿一个真 exe 验一遍。 */
+  stub.__lnk = { [lnkP]: { target: process.execPath, icon: '', args: '' } };
   stub.__lastIconPath = null;
   const icLnk = await iconMod.fileDefaultIconToDataUrl(lnkP, 128);
-  ok(icLnk === 'data:image/png;base64,ICON', '.lnk 也能提出图标');
-  ok(stub.__lastIconPath === tgtP,
-    '★ 取图标用的是解析后的目标，不是 .lnk 本身（用 .lnk 只会拿到通用图）');
+  ok(icLnk === 'data:image/png;base64,ICO', '.lnk 也能提出图标');
+  ok(stub.__lastIconPath === null,
+    '★ .lnk 走的也是「解析目标 + 解 PE」，没退回 getFileIcon（它对 .lnk 只回通用图）');
+  // 目标是别的类型的可执行文件（假文件，无 PE 资源）→ 空，不能拿通用图糊
+  stub.__lnk = { [lnkP]: { target: tgtP, icon: '', args: '' } };
+  ok(await iconMod.fileDefaultIconToDataUrl(lnkP, 128) === '',
+    '.lnk 的目标没有图标资源 → 空（保持 emoji）');
   // 目标不存在 → 不采信，退回 .lnk 自身
   stub.__lnk = { [lnkP]: { target: 'C:\\__nope__\\gone.exe', icon: '' } };
   ok(iconMod.shortcutTarget(lnkP) === '', '目标不存在 → 不被采信');
@@ -605,10 +682,26 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
   const icoP = mk('my-custom.ico');
   stub.__lnk = { [lnkP]: { target: tgtP, icon: icoP } };
   ok(iconMod.shortcutTarget(lnkP) === icoP, '.lnk 指定了 .ico → 优先用这张');
-  // .dll/.exe 的 icon 字段带 iconIndex，getFileIcon 取不到"那一张" → 忽略，退回目标
-  stub.__lnk = { [lnkP]: { target: tgtP, icon: 'C:\\Windows\\system32\\shell32.dll' } };
-  ok(iconMod.shortcutTarget(lnkP) === tgtP,
-    '.lnk 指定的是 .dll → 忽略（带 iconIndex 取不到），退回目标程序');
+  /* v1.4.5：`.lnk` 的 icon 指向 `.dll` / `.exe` 时要按 `iconIndex` 去那个 PE 里取"那一张"。
+     本机实例：iSCSI Initiator.lnk 的 icon = iscsicpl.dll + iconIndex=-1，而它的 target
+     `iscsicpl.exe` 自己一张图标都没有 —— 以前直接忽略 .dll，这类程序只能退回通用图。 */
+  stub.__lnk = { [lnkP]: { target: tgtP, icon: 'C:\\Windows\\system32\\shell32.dll', iconIndex: 3 } };
+  const dllSrc = iconMod.shortcutSource(lnkP);
+  ok(dllSrc && /shell32\.dll$/i.test(dllSrc.path) && dllSrc.group === 3,
+    '★ icon 指向 .dll + iconIndex=3 → 记住「取第 3 组」', JSON.stringify(dllSrc));
+  ok(iconMod.shortcutTarget(lnkP) === 'C:\\Windows\\system32\\shell32.dll',
+    '旧接口 shortcutTarget 仍只回路径（别的地方还在用）');
+  stub.__lnk = { [lnkP]: { target: tgtP, icon: 'C:\\Windows\\system32\\shell32.dll', iconIndex: -1 } };
+  const dllNeg = iconMod.shortcutSource(lnkP);
+  ok(dllNeg && dllNeg.id === 1 && dllNeg.group === undefined,
+    '★ 负数 iconIndex = 资源 ID 就是 -N（-1 → id 1），不是"第 -1 组"', JSON.stringify(dllNeg));
+  stub.__lnk = { [lnkP]: { target: tgtP, icon: 'C:\\Windows\\system32\\shell32.dll', iconIndex: 0 } };
+  ok(await iconMod.fileDefaultIconToDataUrl(lnkP, 128) === 'data:image/png;base64,ICO',
+    '★ 从 dll 的第 0 组真拿到了图标（走 PE，不碰 getFileIcon）');
+  stub.__lnk = { [lnkP]: { target: tgtP, icon: 'C:\\Windows\\system32\\shell32.dll', iconIndex: 9999 } };
+  ok(await iconMod.fileDefaultIconToDataUrl(lnkP, 128) === '',
+    '★ 指定的那组不存在 → 空（绝不拿别组的图凑数，那比留空更难查）');
+  ok(iconMod.shortcutSource('C:\\__nope__\\broken.lnk') === null, '读不了 .lnk → null 且不抛');
   // 读不了 .lnk → 空且不抛
   ok(iconMod.shortcutTarget('C:\\__nope__\\broken.lnk') === '', '读不了 .lnk → 返回空且不抛');
   stub.__lnk = {};
@@ -623,11 +716,15 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
   ok(/function placeholderIconItems/.test(iconAppSrc), '渲染层有 placeholderIconItems()（挑出占位图条目）');
   ok(/\(use\.get\(ic\) \|\| 0\) >= 3/.test(iconAppSrc),
     '★ 只挑「同一张图被 >=3 个条目共用」的项 —— 用户自己挑的图片不会被冲掉');
-  ok(/isImageIcon\(ic\) && \(use\.get\(ic\) \|\| 0\) >= 3 && \/\\\.lnk\$\/i\.test/.test(iconAppSrc),
-    '★ 自愈只处理 .lnk 条目（通用占位图就是它们贡献的）');
+  ok(/isImageIcon\(ic\) && \(use\.get\(ic\) \|\| 0\) >= 3 && GENERIC_ICON_PATH\.test/.test(iconAppSrc),
+    '★ 自愈只处理 .lnk / .exe / .url 条目（通用占位图就是它们贡献的）');
+  ok(/GENERIC_ICON_PATH = \/\\\.\(lnk\|exe\|url\)\$\/i/.test(iconAppSrc),
+    '★ 通用图标污染的路径类型是 .lnk/.exe/.url（.exe 那批是 v1.4.5 才认的）');
   ok(/settings\.iconRev = ICON_REV/.test(iconAppSrc), '自愈跑完会写回 iconRev，避免每次启动重扫');
-  // v1.4.4：`.url` 那批（Steam / 游戏平台）也要覆盖存量数据 → rev 升到 3
-  ok(/const ICON_REV = 3/.test(iconAppSrc), 'ICON_REV 升到 3（.url 图标修复也要补存量数据）');
+  // v1.4.5：`.exe` 自己解 PE 了 → rev 升到 4，存量数据里那批"窗口+蓝块"才会被重提
+  ok(/const ICON_REV = 4/.test(iconAppSrc), 'ICON_REV 升到 4（.exe 通用图标修复也要补存量数据）');
+  ok(/'🚀'/.test(iconAppSrc) && /cleared\+\+/.test(iconAppSrc),
+    '★ 真取不到图标时退回 emoji（不许留一张通用白板当"坏了的图"）');
   ok(/function healUrlItems/.test(iconAppSrc) && /function healAllIcons/.test(iconAppSrc),
     '渲染层有 healUrlItems / healAllIcons（.url 先修协议补图标，再补 .lnk 占位图）');
   ok(/healAllIcons\(\{ quiet: true \}\)/.test(iconAppSrc),

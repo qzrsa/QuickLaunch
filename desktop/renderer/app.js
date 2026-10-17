@@ -92,14 +92,20 @@ function iconHtml(item, fallback) {
  * 本机 232 个已安装软件里有 173 个共用同一张，界面上看着就是"图标一片空白"。
  * 提取逻辑修好之后，老数据还得补一次，但**不能见图就重提**（会冲掉用户自己挑的表情/图片）。
  *
- * 判据：同一张图被 ≥3 个 `.lnk` 条目共用 = 一定是系统占位图。
+ * 判据：同一张图被 ≥3 个程序类条目（`.lnk` / `.exe` / `.url`）共用 = 一定是系统通用图。
  * 用户自己挑的 emoji 不是图片；自己选的图片几乎不可能几十个条目共用同一张。
  * 幂等：真图标重提还是它自己，来回跑不会把数据搅乱。
  *
  * rev 3（v1.4.4）：`.url`（Steam / 游戏平台快捷方式）以前一律是 🌐，路径还被套了一层
  * `http://`。这一版补一次「修协议 + 取 IconFile 真图标」，见 healUrlItems。
+ * rev 4（v1.4.5）：`app.getFileIcon` 在本机会对**大量正常程序**只回一张 32×32 通用图标
+ * （成片"白板"）。改由主进程自己解 PE 资源取图标后，`.exe` 那批也要补一次 ——
+ * 所以判据从"只挑 .lnk"放宽到 `.lnk / .exe / .url`。
  */
-const ICON_REV = 3;
+const ICON_REV = 4;
+
+/** 会被"通用图标"污染的路径类型：快捷方式 / 可执行文件 / 网址快捷方式 */
+const GENERIC_ICON_PATH = /\.(lnk|exe|url)$/i;
 
 function placeholderIconItems() {
   const use = new Map();
@@ -110,7 +116,7 @@ function placeholderIconItems() {
   }
   return all.filter(({ i }) => {
     const ic = i.icon || '';
-    return isImageIcon(ic) && (use.get(ic) || 0) >= 3 && /\.lnk$/i.test(i.path || '');
+    return isImageIcon(ic) && (use.get(ic) || 0) >= 3 && GENERIC_ICON_PATH.test(i.path || '');
   });
 }
 
@@ -130,15 +136,28 @@ async function reextractIcons(opts = {}) {
   }
   if (!opts.quiet) toast('info', `正在重新提取 ${targets.length} 个图标…`, '走一遍开始菜单里的快捷方式');
 
+  const generic = new Set(targets.map(t => t.i.icon));
   let changed = 0;
+  let cleared = 0;
   const queue = targets.slice();
-  // 小并发：getFileIcon 是异步的，两百多个串行太慢；并发再大容易把主进程顶住。
+  // 小并发：解 PE / 读 ico 都是同步小活，两百多项串行太慢；并发再大容易把主进程顶住。
   const worker = async () => {
     while (queue.length) {
       const { i } = queue.shift();
       try {
         const r = await API.iconDefault(i.path);
-        if (r && r.ok && r.dataUrl && r.dataUrl !== i.icon) { i.icon = r.dataUrl; changed++; }
+        if (r && r.ok && r.dataUrl) {
+          if (r.dataUrl !== i.icon) { i.icon = r.dataUrl; changed++; }
+        } else if (generic.has(i.icon)) {
+          // 真图标取不到（例如 Win10 的 notepad.exe 只是个转发壳，或者这个 .url 本来
+          // 就没有 IconFile）→ 与其留一张通用"白板"，不如退回 emoji：看着像特意选的。
+          // ★ 按 **路径** 判断而不是 i.type：从开始菜单扫进来的 `.url` 记的是 type='app'，
+          //   照 type 走会给所有网页快捷方式挂 🚀（第一版就是这么错的）。
+          const p = String(i.path || '');
+          i.icon = /\.url$/i.test(p) ? '🌐'
+            : (i.type === 'folder' || /[\\/]$/.test(p)) ? '📁' : '🚀';
+          cleared++;
+        }
       } catch { /* 单个失败不影响其它 */ }
     }
   };
@@ -147,10 +166,10 @@ async function reextractIcons(opts = {}) {
   state.config.settings.iconRev = ICON_REV;
   const saved = await API.saveConfig(state.config);
   if (!saved.ok) return toast('bad', '图标提取完了但保存失败', saved.msg), 0;
-  if (changed) await refresh();
-  toast('ok', changed ? `已修复 ${changed} 个图标` : '图标都是对的',
-    `检查了 ${targets.length} 个快捷方式`);
-  return changed;
+  if (changed || cleared) await refresh();
+  toast('ok', changed || cleared ? `已修复 ${changed + cleared} 个图标` : '图标都是对的',
+    `检查了 ${targets.length} 个程序${cleared ? ` · ${cleared} 个没自带图标，已退回表情` : ''}`);
+  return changed + cleared;
 }
 
 /**

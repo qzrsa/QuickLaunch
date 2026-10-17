@@ -20,7 +20,7 @@
 | **分组管理** | 侧栏「＋ 新建分组」；右键可重命名 / 换颜色 / 删除。删除只在右键菜单里，不占侧栏 |
 | **启动分组** | 可选每次打开停在哪个分组（默认**记住上次**），不必固定是「全部」 |
 | **扫描导入** | 扫开始菜单 + 注册表，批量勾选已安装软件一键导入；**导入时显示进度**，过程中不可取消也不会重复导入 |
-| **图标支持** | 导入/扫描软件时**自动提取程序自带 ICO** 显示；编辑弹窗可「选择图片…」用任意图片自定义图标，或「还原默认图标」/「清除自定义」 |
+| **图标支持** | 导入/扫描软件时**自己解 `.exe` 的 PE 资源**提取自带图标（不依赖时好时坏的 `app.getFileIcon`，见下「为什么以前成片都是同一个图标」）；编辑弹窗可「选择图片…」用任意图片自定义图标，或「还原默认图标」/「清除自定义」 |
 | **两种主题** | 深色 / 浅色，跟随设置持久化 |
 | **自绘标题栏** | 无边框窗口 + 内联 SVG 窗口按钮（不依赖系统字体，小字号也清晰） |
 | **关于 / 运行环境** | 侧栏左下角点**版本号**（或设置里的「关于」）看版本、运行形态、数据落点与环境版本，一键**复制诊断信息** |
@@ -119,7 +119,7 @@ CI 与本地产出的两个文件**版本号与文件名一致**（两台机器�
 > 为什么新功能没生效；若**正在运行的那个**版本早于这条提示，它就只会把窗口带到前台 ——
 > 那就先退出再打开。
 
-> 侧栏左下角那行只显示版本号（如 `v1.4.4`），运行形态在「关于」里看 —— 那行不是网络状态。
+> 侧栏左下角那行只显示版本号（如 `v1.4.5`），运行形态在「关于」里看 —— 那行不是网络状态。
 > 那行末尾如果出现 **`· 可更新`**，表示查到了新版本 —— 它不是"在线"，只是更新检查的结果。
 
 ### 关于联网（重要）
@@ -191,12 +191,43 @@ Steam、FeverGames 这类平台生成的桌面快捷方式后缀是 `.url`，它
   快捷方式拿到 11 张不同的真图标）。不能用系统的「取文件图标」API ——
   它对 `.ico` 和对 `.url` 本身都只回同一张 32×32 的通用图，那就是以前
   一排大地球 🌐 的来历。
-* **老数据自动补**：升级到 v1.4.4 后首次启动会静默修一遍（改协议 + 补图标），
+* `IconFile` 指向 `.dll` / `.exe` 时按 `IconIndex` 去那个文件的图标资源里取那一组
+  （v1.4.5 起；见下一节）。负数 `IconIndex` 表示"资源 ID 就是 -N"，也照这个规矩来。
+* **老数据自动补**：升级后首次启动会静默修一遍（改协议 + 补图标），
   也可以随时在 设置 → 外观 → 「重新提取图标」手动跑。
   自己挑的 emoji 不会被覆盖 —— 找不到对应图标时保持原样。
 
-> `IconFile` 指向 `.dll` / `.exe`（多图标容器，要配 `IconIndex`）的情况仍保持 emoji 兜底：
-> 那种得调用 Windows 的 `ExtractIconEx`，目前的图标提取走不到，也没必要硬凑一张假图。
+## 为什么以前成片都是"同一个图标"（v1.4.5）
+
+程序自带的图标有两种拿法：问系统（`app.getFileIcon`，一次一个文件），
+或者自己从 `.exe` / `.dll` 里读。v1.4.4 及以前走的是前者，实测很不靠谱：
+
+| 文件 | `getFileIcon` 给的结果 | 自己读 PE 资源 |
+| --- | --- | --- |
+| `QuickLaunch.exe` / `clash-verge.exe` / `notepad.exe` | 同一张 32×32「窗口+蓝块」（哈希完全相同） | 各自的 256×256 真图标 |
+| `python.exe` / `WeaselServer.exe` | 48×48 真图标 | 一样 |
+| `.lnk` 快捷方式 | 不追目标，173 个拿到同一个 32×32 | 先解析目标再取，各不相同 |
+| `.ico` 文件 | 还是那张通用图 | 256×256 真图 |
+
+同一台机器、同一个 API、同样的参数，一半对一半错，没有规律。所以 v1.4.5 改成
+**自己解析 PE 资源表**（`src/lib/exeicon.js`，零依赖）：`MZ → PE → 资源目录 →
+RT_GROUP_ICON / RT_ICON → 拼回 .ico`，再由 `nativeImage` 解码。
+
+三个"看起来已经修好、其实没修"的坑，都在这一版里补上了：
+
+* **`.lnk` 的 `icon` 字段**可能指向某个 `.dll` / `.exe` 的第 N 组图标
+  （`IconIndex`，负数是资源 ID）。例：`iSCSI Initiator.lnk` 的目标
+  `iscsicpl.exe` 自己一张图标都没有，图标全在 `iscsicpl.dll` 里。
+* **Win10/11 把图标搬了家**：`notepad.exe` / `mspaint.exe` / `mstsc.exe` /
+  `dfrgui.exe` / `shell32.dll` 这些文件的资源表里**只剩版本信息**，一张图标都不剩 ——
+  真正的图标在同名 MUI 文件 `%SystemRoot%\SystemResources\<名字>.mun` 里。
+  不接这条路，记事本、画图、远程桌面在 v1.4.5 之前永远是通用图。
+* **真的没有图标时宁可留 emoji**：返回空 → 退回 🌐（网址）/ 📁（文件夹）/ 🚀，
+  而不是挂一张"看着像、其实不是"的图 —— 那种错更难发现。
+
+`.exe` 的图标每条只读几百字节（按需 `readSync`，不把 20 MB 的 exe 整个读进内存），
+结果按 `路径+大小+mtime` 缓存，程序升级后自动失效。
+
 
 ## 从源码构建
 
@@ -207,7 +238,7 @@ cd desktop
 npm install
 npm start            # 开发运行
 npm run check        # 语法 + 工作流自检（63 项）
-npm test             # 主进程逻辑自检（693 项）
+npm test             # 主进程逻辑自检（731 项）
 npm run verify:apply # 真起一个 shell 跑"退出后换文件"那套助手（53 项）
 npm run release      # = check + test + verify:apply + 打三种产物 + 压绿色版 zip
 ```
@@ -216,9 +247,9 @@ npm run release      # = check + test + verify:apply + 打三种产物 + 压绿�
 
 ```
 dist/
-├── QuickLaunch-Setup-1.4.4.exe
-├── QuickLaunch-Portable-1.4.4.exe
-├── QuickLaunch-Green-1.4.4.zip
+├── QuickLaunch-Setup-1.4.5.exe
+├── QuickLaunch-Portable-1.4.5.exe
+├── QuickLaunch-Green-1.4.5.zip
 ├── update.json              # 更新清单（CI 里由 make-update-manifest 生成并随 Release 发布）
 ├── QuickLaunch-Delta-*.bin  # 差量包（同上）
 └── win-unpacked/            # 绿色版的原始目录
@@ -239,10 +270,10 @@ npm run pack:green       # 把 win-unpacked 压成绿色版 zip
 （单文件便携版已移出 CI，理由见上）：
 
 ```bash
-git tag -a v1.4.4 -m "v1.4.4 · 一句话概括" -m "
+git tag -a v1.4.5 -m "v1.4.5 · 一句话概括" -m "
 - 改了什么，就写在这儿
 - 用户看得懂的话，不是 commit 标题的堆砌"
-git push origin v1.4.4        # ← 必须推 tag 名，推 main 不会顺带推 tag
+git push origin v1.4.5        # ← 必须推 tag 名，推 main 不会顺带推 tag
 ```
 
 **tag 的 message 就是 Release 发布说明**，CI 会 `git tag -l --format='%(contents)'` 取出来放到
@@ -265,6 +296,8 @@ quicklaunch/
 │   │   ├── main.js           # 主进程：窗口 / 托盘 / 热键 / 自启 / IPC
 │   │   ├── preload.js        # contextBridge 白名单桥
 │   │   └── lib/              # 配置读写 / 导入 / 扫描 / 菜单 / 动作 / 自更新引擎
+│   │                         # 图标：exeicon.js（解 PE 资源）+ icon.js（取图策略）
+│   │                         #       urlshortcut.js（.url 快捷方式解析）
 │   ├── renderer/             # 渲染层：index.html + app.js + style.css
 │   ├── scripts/              # 打包、更新清单、工作流自检、换文件助手验证
 │   ├── test/smoke.js         # 离线自检（不联网、不碰真实程序目录）
