@@ -59,7 +59,24 @@ const stub = {
   BrowserWindow: class { static fromWebContents() { return null; } },
   Tray: class {}, Menu: { buildFromTemplate: () => ({}) }, ipcMain: { handle: () => {} },
   globalShortcut: { register: () => true, unregisterAll: () => {}, isRegistered: () => true },
-  nativeImage: { createFromPath: () => ({ isEmpty: () => true }) },
+  nativeImage: {
+    // `.url` 里的 IconFile → 图片走的**就是这条**（nativeImage 直读，.ico 也可以）。
+    // ★ 桩里按"文件是否存在"决定空不空，才能验出「不存在就返回空、不挂假图」。
+    // ★★ 真机实测（v1.4.4）：`.ico` 走 getFileIcon 只会得到同一张 32×32 通用图
+    //    （多个不同 .ico 哈希一模一样），只有 nativeImage 直读才拿到 256×256 的真图。
+    createFromPath: p => {
+      let exists = false;
+      try { exists = require('fs').existsSync(p); } catch { exists = false; }
+      if (!exists) return { isEmpty: () => true };
+      return {
+        isEmpty: () => false,
+        getSize: () => ({ width: 256, height: 256 }),
+        resize: () => ({ toDataURL: () => 'data:image/png;base64,ICO' }),
+        toDataURL: () => 'data:image/png;base64,ICO',
+      };
+    },
+    createFromDataURL: () => ({ isEmpty: () => true }),
+  },
 };
 
 const origLoad = Module._load;
@@ -166,6 +183,12 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
   r = await actions.launch({ type: 'url', path: 'github.com' });
   ok(r.ok, '网址自动补 http:// 并交给 shell', r.msg);
 
+  // ★ v1.4.4：协议链接（Steam / 游戏平台）以前被套成 `http://steam://…`，
+  //   浏览器打开一个不存在的地址 → 用户看到的是"点了没反应"。
+  r = await actions.launch({ type: 'url', path: 'steam://rungameid/400040' });
+  ok(r.ok && r.msg.includes('steam://rungameid/400040') && !/http:\/\/steam/.test(r.msg),
+    '★ 协议链接原样交给 shell（不再套 http://）', r.msg);
+
   ok(path.basename(actions.resolveTarget('notepad.exe')).toLowerCase() === 'notepad.exe',
     'resolveTarget 解析裸命令名');
   ok(actions.resolveTarget('powershell.exe') !== 'powershell.exe',
@@ -184,6 +207,10 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
     'cmd 命令行必须原样传参（交给 CRT 再转义一遍会 exit 1，一个进程都起不来）');
   ok(/isConsoleExe\(/.test(actCode),
     '控制台程序自动给窗口，不指望用户自己去勾「显示命令行窗口」');
+  ok(/urlsc\.normalizeUrl\(target\)/.test(actCode),
+    '网址 / 协议链接统一走 urlshortcut.normalizeUrl（唯一实现，别在两处各写一份）');
+  ok(!/'http:\/\/'\s*\+\s*target/.test(actCode),
+    '★ 不许再手写「不是 http 就补 http://」（`steam://` 会被套成双层协议，点了打不开）');
 
   section('scan 软件扫描');
   const t0 = Date.now();
@@ -351,6 +378,20 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
   ok(r2.items[0].path === 'https://github.com/qzrsa', '.url 目标正确', r2.items[0].path);
   ok(r2.items[0].name === 'GitHub', '.url 名称取文件名');
 
+  // ---- 协议型 .url（Steam / 游戏平台）：v1.4.4 的核心修复 ----
+  // 以前：URL=steam://… → 套成 http://steam://…（点不开），图标写死 🌐，
+  //       同一行下面的 IconFile=…ico 压根没读过。本机 11 个游戏全是同一个大地球。
+  const steamUrlP = mk('ShareX.url',
+    '[InternetShortcut]\r\nIconIndex=0\r\nURL=steam://rungameid/400040\r\nIconFile=C:\\icons\\a.ico\r\n');
+  const rSteam = await importer.buildItems({ paths: [steamUrlP], urls: [], existing: [] });
+  const si = rSteam.items[0];
+  ok(!!si && si.type === 'url', '协议型 .url 仍是 url 类型');
+  ok(si.path === 'steam://rungameid/400040', '★ 协议原样保留（不再套成 http://steam://…）', si.path);
+  ok(si.desc === 'steam', '.url 说明取协议名（不是 hostname rungameid）', si.desc);
+  ok(si._iconFile === 'C:\\icons\\a.ico', '.url 把 IconFile 带出去给主进程取图');
+  // 没有 IconFile 的（普通网页快捷方式）也不许崩
+  ok(r2.items[0]._iconFile === '', '没有 IconFile → 空串');
+
   // 去重：同样的输入第二次应全部跳过
   r2 = await importer.buildItems({ paths: [dirP, exeP], urls: ['github.com'], existing: [] });
   const again = await importer.buildItems({
@@ -432,6 +473,78 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
   }
 
   /* ---------------------------------------------------------- 图标提取 */
+  /* -------------------------------------------------- .url 快捷方式解析 */
+  section('urlshortcut .url 快捷方式（协议 + 图标）');
+  const urlsc = require('../src/lib/urlshortcut');
+
+  // 真实文件长这样（本机 11 个桌面游戏快捷方式都是这个形状，CRLF / LF 都有）
+  const scText = '[InternetShortcut]\r\nIDList=\r\nIconIndex=0\r\n'
+    + 'URL=steam://rungameid/400040\r\nIconFile=C:\\icons\\game.ico\r\n';
+  const scOne = urlsc.parseInternetShortcut(scText);
+  ok(!!scOne && scOne.url === 'steam://rungameid/400040', '解析出 URL=');
+  ok(scOne.iconFile === 'C:\\icons\\game.ico', '解析出 IconFile=');
+  ok(scOne.iconIndex === 0, '解析出 IconIndex=');
+  ok(urlsc.parseInternetShortcut('not a shortcut') === null, '没有 URL= 行 → null');
+  ok(urlsc.parseInternetShortcut('') === null, '空文本 → null');
+  ok(urlsc.parseInternetShortcut('[InternetShortcut]\nURL="https://a.b/x"\n').url === 'https://a.b/x',
+    'URL 值带引号 → 去掉引号');
+  ok(urlsc.parseInternetShortcut('\uFEFF[InternetShortcut]\r\nURL=https://a.b\r\n').url === 'https://a.b',
+    '带 BOM 也能解析');
+  ok(urlsc.parseInternetShortcut('URL=ftp://x/y\n').iconFile === '', '没有 IconFile → 空串（不报错）');
+
+  // ★ 双层协议：v1.4.3 及以前把 `steam://` 当成裸网址又套了一层 http://
+  ok(urlsc.normalizeUrl('steam://rungameid/400040') === 'steam://rungameid/400040',
+    '★ 协议链接原样保留（这套错一层就点不开）');
+  ok(urlsc.normalizeUrl('fevergames://mygame/?gameId=63') === 'fevergames://mygame/?gameId=63',
+    '自定义协议原样保留');
+  ok(urlsc.normalizeUrl('https://a.b/c') === 'https://a.b/c', 'https 原样');
+  ok(urlsc.normalizeUrl('github.com') === 'http://github.com', '裸域名补 http://');
+  ok(urlsc.normalizeUrl('localhost:3000') === 'http://localhost:3000', 'host:port 不当成协议');
+  ok(urlsc.normalizeUrl('') === '', '空串 → 空串');
+  ok(urlsc.stripBogusScheme('http://steam://rungameid/1') === 'steam://rungameid/1', '修双层协议');
+  ok(urlsc.stripBogusScheme('http://fevergames://x/?g=1') === 'fevergames://x/?g=1', '修双层协议（自定义）');
+  ok(urlsc.stripBogusScheme('https://github.com/x') === '', '正常网址不动');
+  ok(urlsc.stripBogusScheme('http://a.b:8080/x') === '', 'host:port 不动');
+  ok(urlsc.schemeOf('STEAM://x') === 'steam', 'schemeOf 取小写协议名');
+  // 协议链接没有"主机名"：new URL('steam://rungameid/1').hostname === 'rungameid'
+  ok(urlsc.descForUrl('steam://rungameid/1') === 'steam',
+    '★ 协议链接的说明 = 协议名（不是 hostname `rungameid`）');
+  ok(urlsc.descForUrl('https://www.github.com/x') === 'github.com', '网页说明 = 主机名（去 www）');
+  ok(urlsc.urlKey('HTTPS://A.B/x/') === 'https://a.b/x', 'urlKey 忽略大小写与结尾斜杠');
+
+  // 假 fs：递归扫目录 + 建索引（不碰真磁盘）
+  const vtree = {
+    'C:\\dd': [{ name: 'a.url', isDirectory: () => false },
+      { name: 'note.txt', isDirectory: () => false },
+      { name: 'sub', isDirectory: () => true }],
+    'C:\\dd\\sub': [{ name: 'b.url', isDirectory: () => false }],
+  };
+  const vtext = {
+    'C:\\dd\\a.url': 'URL=steam://1\nIconFile=C:\\a.ico\n',
+    'C:\\dd\\sub\\b.url': 'URL=https://b.c/\n',
+  };
+  const vfs = {
+    readdirSync: d => { if (!vtree[d]) throw new Error('ENOENT'); return vtree[d]; },
+    readFileSync: p => { if (!vtext[p]) throw new Error('ENOENT'); return vtext[p]; },
+  };
+  const found = urlsc.scanUrlShortcuts(['C:\\dd'], { fs: vfs });
+  ok(found.length === 2, `递归扫到 2 个 .url（实得 ${found.length}）`);
+  ok(found[0].url === 'steam://1' && found[0].file === 'C:\\dd\\a.url', '先扫根目录，带回源文件路径');
+  ok(found[1].url === 'https://b.c/', '子目录也扫到了');
+  ok(urlsc.scanUrlShortcuts(['C:\\nope'], { fs: vfs }).length === 0, '目录不存在 → 空数组（不抛）');
+  const vix = urlsc.iconFileIndex(found);
+  ok(vix.get('steam://1') === 'C:\\a.ico', '索引：URL → IconFile');
+  ok(urlsc.iconFileIndex([{ url: 'https://b.c/' }, { url: 'x', iconFile: 'y.ico' }]).size === 1,
+    '没有 IconFile 的快捷方式不进索引');
+  ok(urlsc.defaultScanDirs({ USERPROFILE: 'C:\\U', APPDATA: 'C:\\U\\AppData\\Roaming' }).length === 4,
+    '默认扫桌面 + 公共桌面 + 两个开始菜单');
+
+  // 真实 .url 读盘（有就顺手验一把，没有也不红）
+  const scReal = urlsc.readUrlShortcut(urlP);
+  ok(!!scReal && scReal.url === 'https://github.com/qzrsa', 'readUrlShortcut 读真实文件');
+  ok(urlsc.readUrlShortcut(badUrlP) === null, '不是快捷方式的文件 → null');
+
+  /* ---------------------------------------------------------- 图标提取 */
   section('icon.js 图标提取与判定');
   const iconMod = require('../src/lib/icon');
   ok(typeof iconMod.isImageIcon === 'function', 'icon.js 暴露 isImageIcon');
@@ -456,6 +569,21 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
   // %ENV% 展开：%SystemRoot%\explorer.exe 应被当成真实存在
   const icEnv = await iconMod.fileDefaultIconToDataUrl('%SystemRoot%\\explorer.exe', 128);
   ok(icEnv === 'data:image/png;base64,ICON', '%ENV% 展开后按存在处理', icEnv);
+
+  /* ---- .url 的 IconFile：只能 nativeImage 直读 ----
+     1.4.3 之前的真实事故：11 个桌面游戏快捷方式（Steam / FeverGames）全是同一个 🌐。
+     本机实测：对 `.ico` 调 app.getFileIcon **回同一张 32×32 通用图**（多文件同哈希），
+     nativeImage.createFromPath 才是 256×256 且 11 个文件 11 张不同图。 */
+  ok(typeof iconMod.urlIconFileToDataUrl === 'function', 'icon.js 暴露 urlIconFileToDataUrl');
+  const icoFileP = mk('game-icon.ico');
+  ok(iconMod.urlIconFileToDataUrl(icoFileP, 128) === 'data:image/png;base64,ICO',
+    'IconFile 存在 → 读到图片（走 nativeImage，不是 getFileIcon）');
+  stub.__lastIconPath = null;
+  ok(iconMod.urlIconFileToDataUrl('C:\\__nope__\\gone.ico') === '', 'IconFile 不存在 → 空（保持 emoji）');
+  ok(iconMod.urlIconFileToDataUrl(mk('container.dll')) === '',
+    '.dll 多图标容器读不了 → 空（要 IconIndex 才有意义，别硬凑假图）');
+  ok(stub.__lastIconPath === null,
+    '★ 取 .ico 时**不许**调 getFileIcon（它对 .ico 只回通用图）');
 
   /* ---- .lnk 必须解析出目标再取图标 ----
      1.3.1 的真实事故：开始菜单里 173 个 .lnk 拿到的图标**哈希完全一样**（一张 32×32 通用图），
@@ -498,6 +626,12 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
   ok(/isImageIcon\(ic\) && \(use\.get\(ic\) \|\| 0\) >= 3 && \/\\\.lnk\$\/i\.test/.test(iconAppSrc),
     '★ 自愈只处理 .lnk 条目（通用占位图就是它们贡献的）');
   ok(/settings\.iconRev = ICON_REV/.test(iconAppSrc), '自愈跑完会写回 iconRev，避免每次启动重扫');
+  // v1.4.4：`.url` 那批（Steam / 游戏平台）也要覆盖存量数据 → rev 升到 3
+  ok(/const ICON_REV = 3/.test(iconAppSrc), 'ICON_REV 升到 3（.url 图标修复也要补存量数据）');
+  ok(/function healUrlItems/.test(iconAppSrc) && /function healAllIcons/.test(iconAppSrc),
+    '渲染层有 healUrlItems / healAllIcons（.url 先修协议补图标，再补 .lnk 占位图）');
+  ok(/healAllIcons\(\{ quiet: true \}\)/.test(iconAppSrc),
+    '启动时的一次性自愈走 healAllIcons（两条链路都不落下）');
   ok(/btnReextractIcons/.test(iconHtmlSrc) && /btnReextractIcons/.test(iconAppSrc),
     '设置里有「重新提取图标」手动入口');
   ok(/readShortcutLink/.test(fs.readFileSync(path.join(__dirname, '..', 'src', 'lib', 'icon.js'), 'utf8')),
@@ -515,6 +649,10 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
   const iconMainSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
   ok(/ql:icon:default/.test(iconMainSrc) && /ql:icon:pick/.test(iconMainSrc),
     '主进程注册 ql:icon:default / ql:icon:pick 两个 handle');
+  ok(/ipcMain\.handle\('ql:heal:urls'/.test(iconMainSrc) && /ipcMain\.handle\('ql:icon:url'/.test(iconMainSrc),
+    '主进程注册 ql:heal:urls / ql:icon:url（.url 自愈的唯一实现，渲染层只叫一声）');
+  ok(/urlsc\.stripBogusScheme/.test(iconMainSrc) && /urlsc\.scanUrlShortcuts/.test(iconMainSrc),
+    '主进程复用 urlshortcut（修协议与扫盘都只有一份实现）');
 
   /* ---------------------------------------------------------- 数据目录 */
   section('datadir 数据目录决策');
@@ -978,6 +1116,24 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
       `缺: ${missing.join(', ')}`);
     ok(declared.has('ql:perf-probe') && /PERF_PROBE/.test(mainSrc),
       '--perf-probe 的频道与常量都已就位');
+
+    /* ---- invoke / handle 对账（v1.4.4 补的）----
+       preload 漏挂一个方法 → 渲染层那次调用直接抛 TypeError，被 catch 吞掉：
+       ".url 自愈永远没生效"，而且日志里一个字都没有（v1.4.4 就踩了这个：写了
+       ql:heal:urls 的 handler 却忘了在 preload 暴露 healUrls）。
+       主进程漏挂 handler → invoke 只回 "No handler registered"，同样是静默的。 */
+    const invoked = [...new Set((preloadSrc.match(/invoke\(\s*'ql:[^']+'/g) || [])
+      .map(s => s.match(/'ql:[^']+'/)[0].slice(1, -1)))];
+    const handled = new Set((mainSrc.match(/ipcMain\.handle\(\s*'ql:[^']+'/g) || [])
+      .map(s => s.match(/'ql:[^']+'/)[0].slice(1, -1)));
+    ok(invoked.length >= 15, "preload 的 invoke('ql:…') 解析成功", `解析到 ${invoked.length} 条`);
+    ok(handled.size >= 15, "main.js 的 ipcMain.handle('ql:…') 解析成功", `解析到 ${handled.size} 条`);
+    const noHandler = invoked.filter(c => !handled.has(c));
+    ok(noHandler.length === 0,
+      '★ preload 每个 invoke 的频道主进程都有 handle（漏了渲染层只看到 "No handler registered"）',
+      `缺: ${noHandler.join(', ')}`);
+    ok(invoked.includes('ql:heal:urls') && handled.has('ql:heal:urls'),
+      '.url 自愈的 ql:heal:urls 两边都在（少一边 = 永远静默失败）');
   }
 
   /* ------------------------------------------------------------------

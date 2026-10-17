@@ -110,9 +110,32 @@ async function fileDefaultIconToDataUrl(filePath, size = 128) {
   } catch { return ''; }
 }
 
+/**
+ * `.url`（Internet 快捷方式）里 `IconFile=` 指的图标文件 → dataURL。取不到返回 ''。
+ *
+ * ★★ 只能用 nativeImage 直读，**千万别**换成 `app.getFileIcon`：本机实测 3 个不同的
+ *    `.ico`（Steam 游戏图标 / FeverGames 图标）走 getFileIcon **全回同一张 32×32
+ *    通用图标**（哈希一模一样）；走 nativeImage 是 256×256 且三张各不相同。
+ *    同一类坑还有 `.lnk`（不追目标）、`.url` 本体（getFileIcon 也是通用图）。
+ * ★ `IconFile` 指向 `.dll` / `.exe` 时这里必然失败（多图标容器要靠 `IconIndex`），
+ *    返回 '' 让上层保持 emoji 回退 —— 别硬凑一张假图。
+ */
+function urlIconFileToDataUrl(filePath, size = 128) {
+  const p = expandEnv(filePath);
+  if (!p) return '';
+  try {
+    if (!require('fs').existsSync(p)) return '';
+  } catch { return ''; }
+  if (/\.(dll|exe)$/i.test(p)) return '';
+  return imageFileToDataUrl(p, size);
+}
+
 /** 判断一个 icon 值是否为「图片型」dataURL（渲染层据此决定渲染 <img>） */
 function isImageIcon(icon) {
   return typeof icon === 'string' && /^data:image\//i.test(icon);
 }
 
-module.exports = { imageToDataUrl, imageFileToDataUrl, fileDefaultIconToDataUrl, isImageIcon, shortcutTarget, MAX_NATIVE };
+module.exports = {
+  imageToDataUrl, imageFileToDataUrl, fileDefaultIconToDataUrl, urlIconFileToDataUrl,
+  isImageIcon, shortcutTarget, MAX_NATIVE,
+};

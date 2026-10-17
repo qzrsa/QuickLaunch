@@ -9,6 +9,7 @@ const path = require('path');
 const fs = require('fs');
 const store = require('./store');
 const resolveLib = require('./resolve');
+const urlsc = require('./urlshortcut');
 
 /* ---------------------------------------------------- 小工具 */
 
@@ -127,9 +128,12 @@ async function launch(item) {
   if (!target) return { ok: false, msg: '路径为空' };
 
   try {
-    /* ---- 网址 ---- */
+    /* ---- 网址 / 协议链接（steam:// fevergames:// …） ---- */
     if (type === 'url') {
-      const url = /^https?:\/\//i.test(target) ? target : 'http://' + target;
+      // ★ 不能见"不是 http"就补 `http://`：`steam://rungameid/1` 会被拼成
+      //   `http://steam://rungameid/1` —— 浏览器打开一个不存在的地址，用户看到的是
+      //   "点了没反应/打开一个错误页"。统一交给 urlshortcut.normalizeUrl 判断。
+      const url = urlsc.normalizeUrl(target);
       await shell.openExternal(url);
       return { ok: true, msg: `已打开 ${url}` };
     }

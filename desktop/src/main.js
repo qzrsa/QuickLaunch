@@ -13,7 +13,8 @@ const actions = require('./lib/actions');
 const scanner = require('./lib/scan');
 const menus = require('./lib/menus');
 const importer = require('./lib/importer');
-const { imageFileToDataUrl, fileDefaultIconToDataUrl, isImageIcon } = require('./lib/icon');
+const { imageFileToDataUrl, fileDefaultIconToDataUrl, urlIconFileToDataUrl, isImageIcon } = require('./lib/icon');
+const urlsc = require('./lib/urlshortcut');
 const { createUpdateService } = require('./lib/update-service');
 
 const ROOT = path.join(__dirname, '..');
@@ -32,6 +33,35 @@ function appIcon() {
   console.warn('[icon] 磁盘图标缺失，改用内嵌兜底图标 ·', ICON);
   try { return nativeImage.createFromDataURL(FALLBACK_ICON); } catch { return nativeImage.createEmpty(); }
 }
+/**
+ * 给一个网址 / 协议链接（`steam://…`）找图标：
+ * 扫桌面与开始菜单里的 `.url`，谁声明的 `URL=` 跟它一致，就取那条快捷方式
+ * `IconFile=` 指的那张图。
+ *
+ * ★ 为什么不直接 `app.getFileIcon(url)` / 对 `.url` 本体取：本机实测对 `.url`
+ *   和任意 `.ico` 都只回一张 32×32 的**通用**图标（多个不同文件哈希一模一样），
+ *   跟 `.lnk` 不追目标是同一类坑。只有 nativeImage 直读 IconFile 才拿到真图。
+ * ★ 索引懒建一次（本机 4 个目录 32 个 `.url` / 189ms）。只有"要给网址补图标"时
+ *   才走到这里，绝不在启动路径上无条件扫盘。
+ */
+let urlIconIndex = null;
+function urlIconPathFor(url) {
+  if (urlIconIndex === null) {
+    const dirs = urlsc.defaultScanDirs();
+    try { dirs.unshift(app.getPath('desktop')); } catch { /* 拿不到就用默认的 */ }
+    const list = urlsc.scanUrlShortcuts(dirs);
+    urlIconIndex = urlsc.iconFileIndex(list);
+    console.log(`[icon] .url 图标索引 ${urlIconIndex.size} 条（扫了 ${list.length} 个快捷方式）`);
+  }
+  return urlIconIndex.get(urlsc.urlKey(url)) || '';
+}
+
+/** 网址 → 图标 dataURL；找不到返回 ''（上层保持 emoji 回退） */
+function iconForUrl(url, size = 128) {
+  const f = urlIconPathFor(url);
+  return f ? urlIconFileToDataUrl(f, size) : '';
+}
+
 const START_HIDDEN = process.argv.includes('--hidden');
 const SHOT_ARG = process.argv.find(a => a.startsWith('--shot'));
 // 开发期自检：--shot[=文件名] 以 0 透明度显示窗口、截取渲染画面后自动退出
@@ -89,7 +119,11 @@ function probeMenu(kind, payload, tpl) {
   return null;
 }
 
-/** 造几条尽量真实的拖放样例：家目录、当前 exe、一个真实 .lnk、一个网址 */
+/**
+ * 造几条尽量真实的拖放样例：家目录、当前 exe、一个真实 .lnk、一个真实 .url、一个网址。
+ * ★ `.url`（Steam / 游戏平台快捷方式）必须带上 —— 它的解析完全独立于 `.lnk`
+ *   （读 URL= / IconFile=），漏了就等于这块没验过。
+ */
 function probeSamplePaths() {
   const paths = [];
   const urls = ['https://github.com/qzrsa'];
@@ -115,6 +149,14 @@ function probeSamplePaths() {
       }
     }
   }
+
+  // 再捞一个桌面的 `.url`（本机 11 个游戏快捷方式都长这样）
+  try {
+    const desk = app.getPath('desktop');
+    const hit = fs.readdirSync(desk).find(n => /\.url$/i.test(n));
+    if (hit) paths.push(path.join(desk, hit));
+  } catch { /* 没有桌面或没有 .url 就算了 */ }
+
   return { paths, urls };
 }
 
@@ -807,6 +849,52 @@ function registerIpc() {
   /* 图标：提取默认 ICO / 选自定义图片 → dataURL（供编辑弹窗与导入用） */
   ipcMain.handle('ql:icon:default', (_e, p) =>
     fileDefaultIconToDataUrl(p).then(dataUrl => ({ ok: !!dataUrl, dataUrl })));
+
+  /**
+   * 网址 / 协议链接的图标。渲染层做「`.url` 图标自愈」时按 URL 来问一次：
+   * 主进程去桌面与开始菜单的 `.url` 里找同 URL 的那条，取它的 IconFile。
+   */
+  ipcMain.handle('ql:icon:url', (_e, p) => {
+    const dataUrl = iconForUrl(p);
+    return { ok: !!dataUrl, dataUrl };
+  });
+
+  /**
+   * `.url` 网址项自愈（一次性，v1.4.4）：
+   *  - `http://steam://rungameid/1` → `steam://rungameid/1`（旧版本把协议又套了一层，点不开）
+   *  - 图标还是 emoji 的 → 按 URL 去桌面/开始菜单找那张 `.url` 的 IconFile
+   * ★ 放在主进程而不是渲染层：要读盘、要 nativeImage，而且"修协议"的正则只该有一份
+   *   （lib/urlshortcut.js）。渲染层只负责在启动后叫一声。
+   * ★ 幂等：没有可修的项就什么都不写盘。
+   */
+  ipcMain.handle('ql:heal:urls', () => {
+    const cfg = store.load();
+    let fixedPath = 0;
+    let fixedIcon = 0;
+    for (const g of cfg.groups || []) {
+      for (const i of g.items || []) {
+        if ((i.type || '') !== 'url') continue;
+        const p = String(i.path || '').trim();
+        if (!p) continue;
+        const good = urlsc.stripBogusScheme(p);
+        if (good) {
+          i.path = good;
+          // 旧的说明是 hostOf('http://steam://…') = "steam"，重算一次才对
+          i.desc = urlsc.descForUrl(good);
+          fixedPath++;
+        }
+        if (!isImageIcon(i.icon)) {
+          const d = iconForUrl(i.path, 128);
+          if (d) { i.icon = d; fixedIcon++; }
+        }
+      }
+    }
+    if (fixedPath || fixedIcon) store.save(cfg);
+    if (fixedPath || fixedIcon) {
+      console.log(`[heal] .url：修协议 ${fixedPath} 项 / 补图标 ${fixedIcon} 项`);
+    }
+    return { ok: true, fixedPath, fixedIcon };
+  });
   ipcMain.handle('ql:icon:pick', async (e) => {
     const w = BrowserWindow.fromWebContents(e.sender);
     const r = await dialog.showOpenDialog(w, {
@@ -835,6 +923,7 @@ function registerIpc() {
       console.log('[import-probe] 目标分组 =', groupId || '(未指定 → 拖入的快捷方式)');
       console.log('[import-probe] 待导入 =', JSON.stringify(r.items.map(i => ({
         name: i.name, type: i.type, icon: i.icon, path: i.path, args: i.args || '', cwd: i.cwd || '',
+        desc: i.desc || '', iconFile: i._iconFile ? 'Y' : '',
       }))));
       console.log('[import-probe] 重复跳过 =', JSON.stringify(r.skipped),
         ' 无法识别 =', JSON.stringify(r.failed));
@@ -859,9 +948,12 @@ function registerIpc() {
       const created = store.newItem(it.name, it.icon, it.type, it.path, {
         args: it.args || '', cwd: it.cwd || '', desc: it.desc || '',
       });
-      // 应用类无自定义图标时，尝试提取程序自带的默认 ICO（失败保持 emoji 回退）
-      if (created.type === 'app' && !isImageIcon(created.icon) && created.path) {
-        const d = await fileDefaultIconToDataUrl(created.path, 128);
+      // 图标：`.url` 用 IconFile 指的图片 → 网址按 URL 去桌面/开始菜单找 → 应用类提程序自带 ICO。
+      // 全都失败才保持 emoji 回退（🌐 就是"没找到真图标"的兜底，不是错误）。
+      if (!isImageIcon(created.icon)) {
+        let d = it._iconFile ? urlIconFileToDataUrl(it._iconFile, 128) : '';
+        if (!d && created.type === 'url') d = iconForUrl(created.path, 128);
+        if (!d && created.type === 'app' && created.path) d = await fileDefaultIconToDataUrl(created.path, 128);
         if (d) created.icon = d;
       }
       g.items.unshift(created);

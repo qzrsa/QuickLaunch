@@ -24,6 +24,12 @@ contextBridge.exposeInMainWorld('ql', {
   pick: kind => ipcRenderer.invoke('ql:pick', kind),
   scan: force => ipcRenderer.invoke('ql:scan', force),
   iconDefault: p => ipcRenderer.invoke('ql:icon:default', p),
+  // 网址 / 协议链接（steam://）的图标：主进程拿 URL 去桌面/开始菜单里找同 URL 的
+  // `.url`，读它 IconFile 指的图（getFileIcon 对 .url 只回通用图标，见 lib/urlshortcut.js）
+  iconUrl: p => ipcRenderer.invoke('ql:icon:url', p),
+  // `.url` 网址项自愈（修被套错的协议 + 补 IconFile 图标）。逻辑全在主进程，
+  // 渲染层只叫一声 —— 要读盘、要 nativeImage，而且「修协议」的正则只该有一份。
+  healUrls: () => ipcRenderer.invoke('ql:heal:urls'),
   iconPick: () => ipcRenderer.invoke('ql:icon:pick'),
 
   /* 设置 */

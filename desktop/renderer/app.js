@@ -95,8 +95,11 @@ function iconHtml(item, fallback) {
  * 判据：同一张图被 ≥3 个 `.lnk` 条目共用 = 一定是系统占位图。
  * 用户自己挑的 emoji 不是图片；自己选的图片几乎不可能几十个条目共用同一张。
  * 幂等：真图标重提还是它自己，来回跑不会把数据搅乱。
+ *
+ * rev 3（v1.4.4）：`.url`（Steam / 游戏平台快捷方式）以前一律是 🌐，路径还被套了一层
+ * `http://`。这一版补一次「修协议 + 取 IconFile 真图标」，见 healUrlItems。
  */
-const ICON_REV = 2;
+const ICON_REV = 3;
 
 function placeholderIconItems() {
   const use = new Map();
@@ -148,6 +151,52 @@ async function reextractIcons(opts = {}) {
   toast('ok', changed ? `已修复 ${changed} 个图标` : '图标都是对的',
     `检查了 ${targets.length} 个快捷方式`);
   return changed;
+}
+
+/**
+ * `.url`（Internet 快捷方式）自愈 —— Steam / FeverGames / 各类游戏平台拖进来的那批。
+ *
+ * 两个毛病，都是 v1.4.4 之前留下的：
+ *  1) `URL=steam://rungameid/400040` 被当成裸网址又套了一层 → `http://steam://…`，点了打不开；
+ *  2) 图标一律写死 🌐 → 本机 11 个游戏在界面上是 11 个一模一样的大地球。
+ *     （`.url` 里其实写着 `IconFile=…\.ico`，以前没人读。）
+ *
+ * ★ 逻辑全在主进程（`ql:heal:urls`）：要读盘、要 nativeImage，渲染层做不到；
+ *   也避免"修协议"的正则在这儿和 lib 里各写一份。渲染层只管叫一声。
+ * ★ 只改「协议被套错」和「图标还不是图片」的项，用户自己挑的 emoji 不动。
+ * @returns {Promise<{fixedPath:number, fixedIcon:number}>}
+ */
+async function healUrlItems() {
+  if (PREVIEW) return { fixedPath: 0, fixedIcon: 0 };
+  try {
+    const r = await API.healUrls();
+    if (r && (r.fixedPath || r.fixedIcon)) {
+      console.log(`[quicklaunch] .url 自愈：修协议 ${r.fixedPath} 项 / 补图标 ${r.fixedIcon} 项`);
+      await refresh();
+    }
+    return r || { fixedPath: 0, fixedIcon: 0 };
+  } catch (e) {
+    // 别静默：preload 少暴露一个方法（曾经就是漏了 healUrls）会让自愈"永远没生效"
+    console.warn('[quicklaunch] .url 自愈失败:', e && e.message);
+    return { fixedPath: 0, fixedIcon: 0 };
+  }
+}
+
+/**
+ * 「重新提取图标」按钮与启动时的一次性自愈，都从这里走：
+ * `.url` 先修协议 + 补图标，再补 `.lnk` 那批占位图。
+ * @param {{quiet?:boolean}} [opts]
+ */
+async function healAllIcons(opts = {}) {
+  const r = await healUrlItems();
+  const lnk = await reextractIcons({ quiet: true });
+  const total = (r.fixedIcon || 0) + lnk;
+  if (!opts.quiet) {
+    toast(total ? 'ok' : 'info',
+      total ? `已修复 ${total} 个图标` : '没有需要修复的图标',
+      r.fixedPath ? `顺带纠正了 ${r.fixedPath} 个被套错协议的链接` : '桌面与开始菜单里的快捷方式都看过了');
+  }
+  return total;
 }
 
 function toast(kind, title, text = '') {
@@ -2202,8 +2251,8 @@ function bind() {
   });
   $('#btnOpenCfg').addEventListener('click', () => API.openConfigDir());
   $('#btnSetSave').addEventListener('click', saveSettings);
-  // 手动修图标：只补"占位图"那批，不会冲掉用户自己挑的表情/图片
-  $('#btnReextractIcons').addEventListener('click', () => { reextractIcons(); });
+  // 手动修图标：只补"占位图 / 网址还挂着 emoji"那批，不会冲掉用户自己挑的表情/图片
+  $('#btnReextractIcons').addEventListener('click', () => { healAllIcons(); });
 
   /* 「关于」的两个入口：设置页脚的按钮，和侧栏底部那条状态行。
      状态行只在桌面版可点 —— 预览模式没有主进程，点开也拿不到真信息。 */
@@ -2549,10 +2598,10 @@ function createMockBridge() {
     if (state.info && state.info.update) applyUpdateState(state.info.update);
     else await refreshUpdateState();
     await refresh({ initView: true });
-    // 一次性补图标：<=1.3.1 给 .lnk 提的是通用占位图（见 reextractIcons）。
+    // 一次性补图标：<=1.3.1 给 .lnk 提的是通用占位图、<=1.4.3 给 .url 提的是 🌐（见 healAllIcons）。
     // 放到首屏渲染之后、且只跑一次 —— 别让启动变慢，也别每次都重扫。
     if (Number((state.config.settings || {}).iconRev || 1) < ICON_REV) {
-      setTimeout(() => { reextractIcons({ quiet: true }).catch(() => {}); }, 900);
+      setTimeout(() => { healAllIcons({ quiet: true }).catch(() => {}); }, 900);
     }
     console.log(`[quicklaunch] 渲染层就绪 · ${PREVIEW ? 'preview' : 'desktop'} · `
       + `${state.config.groups.length} 组 / ${allItems().length} 项 · 起始视图 ${state.active}`);

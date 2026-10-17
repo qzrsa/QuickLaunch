@@ -8,11 +8,15 @@
  *   整批只启动一次进程，路径通过 base64 内联传入，避免中文与引号转义问题。
  * - 解析出 .lnk 目标后，存的是**目标本体**（exe 路径 + args + cwd）而不是 lnk 本身，
  *   这样"打开所在位置"能定位到真正的程序，启动也更可靠。
+ * - .url 存的是**协议原样**（`steam://rungameid/1`，不补 http://），外加一个 `_iconFile`
+ *   把 `IconFile=` 指的图标路径带给主进程 —— 本模块没有 electron，取不了图标。
+ *   `_iconFile` 只在本进程内传递，`store.newItem` 只收固定字段，不会被写进 config.json。
  */
 
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
+const urlsc = require('./urlshortcut');
 
 const SCRIPT_EXT = ['.bat', '.cmd', '.ps1', '.py', '.js', '.mjs', '.vbs', '.ahk', '.sh'];
 const APP_EXT = ['.exe', '.com', '.msc', '.cpl', '.appref-ms'];
@@ -47,9 +51,8 @@ function cleanName(p) {
   return base || path.basename(String(p || '')) || '未命名';
 }
 
-function hostOf(url) {
-  try { return new URL(url).hostname.replace(/^www\./i, ''); } catch { return ''; }
-}
+/** 取主机名（去掉 www）。★ 协议链接（steam://）没有主机名，别拿这个当名字，见 urlsc.descForUrl */
+const hostOf = urlsc.hostOf;
 
 /**
  * 同步分类一个本地路径。返回 null 表示无法处理。
@@ -86,13 +89,14 @@ function classifyBasic(p) {
 
 /* ------------------------------------------------ .url 解析 */
 
+/**
+ * 解析 `.url` 里的 `URL=`。返回 null 表示读不到/不是 Internet 快捷方式。
+ * ★ v1.4.4 起真正的实现搬到 `lib/urlshortcut.js`（还要拿 IconFile），这里只留一个门面，
+ *   别在两处各写一份正则 —— 两份必然漂移。
+ */
 function parseUrlFile(p) {
-  try {
-    const raw = fs.readFileSync(p, 'utf8');
-    const m = raw.match(/^\s*URL\s*=\s*(.+?)\s*$/im);
-    if (!m) return null;
-    return m[1].replace(/^"|"$/g, '').trim();
-  } catch { return null; }
+  const sc = urlsc.readUrlShortcut(p, { fs });
+  return sc ? sc.url : null;
 }
 
 /* ------------------------------------------------ .lnk 解析 */
@@ -195,12 +199,13 @@ async function buildItems({ paths = [], urls = [], existing = [] } = {}) {
 
   /* 网址 */
   for (const raw of urls) {
-    let u = String(raw || '').trim();
+    const u = urlsc.normalizeUrl(raw);
     if (!u) continue;
-    if (!/^https?:\/\//i.test(u)) u = 'http://' + u;
-    let host = hostOf(u);
-    if (!host) { failed.push(raw); continue; }
-    push({ name: host, icon: '🌐', type: 'url', path: u, desc: host }, raw);
+    // ★ 协议链接（`steam://`）不能用 hostname 当名字 —— `new URL('steam://rungameid/1')`
+    //   的 hostname 是 `rungameid`，看着像域名其实是路径段。见 urlshortcut.descForUrl。
+    const desc = urlsc.descForUrl(u);
+    if (!desc) { failed.push(raw); continue; }
+    push({ name: desc, icon: '🌐', type: 'url', path: u, desc }, raw);
   }
 
   /* 本地路径 */
@@ -211,10 +216,18 @@ async function buildItems({ paths = [], urls = [], existing = [] } = {}) {
     const ext = path.extname(full).toLowerCase();
 
     if (ext === '.url') {
-      const u = parseUrlFile(full);
-      if (u) {
-        const url = /^https?:\/\//i.test(u) ? u : 'http://' + u;
-        push({ name: cleanName(full), icon: '🌐', type: 'url', path: url, desc: hostOf(url) }, full);
+      // ★★ 这里以前是「把 URL= 读出来，不认 http 就补 http://，图标写死 🌐」——
+      //    于是 `steam://rungameid/1` 变成 `http://steam://rungameid/1`（点不开），
+      //    而同一行下面写着的 `IconFile=…ico` 完全没被读过（11 个游戏全是同一个大地球）。
+      const sc = urlsc.readUrlShortcut(full, { fs });
+      const url = sc ? urlsc.normalizeUrl(sc.url) : '';
+      if (url) {
+        push({
+          name: cleanName(full), icon: '🌐', type: 'url', path: url,
+          desc: urlsc.descForUrl(url),
+          // 交给主进程取图标：这里没有 electron，只能把文件路径带出去
+          _iconFile: sc.iconFile || '',
+        }, full);
       } else {
         push(classifyBasic(full), full);   // 解析不出 URL 就按文件处理
       }

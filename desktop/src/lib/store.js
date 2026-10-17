@@ -161,8 +161,9 @@ function defaultConfig() {
       // 上一次已经弹过提示的更新结果（形如 `applied|1.2.0|<时间>`）。
       // 靠它让"更新成功/失败"的提示**只出现一次**，跨重启也不会重复。
       lastUpdateNotice: '',
-      // 图标提取逻辑的版本号。<=1.3.1 给 `.lnk` 提的是通用占位图（不追目标），
-      // 升到 2 之后老数据会自动补一次（见 renderer 的 reextractIcons）。
+      // 图标提取逻辑的版本号。<=1.3.1 给 `.lnk` 提的是通用占位图（不追目标）、
+      // <=1.4.3 给 `.url` 一律写 🌐 —— 升到 rev 3 之后老数据会自动补一次
+      // （见 renderer 的 healAllIcons / 主进程的 ql:heal:urls）。
       iconRev: 1,
     },
     groups: buildGroups(),
