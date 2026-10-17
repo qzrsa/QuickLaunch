@@ -159,7 +159,7 @@ cd desktop
 npm install
 npm start            # 开发运行
 npm run check        # 语法 + 工作流自检（63 项）
-npm test             # 主进程逻辑自检（574 项）
+npm test             # 主进程逻辑自检（590 项）
 npm run verify:apply # 真起一个 shell 跑"退出后换文件"那套助手（48 项）
 npm run release      # = check + test + verify:apply + 打三种产物 + 压绿色版 zip
 ```
@@ -168,9 +168,9 @@ npm run release      # = check + test + verify:apply + 打三种产物 + 压绿�
 
 ```
 dist/
-├── QuickLaunch-Setup-1.3.1.exe
-├── QuickLaunch-Portable-1.3.1.exe
-├── QuickLaunch-Green-1.3.1.zip
+├── QuickLaunch-Setup-1.3.2.exe
+├── QuickLaunch-Portable-1.3.2.exe
+├── QuickLaunch-Green-1.3.2.zip
 ├── update.json              # 更新清单（CI 里由 make-update-manifest 生成并随 Release 发布）
 ├── QuickLaunch-Delta-*.bin  # 差量包（同上）
 └── win-unpacked/            # 绿色版的原始目录
@@ -191,10 +191,10 @@ npm run pack:green       # 把 win-unpacked 压成绿色版 zip
 （单文件便携版已移出 CI，理由见上）：
 
 ```bash
-git tag -a v1.3.1 -m "v1.3.1 · 一句话概括" -m "
+git tag -a v1.3.2 -m "v1.3.2 · 一句话概括" -m "
 - 改了什么，就写在这儿
 - 用户看得懂的话，不是 commit 标题的堆砌"
-git push origin v1.3.1        # ← 必须推 tag 名，推 main 不会顺带推 tag
+git push origin v1.3.2        # ← 必须推 tag 名，推 main 不会顺带推 tag
 ```
 
 **tag 的 message 就是 Release 发布说明**，CI 会 `git tag -l --format='%(contents)'` 取出来放到
