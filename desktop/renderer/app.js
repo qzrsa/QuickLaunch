@@ -4,9 +4,6 @@
    在普通浏览器中打开时会自动切换到「预览模式」（内存假数据）。
    ============================================================ */
 
-const API = window.ql || createMockBridge();
-const PREVIEW = !!API.__mock;
-
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 
@@ -37,6 +34,13 @@ const COLOR_NAMES = [
   { name: '黄', value: '#f0b429' }, { name: '灰', value: '#8b8f9a' },
 ];
 
+/* ★★ API / PREVIEW 必须放在 PALETTE / ICONS / COLOR_NAMES **之后**再初始化：
+   预览模式下 `createMockBridge()` 会**立刻**执行，而它里面的假数据用到了 PALETTE ——
+   放在文件最上面就会踩 TDZ（`Cannot access 'PALETTE' before initialization`），
+   整个渲染层直接白屏。桌面版因为有 window.ql 走不到这条路，所以这个坑只在预览模式炸。 */
+const API = window.ql || createMockBridge();
+const PREVIEW = !!API.__mock;
+
 const state = {
   config: null,
   active: 'all',
@@ -46,6 +50,10 @@ const state = {
   scan: [],
   scanPicked: new Set(),
   scanQuery: '',
+  // 正在把扫描结果写进分组：期间要显示进度、禁掉「取消/导入」、锁住弹窗。
+  // ★ 没有这个标记时，导入两百多项（每项都要异步提图标）要十几秒，
+  //   用户会以为卡住了 —— 再点一次「导入到分组」就重复导入，点「取消」也会丢进度。
+  importing: false,
   info: null,
   capturedHotkey: null,
   dlgCancel: null,
@@ -1262,6 +1270,7 @@ function renderScanList() {
 }
 
 async function openScan() {
+  if (state.importing) return;   // 导入中重开会把进度和已冻结的勾选一起冲掉
   $('#scanOverlay').hidden = false;
   $('#scanSub').textContent = '正在读取开始菜单与注册表…';
   $('#scanList').innerHTML = '<div class="skeleton" style="height:56px;margin-bottom:6px"></div>'.repeat(6);
@@ -1272,36 +1281,101 @@ async function openScan() {
   renderScanList();
 }
 
+/** 导入期间锁住扫描弹窗：这时正在逐项提图标 + 最后写盘，关掉就是丢进度。 */
+function overlayLocked(o) {
+  return !!(state.importing && o && o.id === 'scanOverlay');
+}
+
+/** 进度条 + 计数。total 为 0 时按 0% 处理，不除零。 */
+function setScanProgress(done, total) {
+  const pct = total ? Math.round((done / total) * 100) : 0;
+  const bar = $('#scanBar');
+  if (bar) bar.style.width = pct + '%';
+  const t = $('#scanProgressText');
+  if (t) t.textContent = done >= total ? `已完成 ${total} 项，正在保存…` : `正在导入并提取图标… ${done} / ${total}`;
+  const p = $('#scanProgressPct');
+  if (p) p.textContent = pct + '%';
+}
+
+/**
+ * 进出"导入中"状态：显示/收起进度条，并把所有会打断导入的入口一起禁掉
+ * （取消 / 关闭叉 / 全选 / 全不选 / 筛选 / 列表勾选 / 导入按钮）。
+ */
+function setScanBusy(on) {
+  state.importing = !!on;
+  ['#btnScanImport', '#btnScanAll', '#btnScanNone', '#scanQ'].forEach(sel => {
+    const el = $(sel);
+    if (el) el.disabled = !!on;
+  });
+  const ov = $('#scanOverlay');
+  if (ov) ov.querySelectorAll('[data-close]').forEach(b => { b.disabled = !!on; });
+  const imp = $('#btnScanImport');
+  if (imp) imp.textContent = on ? '正在导入…' : '导入到分组';
+  const box = $('#scanProgress');
+  if (box) box.hidden = !on;
+  if (on) setScanProgress(0, 1);
+  if (ov) ov.classList.toggle('is-busy', !!on);
+}
+
 async function importScan() {
+  // ★ 三重保险：正在导入时再点一次直接不理（否则会重复导入一整批）
+  if (state.importing) return;
   if (!state.scanPicked.size) return toast('info', '还没有勾选任何软件');
+
   let g = state.config.groups.find(x => x.id === 'scanned');
   if (!g) {
     g = { id: 'scanned', name: '已安装软件', icon: '📦', color: PALETTE[2], items: [] };
     state.config.groups.push(g);
   }
+
+  // 先把要导入的挑出来（按列表顺序），勾选集合在这一刻就"冻结"了
   const have = new Set(allItems().map(x => (x.i.path || '').toLowerCase()));
-  let added = 0;
+  const picked = [];
   for (const it of state.scan) {
     if (!state.scanPicked.has(it.path)) continue;
-    if (have.has(it.path.toLowerCase())) continue;
-    have.add(it.path.toLowerCase());
-    const icon = { icon: '🚀' };  // 默认 emoji 兜底
-    // 尝试提取程序自带默认 ICO（取不到就保持 emoji）
-    try {
-      const r = await API.iconDefault(it.path);
-      if (r && r.ok && r.dataUrl) icon.icon = r.dataUrl;
-    } catch { /* 提取失败保持兜底 */ }
-    g.items.push({
-      id: uid(), name: it.name, icon: icon.icon, type: 'app', path: it.path,
-      args: '', cwd: '', desc: it.source, elevate: false, console: false,
-      favorite: false, useCount: 0, lastUsed: 0,
-    });
-    added++;
+    const key = it.path.toLowerCase();
+    if (have.has(key)) continue;
+    have.add(key);            // 同一次勾选里若有重复路径，也只加一次
+    picked.push(it);
   }
+  if (!picked.length) {
+    $('#scanOverlay').hidden = true;
+    return toast('info', '这些软件都已经在列表里了', '没有重复添加');
+  }
+
+  // 先按顺序把槽位占好，再并发去提图标；结果写回各自的槽位 → 顺序与候选列表一致
+  const slots = picked.map(it => ({
+    id: uid(), name: it.name, icon: '🚀', type: 'app', path: it.path,
+    args: '', cwd: '', desc: it.source, elevate: false, console: false,
+    favorite: false, useCount: 0, lastUsed: 0,
+  }));
+
+  const total = slots.length;
+  let done = 0;
+  setScanBusy(true);
+  const queue = slots.slice();
+  const worker = async () => {
+    while (queue.length) {
+      const s = queue.shift();
+      // 尝试提取程序自带默认 ICO（取不到就保持 emoji 兜底）
+      try {
+        const r = await API.iconDefault(s.path);
+        if (r && r.ok && r.dataUrl) s.icon = r.dataUrl;
+      } catch { /* 单项失败不影响整批 */ }
+      done++;
+      setScanProgress(done, total);
+    }
+  };
+  // 6 路并发：两百多项串行要十几秒，用户会以为卡死
+  await Promise.all(Array.from({ length: Math.min(6, total) }, worker));
+
+  g.items.push(...slots);
+  setScanProgress(total, total);
   const r = await API.saveConfig(state.config);
+  setScanBusy(false);
   if (!r.ok) return toast('bad', '导入失败', r.msg);
   $('#scanOverlay').hidden = true;
-  toast('ok', `已导入 ${added} 个启动项`, '分组：已安装软件');
+  toast('ok', `已导入 ${slots.length} 个启动项`, '分组：已安装软件');
   state.active = 'scanned';
   await refresh();
 }
@@ -1931,6 +2005,7 @@ function bind() {
   $('#btnScan').addEventListener('click', openScan);
   $('#scanQ').addEventListener('input', e => { state.scanQuery = e.target.value.trim(); renderScanList(); });
   $('#scanList').addEventListener('click', e => {
+    if (state.importing) return;   // 导入中不再改勾选（这一批已经冻结了）
     const row = e.target.closest('.scan-item');
     if (!row) return;
     const p = row.dataset.path;
@@ -2135,11 +2210,14 @@ function bind() {
 
   /* 弹窗关闭 */
   $$('[data-close]').forEach(b => b.addEventListener('click', () => {
-    b.closest('.overlay').hidden = true;
+    const ov = b.closest('.overlay');
+    if (overlayLocked(ov)) return;   // 导入中：关掉就是丢进度，按钮此时也是 disabled
+    ov.hidden = true;
     state.editing = null;
   }));
   $$('.overlay').forEach(o => o.addEventListener('mousedown', e => {
     if (e.target !== o) return;
+    if (overlayLocked(o)) return;
     if (o.id === 'confirmOverlay' || o.id === 'promptOverlay') {
       if (state.dlgCancel) state.dlgCancel();
       return;
@@ -2190,8 +2268,11 @@ function bind() {
 
     if (e.key === 'Escape') {
       if (state.dlgCancel) { state.dlgCancel(); return; }
+      // 导入中不许关扫描弹窗（正逐项提图标 + 最后要写盘，关掉就是丢进度）
+      const scanOv = $('#scanOverlay');
+      if (state.importing && scanOv && !scanOv.hidden) { e.preventDefault(); return; }
       if (anyOpen) {
-        $$('.overlay').forEach(o => { o.hidden = true; });
+        $$('.overlay').forEach(o => { if (!overlayLocked(o)) o.hidden = true; });
         state.editing = null;
       } else if (state.q) {
         state.q = ''; $('#q').value = ''; render();

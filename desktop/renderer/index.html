@@ -225,6 +225,13 @@
         <button class="btn sm" id="btnScanNone">全不选</button>
       </div>
       <div class="scan-list" id="scanList"></div>
+      <div class="scan-progress" id="scanProgress" hidden>
+        <div class="sp-bar"><i id="scanBar"></i></div>
+        <div class="sp-text">
+          <span id="scanProgressText">正在导入…</span>
+          <span id="scanProgressPct">0%</span>
+        </div>
+      </div>
     </div>
     <div class="modal-foot">
       <span id="scanCount" class="muted-note">已选 0 项</span>

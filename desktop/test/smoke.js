@@ -149,6 +149,46 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
   await scanner.scan(false);
   ok(Date.now() - t1 < 50, '二次扫描命中缓存');
 
+  /* ---- 扫描导入：进度 + 不许取消 + 不许重复点 ----
+     导入两百多项时每项都要异步提图标（十几秒）。以前既没进度也不锁：用户会以为卡死，
+     再点一次「导入到分组」就重复导入一整批，点「取消」/按 Esc 就把进度丢了。 */
+  section('扫描导入：进度条与防重复');
+  const scanHtml = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'index.html'), 'utf8');
+  const scanJs = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'app.js'), 'utf8');
+  const scanCss = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'style.css'), 'utf8');
+  ok(/id="scanProgress"/.test(scanHtml) && /id="scanBar"/.test(scanHtml) && /id="scanProgressPct"/.test(scanHtml),
+    '扫描弹窗里有进度条：轨道 + 填充 + 百分比');
+  ok(/id="scanProgress"[^>]*\shidden/.test(scanHtml), '进度条默认隐藏（不占位）');
+  ok(/function setScanProgress/.test(scanJs) && /style\.width = pct \+ '%'/.test(scanJs),
+    '进度宽度按 done/total 真算（不是假动画）');
+  ok(/function setScanBusy/.test(scanJs), '有 setScanBusy() 统一开关"导入中"状态');
+  ok(/'#btnScanImport', '#btnScanAll', '#btnScanNone', '#scanQ'/.test(scanJs),
+    '导入中禁用 导入 / 全选 / 全不选 / 筛选');
+  ok(/querySelectorAll\('\[data-close\]'\)[\s\S]{0,60}disabled = !!on/.test(scanJs),
+    '★ 导入中「取消」与右上角 ✕ 一起禁用（不能取消）');
+  ok(/async function importScan\(\)[\s\S]{0,160}if \(state\.importing\) return;/.test(scanJs),
+    '★ 重复点「导入到分组」直接忽略（不会重复导入）');
+  const lockUses = (scanJs.match(/overlayLocked\(/g) || []).length;
+  ok(/function overlayLocked/.test(scanJs) && lockUses >= 4,
+    `★ 所有关闭入口（✕ / 遮罩 / Esc）都过 overlayLocked 这道闸（${lockUses} 处）`);
+  ok(/async function openScan\(\)[\s\S]{0,120}state\.importing/.test(scanJs),
+    '导入中重开扫描弹窗会被挡住（否则进度与冻结的勾选被冲掉）');
+  ok(/if \(state\.importing\) return;\s*\/\/ 导入中不再改勾选/.test(scanJs),
+    '导入中列表不再响应勾选');
+  ok(/have\.has\(key\)/.test(scanJs) && /have\.add\(key\)/.test(scanJs),
+    '同一批里重复路径也去重（边筛边把 key 塞进 have）');
+  ok(/Math\.min\(6, total\)/.test(scanJs), '图标提取 6 路并发（两百多项串行要十几秒）');
+  ok(/g\.items\.push\(\.\.\.slots\)/.test(scanJs), '先按顺序占槽位再并发 → 导入顺序仍与候选列表一致');
+  ok(/#scanOverlay\.is-busy \.scan-list/.test(scanCss), '导入中列表变灰且点不动');
+  ok(/\.btn:disabled/.test(scanCss), '禁用态有视觉反馈（否则按钮看着还能点）');
+  // ★ 预览模式的 TDZ 坑：createMockBridge() 在初始化时就用 PALETTE，
+  //   所以 API/PREVIEW 不能声明在 PALETTE 之前，否则普通浏览器里整页白屏
+  //   （桌面版因为走 window.ql 碰不到这条路，一直没被发现）。
+  const iPal = scanJs.indexOf('const PALETTE =');
+  const iApi = scanJs.indexOf('const API = window.ql');
+  ok(iPal > 0 && iApi > iPal,
+    'API / PREVIEW 初始化排在 PALETTE 之后（放最前面会让预览模式踩 TDZ 白屏）');
+
   section('menus 右键菜单模板');
   const menus = require('../src/lib/menus');
   const labels = tpl => tpl.filter(i => i.type !== 'separator').map(i => i.label);
