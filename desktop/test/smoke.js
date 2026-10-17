@@ -684,6 +684,10 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
   // 设置面板里不该再有那块只读文本 —— 这是本轮改动的核心，写死成回归守卫
   ok(!/id="envBox"/.test(htmlSrc), '设置面板已无 #envBox（只读运行环境块已搬走）');
   ok(!/env-box/.test(css), 'style.css 里 .env-box 死样式已删除');
+  // 同理：设置面板底部曾内嵌一整块「使用说明」（右键/多选/启动分组/托盘/热键/开机自启/数据 共 7 行）。
+  // 那是"看一眼"的阅读材料，已搬到 README —— 别让它再爬回来（设置面板只放能改的东西）。
+  ok(!/在卡片上右键可启动/.test(htmlSrc) && !/便携版移动位置后请重新勾选/.test(htmlSrc),
+    '设置面板不再内嵌使用说明块（改由 README 承载）');
   ok(/id="setDataWarn"[^>]*\shidden/.test(htmlSrc) && /id="setDataWarn"/.test(htmlSrc),
     '设置面板有警示条 #setDataWarn 且默认隐藏（不占位）');
   ok(css.match(/\.warn-box\s*\{[^}]*var\(--danger-soft\)/) !== null,
