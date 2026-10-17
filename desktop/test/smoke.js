@@ -1481,6 +1481,34 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
   /* ------------------------------------------------------------------
    * 静默失效防线：主进程往外发的每个频道都得在 preload 白名单里
    * ------------------------------------------------------------------ */
+  /* ------------------------- 启动卡片不再"闪一下"（v1.5.2） */
+  section('启动后不整块重绘（点卡片不再闪一下）');
+  {
+    const appSrcF = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'app.js'), 'utf8');
+    const at = appSrcF.indexOf('async function runItem(');
+    ok(at >= 0, '找得到 runItem');
+    const body = at >= 0 ? appSrcF.slice(at, appSrcF.indexOf('\n}', at) + 2) : '';
+    // 注释里会提到 refresh()（说明"为什么不要"），先按整行去掉注释再判断
+    const bodyCode = body.replace(/^\s*\/\/.*$/gm, '');
+    ok(!/refresh\(/.test(bodyCode), '★ runItem 里不再 refresh（主进程 runAndBump 已经广播 config-changed）');
+
+    ok(/API\.on\('ql:config-changed', \(\) => refresh\(\{ soft: true \}\)\)/.test(appSrcF),
+      '★ config-changed 走 soft 通道（只有计数变了就一次重绘都不做）');
+    ok(/function softSync\(next\)/.test(appSrcF), '有 softSync（就地改「用过 N 次」）');
+    ok(/if \(opts && opts\.soft && softSync\(next\)\) return;/.test(appSrcF), 'refresh 支持 soft 分支');
+    ok(/render\(\{ noAnim: !!\(opts && \(opts\.noAnim \|\| opts\.soft\)\) \}\)/.test(appSrcF),
+      '★ soft 落到重绘分支时也不播入场动画');
+    ok(/if \(state\.sort === 'uses' \|\| state\.sort === 'recent'\) return false;/.test(appSrcF),
+      '★ 按使用次数 / 最近排序时不就地同步（顺序依赖计数，必须重排）');
+    ok(/if \(state\.q\) return false;/.test(appSrcF), '搜索中不就地同步（匹配结果可能变）');
+    ok(/k === 'useCount' \|\| k === 'lastUsed' \|\| k === '_exists'/.test(appSrcF),
+      '比对时只抹平 useCount / lastUsed / _exists 三个字段');
+    ok(/span\.className = 'uses'/.test(appSrcF) && /\.card-foot/.test(appSrcF),
+      '★ 0 → 1 次（原来没有这个节点）也是就地补一个 span，不整块重绘');
+    ok(/if \(flatten\(cur\) !== flatten\(next\)\) return false;/.test(appSrcF),
+      '★ 别处有任何差异就老实重绘（宁可多绘，不能漏掉用户的改动）');
+  }
+
   section('事件白名单对账');
   {
     // preload 的 EVENTS 白名单漏登记一个频道，API.on 会**静默**返回空函数 ——

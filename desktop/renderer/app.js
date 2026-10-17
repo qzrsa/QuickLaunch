@@ -683,7 +683,9 @@ async function runItem(id, item) {
   const r = await API.run(target);
   if (r.ok) {
     toast('ok', '已启动', r.name || target.name || '');
-    if (!item) await refresh();
+    // ★ 这里**不要**再 refresh()。主进程 runAndBump 已经把 useCount+1 写盘并广播
+    //   ql:config-changed（见 main.js），渲染层收到后走 softSync 就地改「用过 N 次」。
+    //   以前这里又 refresh 一次 = 点一下卡片整块重绘两遍，界面上就是"闪一下"。
   } else {
     toast('bad', '启动失败', r.msg);
   }
@@ -2030,8 +2032,70 @@ async function saveSettings() {
 
 /* ------------------------------------------------------------ 数据 */
 
+/**
+ * 把「只有计数变了」的新配置就地同步到界面，返回 true 表示不需要重绘（v1.5.2）。
+ *
+ * 起因：点一张卡片启动，主进程会给它 `useCount+1` / `lastUsed=now` 然后广播
+ * `ql:config-changed`。以前收到广播就 `render()` 整块重建 —— 卡片全部重新创建、
+ * 入场动画重播、每个 `<img>` 图标重新解码，观感就是"点一下软件，界面闪一下"。
+ * 但真正要变的只有卡片上那一行「用过 N 次」。
+ *
+ * 判断方式：把三个纯计数/临时字段抹平成同一个值后做整体比对。
+ * 只要别处还有任何差异（改名、增删、分组、设置……），就返回 false，让调用方老老实实重绘 ——
+ * 宁可多绘一次，也不能漏掉用户的改动。
+ *
+ * ★ 按「使用次数 / 最近使用」排序时直接返回 false：顺序本身依赖这两个字段，
+ *   就地改文本会和实际顺序对不上（这时走 noAnim 重绘，不播动画）。
+ */
+function softSync(next) {
+  const cur = state.config;
+  if (!cur || !next || !Array.isArray(next.groups)) return false;
+  if (state.q) return false;                                    // 搜索中：匹配结果可能变
+  if (state.sort === 'uses' || state.sort === 'recent') return false;
+
+  const flatten = cfg => JSON.stringify(cfg, (k, v) =>
+    (k === 'useCount' || k === 'lastUsed' || k === '_exists') ? 0 : v);
+  if (flatten(cur) !== flatten(next)) return false;             // 还有别的变化 → 去重绘
+
+  // 到这里可以确定：差异只可能在计数上。逐张卡片改文本。
+  const oldUse = new Map();
+  cur.groups.forEach(g => (g.items || []).forEach(i => oldUse.set(i.id, i.useCount || 0)));
+
+  const updates = [];
+  for (const g of next.groups) {
+    for (const i of (g.items || [])) {
+      if ((oldUse.get(i.id) || 0) === (i.useCount || 0)) continue;
+      const card = document.querySelector(`.card[data-id="${i.id}"]`);
+      if (!card) continue;                                      // 不在当前视图里，无所谓
+      const el = card.querySelector('.uses');
+      if (!el) {
+        if (!i.useCount) continue;
+        // 第一次用（0 → 1 次）原来没有这个节点。与其整块重绘，不如就地补一个 ——
+        // 位置与 cardHTML 一致（`.card-foot` 里的最后一个）。缺路径的卡不显示计数。
+        if (card.querySelector('.missing')) continue;
+        const foot = card.querySelector('.card-foot');
+        if (!foot) return false;                                // 认不出的结构 → 老实重绘
+        const span = document.createElement('span');
+        span.className = 'uses';
+        span.textContent = `用过 ${i.useCount} 次`;
+        foot.appendChild(span);
+        continue;
+      }
+      updates.push([el, i.useCount]);
+    }
+  }
+  for (const [el, n] of updates) el.textContent = `用过 ${n} 次`;
+  state.config = next;
+  return true;
+}
+
 async function refresh(opts) {
-  state.config = await API.getConfig();
+  const next = await API.getConfig();
+  // ★ v1.5.2：只有「用过 N 次 / 最近使用」这类计数变了的话，就地问一句卡片文本就够了。
+  //   以前每次 config-changed 都整块重绘 —— 卡片全部重建、入场动画重播、图标重新解码，
+  //   观感就是"点一下软件，界面闪一下"（点一次会走两遍，见 runItem 的注释）。
+  if (opts && opts.soft && softSync(next)) return;
+  state.config = next;
   state.sort = state.config.settings.sort || 'custom';
   $('#sort').value = state.sort;
   applyTheme(state.config.settings.theme || 'light');
@@ -2045,7 +2109,7 @@ async function refresh(opts) {
     state.active = 'all';
   }
   renderNav();
-  render();
+  render({ noAnim: !!(opts && (opts.noAnim || opts.soft)) });
   // 绿点 = 一切正常；红点 = 数据没落在程序目录（回落 %APPDATA%）；
   // 蓝点 = 有新版本可更新。文案是「版本 · 运行形态（· 可更新）」，点它打开「关于」。
   // ★ 这里曾经写「已连接」，会被读成"连上了服务器"——程序除了查更新不联网，已改掉。
@@ -2594,7 +2658,9 @@ function bind() {
   /* 主进程事件 */
   API.on('ql:win-state', p => setWinMaxIcon(p && p.maximized));
   API.on('ql:focus-search', () => setTimeout(() => { $('#q').focus(); $('#q').select(); }, 60));
-  API.on('ql:config-changed', () => refresh());
+  // ★ soft：先问一句「是不是只有计数变了」。是 → 就地改文本，一次重绘都不做（不闪）；
+  //   不是（改了名 / 增删项 / 动设置）→ 照常重绘，只是不播入场动画。
+  API.on('ql:config-changed', () => refresh({ soft: true }));
 
   /* 拖入导入进度：主进程逐项提图标时推百分比（见 main.js ql:import） */
   API.on('ql:import-progress', p => {
