@@ -19,7 +19,7 @@
 | **多选编辑** | 点右上角**多选**进编辑模式，勾一堆卡片后批量**收藏 / 取消收藏 / 移动分组 / 删除** |
 | **分组管理** | 侧栏「＋ 新建分组」；右键可重命名 / 换颜色 / 删除。删除只在右键菜单里，不占侧栏 |
 | **启动分组** | 可选每次打开停在哪个分组（默认**记住上次**），不必固定是「全部」 |
-| **扫描导入** | 扫开始菜单 + 注册表，批量勾选已安装软件一键导入 |
+| **扫描导入** | 扫开始菜单 + 注册表，批量勾选已安装软件一键导入；**导入时显示进度**，过程中不可取消也不会重复导入 |
 | **图标支持** | 导入/扫描软件时**自动提取程序自带 ICO** 显示；编辑弹窗可「选择图片…」用任意图片自定义图标，或「还原默认图标」/「清除自定义」 |
 | **两种主题** | 深色 / 浅色，跟随设置持久化 |
 | **自绘标题栏** | 无边框窗口 + 内联 SVG 窗口按钮（不依赖系统字体，小字号也清晰） |
@@ -168,7 +168,7 @@ cd desktop
 npm install
 npm start            # 开发运行
 npm run check        # 语法 + 工作流自检（63 项）
-npm test             # 主进程逻辑自检（591 项）
+npm test             # 主进程逻辑自检（607 项）
 npm run verify:apply # 真起一个 shell 跑"退出后换文件"那套助手（48 项）
 npm run release      # = check + test + verify:apply + 打三种产物 + 压绿色版 zip
 ```
@@ -177,9 +177,9 @@ npm run release      # = check + test + verify:apply + 打三种产物 + 压绿�
 
 ```
 dist/
-├── QuickLaunch-Setup-1.3.3.exe
-├── QuickLaunch-Portable-1.3.3.exe
-├── QuickLaunch-Green-1.3.3.zip
+├── QuickLaunch-Setup-1.4.0.exe
+├── QuickLaunch-Portable-1.4.0.exe
+├── QuickLaunch-Green-1.4.0.zip
 ├── update.json              # 更新清单（CI 里由 make-update-manifest 生成并随 Release 发布）
 ├── QuickLaunch-Delta-*.bin  # 差量包（同上）
 └── win-unpacked/            # 绿色版的原始目录
@@ -200,10 +200,10 @@ npm run pack:green       # 把 win-unpacked 压成绿色版 zip
 （单文件便携版已移出 CI，理由见上）：
 
 ```bash
-git tag -a v1.3.3 -m "v1.3.3 · 一句话概括" -m "
+git tag -a v1.4.0 -m "v1.4.0 · 一句话概括" -m "
 - 改了什么，就写在这儿
 - 用户看得懂的话，不是 commit 标题的堆砌"
-git push origin v1.3.3        # ← 必须推 tag 名，推 main 不会顺带推 tag
+git push origin v1.4.0        # ← 必须推 tag 名，推 main 不会顺带推 tag
 ```
 
 **tag 的 message 就是 Release 发布说明**，CI 会 `git tag -l --format='%(contents)'` 取出来放到
