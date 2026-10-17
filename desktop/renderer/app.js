@@ -1472,13 +1472,13 @@ function formText(i) {
   return FORM_TXT[f] || ((i && i.packaged) ? '已打包' : '开发模式');
 }
 
-/** 侧栏底部状态行的文案。**它不是网络状态** —— 程序唯一的网络行为是启动时查一次更新，
- *  这里表达的是「哪个版本 + 什么运行形态」（查到新版本时再追加一个「· 可更新」），
- *  点它打开「关于」。state.info 还没到手时只能说「初始化…」，不能谎报一个运行形态。 */
+/** 侧栏底部状态行的文案。**它不是网络状态** —— 程序唯一的网络行为是启动时查一次更新。
+ *  这里只写版本号（运行形态在「关于」里有，首页不必重复；查到新版本时再追加「· 可更新」），
+ *  点它打开「关于」。state.info 还没到手时只能说「初始化…」，不能先猜一个版本号出来。 */
 function statusText(i) {
   if (PREVIEW) return '预览模式（非桌面版）';
-  if (!i || !i.form) return '初始化…';
-  return `v${i.version} · ${formText(i)}`;
+  if (!i || !i.version) return '初始化…';
+  return `v${i.version}`;
 }
 
 /** 「关于」窗口的内容，按语义分三组。抽成独立函数有两个原因：
@@ -2309,11 +2309,12 @@ function bind() {
   /* 有人又启动了一次程序，本次启动被交接给了**这个**已经在跑的实例。
      必须说清楚，否则用户双击新版 exe 时看到的是旧版窗口，会以为新功能没做
      （单实例锁按 userData 上锁，同一目录里的不同版本共用一把锁 —— 真踩过）。
-     文案复用 statusText()，和侧栏状态行、「关于」是同一份实现。 */
+     文案 = 版本 + 运行形态：这条提示的全部意义就是让你分清"占着锁的是哪个版本"，
+     所以它比侧栏状态行多带一个 formText()。 */
   API.on('ql:second-instance', info => {
     if (!info) return;
     toast('info', '已有一个实例在运行',
-      `${statusText(info)}　·　刚才那次启动已交给它。`
+      `v${info.version || '?'} · ${formText(info)}　·　刚才那次启动已交给它。`
       + '若你启动的是另一个版本，请先在托盘图标上右键退出，再打开新的。');
   });
 
@@ -2649,7 +2650,7 @@ function createMockBridge() {
     const got = document.querySelectorAll('#abGrid .about-row').length;
     console.log('[info-probe] 关于窗口条目 =', got, '/ 期望', want, '| 一致 =', got === want);
 
-    // 状态行必须是「版本 · 运行形态」，不能再出现误导人的「已连接」
+    // 状态行只留版本号（运行形态归「关于」），也不能再出现误导人的「已连接」
     const connTxt = $('#conn').querySelector('span').textContent;
     const wantConn = statusText(i);
     console.log('[info-probe] 状态行 =', JSON.stringify(connTxt),

@@ -119,7 +119,7 @@ CI 与本地产出的两个文件**版本号与文件名一致**（两台机器�
 > 为什么新功能没生效；若**正在运行的那个**版本早于这条提示，它就只会把窗口带到前台 ——
 > 那就先退出再打开。
 
-> 侧栏左下角那行显示的是 `v版本 · 运行形态`（如 `v1.1.1 · 安装版`），不是网络状态。
+> 侧栏左下角那行只显示版本号（如 `v1.4.3`），运行形态在「关于」里看 —— 那行不是网络状态。
 > 那行末尾如果出现 **`· 可更新`**，表示查到了新版本 —— 它不是"在线"，只是更新检查的结果。
 
 ### 关于联网（重要）
@@ -177,6 +177,7 @@ CI 与本地产出的两个文件**版本号与文件名一致**（两台机器�
 
 > v1.4.2 修的就是上面三条：`powershell.exe` 被误标「路径不存在」，
 > 点了又毫无反应（那条兜底路径用了一种会让控制台程序**一行都不执行**就退出的启动方式）。
+> v1.4.3 只是把侧栏那行状态文案收窄成版本号 —— 运行形态已经在「关于」里，首页不必重复。
 
 ## 从源码构建
 
@@ -187,7 +188,7 @@ cd desktop
 npm install
 npm start            # 开发运行
 npm run check        # 语法 + 工作流自检（63 项）
-npm test             # 主进程逻辑自检（638 项）
+npm test             # 主进程逻辑自检（640 项）
 npm run verify:apply # 真起一个 shell 跑"退出后换文件"那套助手（53 项）
 npm run release      # = check + test + verify:apply + 打三种产物 + 压绿色版 zip
 ```
@@ -196,9 +197,9 @@ npm run release      # = check + test + verify:apply + 打三种产物 + 压绿�
 
 ```
 dist/
-├── QuickLaunch-Setup-1.4.2.exe
-├── QuickLaunch-Portable-1.4.2.exe
-├── QuickLaunch-Green-1.4.2.zip
+├── QuickLaunch-Setup-1.4.3.exe
+├── QuickLaunch-Portable-1.4.3.exe
+├── QuickLaunch-Green-1.4.3.zip
 ├── update.json              # 更新清单（CI 里由 make-update-manifest 生成并随 Release 发布）
 ├── QuickLaunch-Delta-*.bin  # 差量包（同上）
 └── win-unpacked/            # 绿色版的原始目录
@@ -219,10 +220,10 @@ npm run pack:green       # 把 win-unpacked 压成绿色版 zip
 （单文件便携版已移出 CI，理由见上）：
 
 ```bash
-git tag -a v1.4.2 -m "v1.4.2 · 一句话概括" -m "
+git tag -a v1.4.3 -m "v1.4.3 · 一句话概括" -m "
 - 改了什么，就写在这儿
 - 用户看得懂的话，不是 commit 标题的堆砌"
-git push origin v1.4.2        # ← 必须推 tag 名，推 main 不会顺带推 tag
+git push origin v1.4.3        # ← 必须推 tag 名，推 main 不会顺带推 tag
 ```
 
 **tag 的 message 就是 Release 发布说明**，CI 会 `git tag -l --format='%(contents)'` 取出来放到

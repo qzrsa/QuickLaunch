@@ -838,13 +838,16 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
     ok(A.formText({ packaged: true }) === '已打包' && A.formText({}) === '开发模式',
       '未知 form 时按 packaged 兜底');
 
-    // 状态行：版本 · 运行形态，且绝不出现「已连接」
-    ok(A.statusText({ version: '1.0.2', form: 'installed' }) === 'v1.0.2 · 安装版',
-      '状态行 = 「v版本 · 运行形态」');
+    // 状态行：只写版本号（运行形态归「关于」），且绝不出现「已连接」
+    ok(A.statusText({ version: '1.0.2', form: 'installed' }) === 'v1.0.2',
+      '状态行只有版本号，不再带运行形态');
+    ok(!/安装版|绿色版|便携版|开发模式/.test(A.statusText({ version: '1.0.2', form: 'installed' })),
+      '首页不重复显示运行形态（它已经在「关于」里）');
     ok(!/已连接/.test(A.statusText({ version: '1.0.2', form: 'installed' })),
-      '状态行不再出现「已连接」（那词会被读成在线状态，而它表达的是版本 + 运行形态）');
-    ok(A.statusText({ version: '1.0.2', form: 'green' }) === 'v1.0.2 · 绿色版', '绿色版状态行');
-    ok(A.statusText(null) === '初始化…', 'info 还没到手时说「初始化…」，不谎报运行形态');
+      '状态行不再出现「已连接」（那词会被读成在线状态）');
+    ok(A.statusText({ version: '1.0.2', form: 'green' }) === 'v1.0.2', '绿色版状态行同样只有版本号');
+    ok(A.statusText(null) === '初始化…' && A.statusText({ form: 'installed' }) === '初始化…',
+      'info 还没到手（或没有版本字段）时说「初始化…」，不先猜一个版本号');
     ok(mk(true).statusText({ version: '1.0.2', form: 'installed' }) === '预览模式（非桌面版）',
       '预览模式（浏览器打开）显示预览文案');
 
@@ -944,8 +947,10 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
   ok(/API\.on\('ql:second-instance'/.test(appSrc), '渲染层订阅了单实例交接事件');
   ok(/已有一个实例在运行/.test(appSrc) && /托盘图标上右键退出/.test(appSrc),
     '提示既说清"看到的是哪个版本"，也说清"去哪退出再打开新版"');
-  ok(/API\.on\('ql:second-instance'[\s\S]{0,300}statusText\(info\)/.test(appSrc),
-    '提示文案复用 statusText（与侧栏状态行、「关于」同一份实现）');
+  ok(/API\.on\('ql:second-instance'[\s\S]{0,300}formText\(info\)/.test(appSrc),
+    '交接提示带上运行形态（它比状态行多一个 formText，就是要让人分清占着锁的是哪个版本）');
+  ok(/API\.on\('ql:second-instance'[\s\S]{0,300}v\$\{info\.version/.test(appSrc),
+    '交接提示里的版本号取 info.version（不是写死的字符串）');
   ok(/^function lastToast/m.test(appSrc),
     'lastToast 提到顶层（探针共用一份，不再每个探针各拷一遍）');
 
