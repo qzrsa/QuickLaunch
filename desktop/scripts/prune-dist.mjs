@@ -7,8 +7,15 @@
  * QuickLaunch 产物名 + 版本号不匹配的 update.json；目录和不认识的文件绝不碰。
  *
  * 用法：
- *   node scripts/prune-dist.mjs                 # 清 <仓库根>/dist（npm run dist 末尾自动跑）
- *   node scripts/prune-dist.mjs --dist <目录>   # 清指定目录（测试 / 手动用）
+ *   node scripts/prune-dist.mjs                       # 清 <仓库根>/dist（npm run dist 末尾自动跑）
+ *   node scripts/prune-dist.mjs --dist <目录>         # 清指定目录（测试 / 手动用）
+ *   node scripts/prune-dist.mjs --dist <目录> --version 1.2.1
+ *                                                     # 指定"当前版本"（测试用，默认取 package.json）
+ *
+ * ★ 为什么要有 --version：不显式给的话，CLI 读的是**真实** package.json 的版本。
+ *   测试夹具里的产物名是写死的版本号，一旦升版本，夹具里的"当前版"就成了 CLI 眼里的"旧版"，
+ *   于是被一起删掉 → 两条断言莫名其妙变红（只靠升版本号就能复现，与本次改动无关）。
+ *   给测试一个显式的 --version，就把测试与"仓库当前版本"彻底解耦。
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -25,15 +32,17 @@ const PKG = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.ur
 // dist 在仓库根（desktop 的上一级）；从脚本位置推导，不依赖调用时的 cwd
 const DIST = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'dist');
 const distDir = path.resolve(arg('--dist') || DIST);
+// 当前版本：默认取 package.json；测试用 --version 显式指定，与仓库版本解耦
+const version = arg('--version') || PKG.version;
 
 if (!fs.existsSync(distDir) || !fs.statSync(distDir).isDirectory()) {
   console.log(`[清理] 目录不存在（${distDir}），没东西可清`);
   process.exit(0);
 }
 
-console.log(`[清理] dist 只留 v${PKG.version} 的产物（${distDir}）：`);
+console.log(`[清理] dist 只留 v${version} 的产物（${distDir}）：`);
 const { removed, kept, failed, freed } = pruneDist({
-  distDir, version: PKG.version, fsMod: fs, log: console.log,
+  distDir, version, fsMod: fs, log: console.log,
 });
 
 if (!removed.length) {

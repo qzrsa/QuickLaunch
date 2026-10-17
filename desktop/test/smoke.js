@@ -1574,7 +1574,9 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
     fs.mkdirSync(PDIR, { recursive: true });
     fs.writeFileSync(path.join(PDIR, `QuickLaunch-Green-${OLD}.zip`), 'x'.repeat(500));
     fs.writeFileSync(path.join(PDIR, `QuickLaunch-Green-${CUR}.zip`), 'new');
-    const pr = cp.spawnSync(process.execPath, [CLI, '--dist', PDIR], { encoding: 'utf8' });
+    // ★ 必须显式 --version CUR：否则 CLI 读真实 package.json 的版本，升版本后
+    //   夹具里的"当前版(=CUR)"会被当成旧版删掉，这两条断言会莫名其妙变红。
+    const pr = cp.spawnSync(process.execPath, [CLI, '--dist', PDIR, '--version', CUR], { encoding: 'utf8' });
     ok(pr.status === 0, 'CLI（--dist 指定目录）退出码 0', String(pr.stderr || '').split('\n')[0]);
     ok(!fs.existsSync(path.join(PDIR, `QuickLaunch-Green-${OLD}.zip`))
       && fs.existsSync(path.join(PDIR, `QuickLaunch-Green-${CUR}.zip`)),
