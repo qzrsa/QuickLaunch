@@ -2172,17 +2172,23 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
   //   主进程一走，还没 spawn 的助手就再也没人起了，更新会永远停在"正在退出"。
   const order = [];
   const spawnCalls = [];
+  // ★ 真助手起来第一件事就是往暂存区写 apply.log，主进程靠它判断"助手活了没有"。
+  //   夹具必须照做，否则活体检查必然判失败（那反而是对的：没日志就是没活）。
   const fakeSpawn = (exe, args, opts) => {
     order.push('spawn');
     spawnCalls.push({ exe, args, opts, unrefed: false });
     const rec = spawnCalls[spawnCalls.length - 1];
-    return { pid: 4242, unref() { rec.unrefed = true; } };
+    if (fakeSpawn.sayAlive !== false) {
+      const plan = readJsonIf(path.join(fx.progDir, '.update', '1.2.0', 'apply.json'));
+      try { fs.writeFileSync(path.join(plan.stageDir, 'apply.log'), '助手启动（夹具）\r\n'); } catch { /* noop */ }
+    }
+    return { pid: 4242, unref() { rec.unrefed = true; }, kill() { rec.killed = true; } };
   };
 
   // ① 什么都没暂存 → 必须拒绝，且**不能**空转一次退出
   const sEmpty = mkSvc({ programDir: P3, spawn: fakeSpawn, order });
   sEmpty.svc.boot();
-  const applyIdle = sEmpty.svc.applyAndRestart();
+  const applyIdle = await sEmpty.svc.applyAndRestart();
   ok(applyIdle.ok === false && /还没有下载好/.test(applyIdle.reason),
     '★ 没暂存就点"重启并更新" → 拒绝（绝不空转一次"退出→什么都没发生"）', applyIdle.reason);
   ok(spawnCalls.length === 0, '被拒绝时不会去起助手进程');
@@ -2191,34 +2197,73 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
   // ② 有暂存（上一步全量下载留下的 state.json 还在）→ 真的交接
   const sApply = mkSvc({ programDir: fx.progDir, spawn: fakeSpawn, order });
   ok(sApply.svc.boot().resumed === '1.2.0', '（前置）这份暂存区能被恢复成"已就绪"');
-  const applyOk = sApply.svc.applyAndRestart();
+  const applyOk = await sApply.svc.applyAndRestart();
   ok(applyOk.ok === true && applyOk.helperPid === 4242, '★ 有暂存时交接成功并拿到助手 pid', applyOk.reason || '');
   ok(spawnCalls.length === 1, '正好起了一个助手进程（不多不少）');
   const sc = spawnCalls[0];
-  ok(/powershell\.exe$/i.test(sc.exe),
-    '★ 用**绝对路径**起 powershell（打包后被 detached 拉起的进程未必有完整 PATH）', sc.exe);
-  ok(sc.args.includes('-EncodedCommand'),
-    '★ 走 -EncodedCommand（一个字节脚本都不落盘，不怕中文路径的代码页）');
-  ok(sc.args.includes('-NoProfile') && sc.args.includes('-NonInteractive'),
-    '离线、非交互地跑（不加载用户 profile，不会卡在提示上）');
-  ok(sc.opts && sc.opts.detached === true && sc.opts.stdio === 'ignore' && sc.opts.windowsHide === true,
-    'detached + 忽略 stdio + 隐藏窗口：主进程退出后助手还要能活着');
+  ok(/cmd\.exe$/i.test(sc.exe),
+    '★ 用**绝对路径**起 cmd 当下"中间父母"（PowerShell 一旦成孤儿就会被结束）', sc.exe);
+  // ★★ 1.4.0 真事故的反向守卫：detached 会让 libuv 带上 DETACHED_PROCESS，
+  //    powershell.exe 在没有控制台的形态下**一行脚本都不执行就 exit 0** →
+  //    「点了重启并更新 → 程序关掉 → 什么都没发生」。
+  ok(sc.opts && sc.opts.detached !== true && sc.opts.stdio === 'ignore' && sc.opts.windowsHide === true,
+    '★ 起助手**不许**用 detached（会让 PowerShell 静默不执行）+ 忽略 stdio + 隐藏窗口',
+    JSON.stringify(sc.opts));
+  // ★★ cmd 的 /c 引号规矩与 CRT 的 \" 转义不是一回事：必须整条命令行自己拼 + verbatim
+  ok(sc.opts.windowsVerbatimArguments === true,
+    '★ windowsVerbatimArguments：命令行整条自己拼（交给 Node 用 \\" 转义会得到一个跑不起来的命令行）');
   ok(sc.unrefed === true, '★ 调了 unref()（否则主进程会等它，退出就卡住）');
 
-  const encArg = sc.args[sc.args.indexOf('-EncodedCommand') + 1];
-  const helperScript = Buffer.from(encArg, 'base64').toString('utf16le');
+  const cmdLine = String(sc.args[sc.args.length - 1]);
+  ok(/^\/c ""/.test(cmdLine) && /""$/.test(cmdLine),
+    '★ 命令行按 cmd 的规矩用 /c ""…"" 包起来', cmdLine.slice(0, 46) + '…');
+  ok(/powershell\.exe"/i.test(cmdLine), '命令行里的 PowerShell 是绝对路径且加了引号');
+  ok(cmdLine.includes('-NoProfile') && cmdLine.includes('-NonInteractive'),
+    '离线、非交互地跑（不加载用户 profile，不会卡在提示上）');
+  ok(/-File "[^"]*apply\.ps1"/.test(cmdLine),
+    '★ 脚本走 -File（cmd 命令行 8191 字符上限塞不进 -EncodedCommand 那 13 KB base64）');
+  ok(!cmdLine.includes('-EncodedCommand'), '不再用 -EncodedCommand（塞不进 cmd /c）');
+
+  // 落盘的助手脚本：带 BOM（PowerShell 5.1 认 BOM 才按 UTF-8 解析 → 中文路径不会废）
+  const aj2 = readJsonIf(path.join(fx.progDir, '.update', '1.2.0', 'apply.json'));
+  const ps1Path = path.join(aj2.stageDir, 'apply.ps1');
+  ok(fs.existsSync(ps1Path), '助手脚本落成暂存目录里的 apply.ps1（更新成功后随暂存区一起删）');
+  const ps1Raw = fs.existsSync(ps1Path) ? fs.readFileSync(ps1Path) : Buffer.alloc(0);
+  ok(ps1Raw.length > 3 && ps1Raw[0] === 0xEF && ps1Raw[1] === 0xBB && ps1Raw[2] === 0xBF,
+    '★ apply.ps1 以 UTF-8 BOM 开头（不带 BOM 的话 PowerShell 5.1 会按本地代码页解释中文路径）');
+  const helperScript = ps1Raw.subarray(3).toString('utf8');
   ok(helperScript.length > 500 && /Assert-Safe/.test(helperScript),
-    '★ 助手脚本解出来是完整的那段（UTF-16LE base64 往返没问题）');
+    '★ 助手脚本是完整的那段（守卫、换文件、自检都在）');
   ok(helperScript.includes("'" + fx.progDir + "'"), '助手脚本里带上了真实程序目录');
   ok(helperScript.includes('$restart = $true'), '★ 交接时强制要求"换完把我拉起来"（不是照抄 apply.json）');
   ok(datadir.PROTECTED_TOP.every(p => helperScript.includes(`'${p}'`)),
     '★ 受保护名单由主进程从 datadir 注入到助手脚本里（不是助手自己硬编码）');
   ok(/Move-Item -LiteralPath \$p\.Tmp/.test(helperScript), '用原子 Move 换文件（不留半截 exe）');
-  // 退出是延后 400 ms 的（留给渲染层把"正在退出并替换文件…"画出来），所以要等一等
+  ok(/try \{ Start-Process -FilePath \$appExe \}/.test(helperScript),
+    '★ 「拉不起来新版」被单独兜住：文件已经换好了，不能因此谎报更新失败');
+  // 退出是延后 300 ms 的（留给渲染层把"正在整理更新…"画出来），所以要等一等
   await new Promise(r => setTimeout(r, 600));
   ok(sApply.sent.some(e => e.ch === 'QUIT'), '交接之后确实退出了自己');
   ok(order.join(',') === 'spawn,quit',
     `★ 顺序是「先起助手，再退出自己」（实际 ${order.join(' → ') || '什么都没发生'}）`);
+
+  // ③ 助手起不来（apply.log 一直没出现）→ 必须**放弃退出**并把原因说出来。
+  //    这是 1.4.0 那个 Bug 的兜底：再也不能出现"程序关掉、什么都没发生、重开还是旧版"。
+  //    now 注入成"每问一次就跳 5 秒"，这样 4 秒的等待窗口不用真等 4 秒。
+  fakeSpawn.sayAlive = false;
+  let fakeT = 0;
+  const sNoHelper = mkSvc({
+    programDir: fx.progDir, spawn: fakeSpawn, order,
+    now: () => (fakeT += 5000),
+  });
+  sNoHelper.svc.boot();
+  const applyDead = await sNoHelper.svc.applyAndRestart();
+  ok(applyDead.ok === false && /助手没能启动/.test(applyDead.reason),
+    '★★ 助手没报活 → 拒绝退出（否则就是"点了更新、程序关掉、什么都没发生"）', applyDead.reason);
+  ok(!sNoHelper.sent.some(e => e.ch === 'QUIT'), '★★ 助手没起来时绝不退出程序');
+  ok(spawnCalls[spawnCalls.length - 1].killed === true, '助手没起来就把它收掉（不留野进程）');
+  ok(sNoHelper.svc.snapshot().status === 'staged', '状态仍是"已就绪"（能再点一次，不用重新下载）');
+  fakeSpawn.sayAlive = true;
 
   /* ---- G. 差量路径（真补丁包）---- */
   const dOldExe = Buffer.from('OLD-EXE-'.repeat(400));

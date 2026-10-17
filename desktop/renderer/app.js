@@ -1733,6 +1733,9 @@ function bindUpdate() {
       danger: false,
     });
     if (!yes) return;
+    // 主进程要先确认后台助手真的起来了才退出（最多几秒）—— 这段空档必须有反馈，
+    // 否则界面看起来就像"点了没反应"。
+    toast('info', '正在交接更新助手', '确认助手已启动后，程序会自动退出并替换文件。');
     const r = await API.updateApply();
     if (!r || !r.ok) toast('bad', '没能开始更新', (r && r.reason) || '');
   });

@@ -32,7 +32,10 @@ const check = (cond, name, extra = '') => {
 };
 
 /* ---------------------------------------------------------- PowerShell 可用性 */
-if (cp.spawnSync('powershell.exe', ['-NoProfile', '-Command', 'exit 0']).status !== 0) {
+// ★ 用绝对路径：本文件的用例会把它注入到 cmd 命令行里，不指望 PATH。
+const PS_EXE = path.join(process.env.SystemRoot || 'C:\\Windows',
+  'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+if (!fs.existsSync(PS_EXE) || cp.spawnSync(PS_EXE, ['-NoProfile', '-Command', 'exit 0']).status !== 0) {
   console.log('\x1b[33m⚠\x1b[0m 本机没有可用的 powershell.exe，未验证（**不计入通过**）');
   process.exit(2);
 }
@@ -86,9 +89,15 @@ function prepare(prog, version, files, deletes, opts = {}) {
 
 /** 跑助手；pid 用真实存在的数字（见各用例） */
 function runHelper(plan, pid, waitSeconds = 60) {
-  const script = applyLib.buildApplyScript(plan, { pid, waitSeconds });
+  // 和主进程完全一样的交接方式：脚本落成 apply.ps1（带 BOM），由 cmd 起 PowerShell -File。
+  // ★ 走这套而不是 spawnSync powershell 直接跑，是为了让这里验的就是生产链路。
+  const scriptPath = path.join(plan.stageDir, applyLib.HELPER_FILE);
+  const logPath = path.join(plan.stageDir, 'apply.log');
+  const script = applyLib.buildApplyScript(plan, { pid, waitSeconds, logPath });
+  fs.writeFileSync(scriptPath, applyLib.scriptFileText(script), 'utf8');
+  const line = applyLib.launcherCommandLine(PS_EXE, scriptPath);
   const t0 = Date.now();
-  const r = cp.spawnSync('powershell.exe', applyLib.spawnArgs(script), { encoding: 'utf8' });
+  const r = cp.spawnSync('cmd.exe', [line], { encoding: 'utf8', windowsVerbatimArguments: true });
   return { code: r.status, elapsed: Date.now() - t0, stderr: String(r.stderr || '') };
 }
 
@@ -242,14 +251,31 @@ console.log('\n--- ⑥ 中文/空格路径（本项目真实路径就有中文�
   const prog = makeProgram('中文 目录/程序');
   const { plan } = prepare(prog, '9.9.9', { 'resources/app.asar': 'NEW-ASAR-中文', '子目录/说明.txt': '中文内容' }, []);
   const r = runHelper(plan, deadPid());
-  check(r.code === 0, '中文+空格路径下助手正常退出（-EncodedCommand 不看代码页）', `code=${r.code}`);
+  check(r.code === 0, '中文+空格路径下助手正常退出（脚本带 BOM，不走代码页猜测）', `code=${r.code}`);
   check(read(path.join(prog, 'resources', 'app.asar')) === 'NEW-ASAR-中文', '中文路径下的文件替换成功');
   check(read(path.join(prog, '子目录', '说明.txt')) === '中文内容', '中文子目录也能建出来');
   check(read(path.join(prog, 'data', 'config.json')) === '{"secret":"用户的私人配置"}', '诱饵仍未被碰');
 }
 
-/* ============================================================ ⑦ 脚本本身 */
-console.log('\n--- ⑦ 脚本拼装（静态）---');
+/* ============================================================ ⑦ 拉不起来新版 */
+console.log('\n--- ⑦ 换完文件后拉不起新版，也不能把"已更新"写成"失败" ---');
+{
+  const prog = makeProgram('restartfail');
+  // 指向一个不是可执行文件的东西：Start-Process 会抛错
+  const bogus = path.join(prog, 'not-a-program.txt');
+  fs.writeFileSync(bogus, 'not a program');
+  const { plan } = prepare(prog, '9.9.9', { 'QuickLaunch.exe': 'NEW-EXE-AFTER-RESTART' }, [],
+    { restart: true, exe: bogus });
+  const r = runHelper(plan, deadPid());
+  check(r.code === 0, '助手仍然以 0 退出（文件已经换好了，重启失败不算更新失败）', `code=${r.code}`);
+  check(read(path.join(prog, 'QuickLaunch.exe')) === 'NEW-EXE-AFTER-RESTART', '文件已经换好了');
+  const st = readState(prog);
+  check(st && st.state === 'applied',
+    '★ state.json 仍是 applied（否则下次启动会谎报"上次更新没有成功"）', JSON.stringify(st));
+}
+
+/* ============================================================ ⑧ 脚本本身 */
+console.log('\n--- ⑧ 脚本拼装（静态）---');
 {
   const script = applyLib.buildApplyScript({ programDir: 'C:\\p', stageDir: 'C:\\p\\.update\\1', to: '1', from: '0', writes: [], deletes: [], protectedTop: ['data'] }, { pid: 1 });
   check(!/Set-Content[^\n]*-Encoding\s+utf8/i.test(script), '不用 Set-Content -Encoding utf8（会写 BOM 把 JSON.parse 弄炸）');
@@ -258,9 +284,15 @@ console.log('\n--- ⑦ 脚本拼装（静态）---');
   check(/\$_.Exe\b/.test(script) || /Exe = \(\$w\.path -match/.test(script), '把 exe 标记出来单独排序');
   check(script.includes('Assert-Safe'), '有 Assert-Safe 纵深守卫');
   check(script.includes("if ($rel.Contains('..'))"), '守卫里包含 .. 检查');
-  check(applyLib.spawnArgs(script).includes('-EncodedCommand'), '用 -EncodedCommand（不落脚本文件）');
-  const enc = applyLib.spawnArgs('中文 test').pop();
-  check(Buffer.from(enc, 'base64').toString('utf16le') === '中文 test', '编码是 UTF-16LE base64');
+  // ★ 交接链路的静态防线（对应 1.4.0/1.4.1 两次真事故）
+  const line = applyLib.launcherCommandLine(PS_EXE, 'D:\\Program Files\\a b\\apply.ps1');
+  check(line.startsWith('/c ""') && line.endsWith('""'),
+    '★ cmd 命令行用 /c ""…"" 包起来（cmd 不认 \\" 转义）', line.slice(0, 40) + '…');
+  check(line.includes(`-File "${'D:\\Program Files\\a b\\apply.ps1'}"`),
+    '★ 脚本走 -File，且带空格的路径被引号兜住（cmd 命令行 8191 字符上限塞不进 -EncodedCommand）');
+  check(applyLib.scriptFileText('x').charCodeAt(0) === 0xFEFF,
+    '★ 脚本落盘时带 BOM（PowerShell 5.1 认 BOM 才按 UTF-8 解析，中文路径才不会废）');
+  check(applyLib.HELPER_FILE === 'apply.ps1', '助手脚本文件名固定为 apply.ps1（随暂存区一起删）');
   check(applyLib.psQuote("a'b") === "'a''b'", '单引号按 PS 规则转义成两个');
 }
 

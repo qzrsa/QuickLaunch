@@ -357,21 +357,53 @@ function createUpdateService(deps) {
 
   /* ---------------------------------------------------------- 交接助手 */
 
-  /** 打包后被 detached 拉起的进程未必继承到完整 PATH，所以显式给绝对路径。 */
-  function powerShellExe() {
+  /** 显式给绝对路径，不指望 PATH（打包后被拉起的环境未必带完整 PATH）。 */
+  function systemExe(name) {
     const root = process.env.SystemRoot || 'C:\\Windows';
-    const abs = nodePath.join(root, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+    const abs = nodePath.join(root, 'System32', name);
     try { if (fs.existsSync(abs)) return abs; } catch { /* noop */ }
-    return 'powershell.exe';
+    return name;
+  }
+  const powerShellExe = () => nodePath.join(
+    process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+
+  /** 等助手"报活"最多等这么久。PowerShell 冷启动约 0.4 s，给足余量但不无限等。 */
+  const HELPER_ALIVE_MS = 6000;
+
+  /**
+   * 助手起来后的**第一件事**就是往暂存区写 apply.log（见 updater-apply.js 的第一行 Log）。
+   * 所以"apply.log 出现"就是它真的活了的活体证据 —— 比看一眼 child.pid 可靠得多
+   * （1.4.0 就是"spawn 成功但 PowerShell 一个字节都没执行"，pid 有、活没干）。
+   * 返回 false 时调用方**必须放弃退出**：否则就是用户碰到过的那种
+   * 「点了重启并更新 → 程序关掉 → 什么都没发生 → 再打开还是旧版」。
+   */
+  async function waitHelperAlive(logPath) {
+    const t0 = now();
+    for (;;) {
+      try { if (fs.existsSync(logPath)) return true; } catch { /* 查询失败就当没出现 */ }
+      if (now() - t0 >= HELPER_ALIVE_MS) return false;
+      await new Promise((r) => { setTimeout(r, 100); });
+    }
   }
 
   /**
    * 把暂存的更新交给"退出后运行"的助手，然后退出自己。
-   * ★ 顺序不能反：**先**把助手拉起来（detached + unref），**再**退出 ——
-   *   反过来的话主进程一走，还没 spawn 的助手就再也没人起了。
+   *
+   * ★★ 顺序不能反：**先**把助手拉起来并确认它活着，**再**退出 ——
+   *    反过来的话主进程一走，还没 spawn 的助手就再也没人起了。
    * ★ 助手会等这个 pid 真的退出后才动手（Windows 上运行中的 exe 不可覆盖）。
+   *
+   * ★★ 交接链路是「本进程 → cmd → powershell -File apply.ps1」，三个坑都实测过：
+   *    ① 不能给 spawn 传 `detached: true`：libuv 会带 `DETACHED_PROCESS`，
+   *       powershell.exe 在没有控制台时**一行脚本都不执行就 exit 0**（1.4.0 的真事故）。
+   *    ② 也不能只 spawn powershell：这台机器上 **PowerShell 一旦成孤儿就被结束**
+   *       （父进程退出后它连 1 秒都活不到；同样条件下 cmd.exe 能活）。所以让 cmd 当中间父母，
+   *       `cmd /c` 是同步的，它会一直陪着 PowerShell。
+   *    ③ 脚本要落成 `apply.ps1`（带 BOM）走 `-File`：cmd 命令行上限 8191 字符，
+   *       `-EncodedCommand` 的 13 KB base64 塞不进去。
+   *    详见 `探针手册.md`。
    */
-  function applyAndRestart() {
+  async function applyAndRestart() {
     if (st.status !== STATE.STAGED) return { ok: false, reason: '还没有下载好的更新' };
     const stageDir = st.stage || updater.stageDirOf(deps.programDir(), st.latest);
     const planPath = nodePath.join(stageDir, 'apply.json');
@@ -384,20 +416,44 @@ function createUpdateService(deps) {
     plan.restart = true;
     plan.exe = plan.exe || deps.exePath();
 
-    const script = applyLib.buildApplyScript(plan, { pid: process.pid, waitSeconds: 120 });
-    const args = applyLib.spawnArgs(script);
+    // ★ 先清掉上一轮留下的日志：否则"活体检查"会被旧文件骗过去
+    const logPath = nodePath.join(stageDir, 'apply.log');
+    try { fs.unlinkSync(logPath); } catch { /* 没有旧日志才是常态 */ }
 
+    const scriptPath = nodePath.join(stageDir, applyLib.HELPER_FILE);
+    const script = applyLib.buildApplyScript(plan, { pid: process.pid, waitSeconds: 120, logPath });
+    try {
+      // ★ 带 BOM：PowerShell 5.1 读到 BOM 才按 UTF-8 解析，中文路径才不会废
+      fs.writeFileSync(scriptPath, applyLib.scriptFileText(script), 'utf8');
+    } catch (e) {
+      return { ok: false, reason: '写更新助手脚本失败：' + e.message };
+    }
+
+    const line = applyLib.launcherCommandLine(powerShellExe(), scriptPath);
     let child;
     try {
-      child = spawn(powerShellExe(), args, { detached: true, stdio: 'ignore', windowsHide: true });
+      // ★ windowsVerbatimArguments：cmd 的 /c 引号规矩与 CRT 的 \" 转义不是一回事，
+      //   交给 Node 去转义会得到一个跑不起来的命令行（实测 exit 1）。
+      child = spawn(systemExe('cmd.exe'), [line], {
+        detached: false, stdio: 'ignore', windowsHide: true, windowsVerbatimArguments: true,
+      });
       child.unref();
     } catch (e) {
       return { ok: false, reason: '启动更新助手失败：' + e.message };
     }
 
+    if (!(await waitHelperAlive(logPath))) {
+      // 只留下一个活的进程去换文件才是安全的；它没起来就绝不退出（本机文件一个都没动）
+      try { child.kill(); } catch { /* 可能已经自己退了 */ }
+      const reason = '更新助手没能启动（' + logPath + ' 没有出现）。程序没有退出，文件也没动，可以再试一次。'
+        + '细节见「关于 → 打开更新目录」里的 apply.ps1。';
+      console.log('[update] ' + reason);
+      return { ok: false, reason };
+    }
+
     console.log('[update] 已交接更新助手 pid=' + (child.pid || '?') + '，本进程即将退出以完成替换');
     set({ reason: '正在退出并替换文件，稍后会自动重新打开…' });
-    if (deps.quit) setTimeout(() => { try { deps.quit(); } catch { /* noop */ } }, 400);
+    if (deps.quit) setTimeout(() => { try { deps.quit(); } catch { /* noop */ } }, 300);
     return { ok: true, helperPid: child.pid || 0 };
   }
 

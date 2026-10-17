@@ -5,11 +5,21 @@
  * ★★ 为什么要一个"退出后"的助手：Windows 上**正在运行的 exe 是不可覆盖的**，
  *    连 `resources/*.dll` 也被映射着。所以只能自己先退出，让另一个进程去换文件。
  *
- * ★★ 为什么用 PowerShell 的 `-EncodedCommand`，而不是写一个 .cmd/.ps1 文件：
- *    - `.cmd` 的文件名与内容都要过控制台代码页，而**用户自己的程序目录里就有中文**
- *      （`D:\WorkBuddy\快速启动\...`）→ 一旦按 GBK/UTF-8 猜错，路径就废了；
- *    - `-EncodedCommand` 收的是 **UTF-16LE 的 base64**，编码是明文规定的，不存在"猜代码页"；
- *    - 而且**一个字节都不落盘**，不用管临时文件的权限与清理。
+ * ★★ 为什么不直接 spawn powershell（1.4.1 的真事故，实测记录见 `探针手册.md`）：
+ *    ① `detached: true` 会让 libuv 带上 `DETACHED_PROCESS`，而 powershell.exe 在这种
+ *       "完全没有控制台"的形态下**一行脚本都不执行就 exit 0** —— 现象就是
+ *       「点了重启并更新 → 程序关掉 → 什么都没发生 → 重开还是旧版」。
+ *    ② 更要命的是：这台机器上 **PowerShell 一旦成为孤儿进程就会被结束**
+ *       （父进程一退，它连第一条语句都没跑完就没了；同样条件下 cmd.exe 却活得好好的）。
+ *    所以交接方式是「**cmd 当中间父母**」：本进程 spawn 一个 cmd，由 cmd 去跑 PowerShell。
+ *    cmd 会一直等着 PowerShell（`cmd /c` 是同步的），于是 PowerShell 始终有个活着的父进程；
+ *    cmd 自己被孤儿化没问题（实测能活）。这条链路是**实测过**的，别再"简化"回去。
+ *
+ * ★★ 为什么脚本落成 `apply.ps1` 而不是 `-EncodedCommand`：
+ *    cmd 的命令行总长不能超过 8191 字符，而这段脚本 base64 之后有 13 KB —— 塞不进 `cmd /c`。
+ *    `-File` 就没这个限制。原本选 `-EncodedCommand` 是为了躲开代码页问题，
+ *    落成文件时用**带 BOM 的 UTF-8** 写就同样解决了（PowerShell 5.1 见到 BOM 就按 UTF-8 读，
+ *    中文路径不会废）。脚本落在暂存目录里，更新成功后随暂存区一起删掉。
  *
  * ★★ 助手**不信任** apply.json：它拿到的 protectedTop 名单是主进程从 `datadir.PROTECTED_TOP`
  *    注入进来的（不是在这里另抄一份），并且对每一条路径**再挡一次**
@@ -20,6 +30,9 @@
  *    顺序上把 `*.exe` 放到最后 —— 真正的程序代码在 `resources/app.asar` 里，
  *    它先到位，万一后面失败，旧 exe + 新 asar 仍然跑得起来。
  */
+
+/** 助手脚本在暂存目录里的文件名（落盘、带 BOM 写）。 */
+const HELPER_FILE = 'apply.ps1';
 
 /** PowerShell 单引号字符串：单引号自己要用两个单引号转义（这样 `$` `\` `中文` 全是字面量）。 */
 function psQuote(s) {
@@ -150,9 +163,12 @@ try {
   Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
 
   # ---- 7. 需要的话把新版拉起来 ----
+  #   ★ 这一步失败**绝不能**把已经成功的更新改成 failed：文件已经换好了，
+  #     用户双击图标就能用新版。真踩过（假 exe 上 Start-Process 抛错 → state=failed）。
   if ($restart -and $appExe -and (Test-Path -LiteralPath $appExe)) {
     Log '重新启动'
-    Start-Process -FilePath $appExe
+    try { Start-Process -FilePath $appExe }
+    catch { Log "重新启动失败（文件已经换好了，手动打开即可）：$($_.Exception.Message)" }
   }
   exit 0
 } catch {
@@ -166,17 +182,27 @@ try {
 `;
 }
 
-/** `-EncodedCommand` 要的是 UTF-16LE 的 base64 —— 这是明文规定的编码，不看控制台代码页。 */
-function encodeCommand(script) {
-  return Buffer.from(String(script), 'utf16le').toString('base64');
+/**
+ * 助手脚本落盘时的内容：**必须带 BOM**。
+ * PowerShell 5.1 读没有 BOM 的 `.ps1` 会按本地代码页解释 —— 程序目录里只要有中文，路径就废了。
+ */
+function scriptFileText(script) {
+  return '\uFEFF' + String(script);
 }
 
-/** 组装 spawn 参数（纯函数，便于断言"没走写脚本文件那条路"）。 */
-function spawnArgs(script) {
-  return [
-    '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
-    '-EncodedCommand', encodeCommand(script),
-  ];
+/**
+ * 交给 cmd 的命令行（配 `windowsVerbatimArguments: true` 使用）。
+ *
+ * ★★ cmd 的 `/c` 有它自己的引号规矩：整串以引号开头时，要用一对**额外的**引号把全串包住
+ *    （`/c ""C:\..." 参数""`）。所以这里刻意手写整条命令行，不能让 Node 用 `\"` 去转义 ——
+ *    cmd 不认 `\"`，那样会得到 exit 1 且一个进程都起不来。
+ *
+ * @param {string} psExe      powershell.exe 绝对路径（可能含空格 → 加引号）
+ * @param {string} scriptPath 落盘的 apply.ps1 绝对路径（可能含中文与空格 → 加引号）
+ */
+function launcherCommandLine(psExe, scriptPath) {
+  return `/c ""${psExe}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden`
+    + ` -File "${scriptPath}""`;
 }
 
-module.exports = { buildApplyScript, encodeCommand, spawnArgs, psQuote };
+module.exports = { buildApplyScript, launcherCommandLine, scriptFileText, psQuote, HELPER_FILE };

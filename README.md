@@ -147,6 +147,10 @@ CI 与本地产出的两个文件**版本号与文件名一致**（两台机器�
 * **换文件是在程序退出之后**由一段后台助手完成的 —— Windows 上运行中的 `exe` 覆盖不了，
   所以只能"先退出、后替换、再自动打开"。替换用的是"先落临时文件再原子改名"，
   中途断电也不会留下半个 exe。
+* **助手没起来就绝不退出**：点「重启并更新」之后，程序会先确认那个后台助手**真的跑起来了**
+  （它一启动就会在更新目录里写一行日志），确认之后才关自己。万一助手没起来，
+  程序会留着窗口把原因告诉你 —— 不会再出现"点完就没了、重开还是旧版"。
+  （v1.4.1 修的就是这个：交接时用了一个会让 PowerShell 静默不执行的启动方式。）
 * **差量下载**：如果更新源里有从你这个版本出发的补丁，只会下载**改动的那部分**
   （实测 1.0.2 → 1.1.0：整包 153 MiB，差量 **0.25 MiB**）。没有对应补丁或占比过大时
   自动退回整包，不需要你选。
@@ -168,8 +172,8 @@ cd desktop
 npm install
 npm start            # 开发运行
 npm run check        # 语法 + 工作流自检（63 项）
-npm test             # 主进程逻辑自检（607 项）
-npm run verify:apply # 真起一个 shell 跑"退出后换文件"那套助手（48 项）
+npm test             # 主进程逻辑自检（618 项）
+npm run verify:apply # 真起一个 shell 跑"退出后换文件"那套助手（53 项）
 npm run release      # = check + test + verify:apply + 打三种产物 + 压绿色版 zip
 ```
 
@@ -177,9 +181,9 @@ npm run release      # = check + test + verify:apply + 打三种产物 + 压绿�
 
 ```
 dist/
-├── QuickLaunch-Setup-1.4.0.exe
-├── QuickLaunch-Portable-1.4.0.exe
-├── QuickLaunch-Green-1.4.0.zip
+├── QuickLaunch-Setup-1.4.1.exe
+├── QuickLaunch-Portable-1.4.1.exe
+├── QuickLaunch-Green-1.4.1.zip
 ├── update.json              # 更新清单（CI 里由 make-update-manifest 生成并随 Release 发布）
 ├── QuickLaunch-Delta-*.bin  # 差量包（同上）
 └── win-unpacked/            # 绿色版的原始目录
@@ -200,10 +204,10 @@ npm run pack:green       # 把 win-unpacked 压成绿色版 zip
 （单文件便携版已移出 CI，理由见上）：
 
 ```bash
-git tag -a v1.4.0 -m "v1.4.0 · 一句话概括" -m "
+git tag -a v1.4.1 -m "v1.4.1 · 一句话概括" -m "
 - 改了什么，就写在这儿
 - 用户看得懂的话，不是 commit 标题的堆砌"
-git push origin v1.4.0        # ← 必须推 tag 名，推 main 不会顺带推 tag
+git push origin v1.4.1        # ← 必须推 tag 名，推 main 不会顺带推 tag
 ```
 
 **tag 的 message 就是 Release 发布说明**，CI 会 `git tag -l --format='%(contents)'` 取出来放到

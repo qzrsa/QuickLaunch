@@ -825,9 +825,11 @@ function registerIpc() {
   ipcMain.handle('ql:update:state', () => (svc ? svc.snapshot() : null));
   ipcMain.handle('ql:update:check', () => (svc ? svc.check({ silent: false }) : { ok: false, reason: '更新服务未就绪' }));
   ipcMain.handle('ql:update:download', () => (svc ? svc.download() : { ok: false, reason: '更新服务未就绪' }));
-  ipcMain.handle('ql:update:apply', () => {
+  ipcMain.handle('ql:update:apply', async () => {
     if (!svc) return { ok: false, reason: '更新服务未就绪' };
-    const r = svc.applyAndRestart();
+    // ★ 这一步会等助手"报活"再退出（最多 4 秒），所以是 async —— 助手没起来就
+    //   返回 ok:false 让界面把原因说出来，而不是静默关掉程序。
+    const r = await svc.applyAndRestart();
     console.log('[update] 交接结果 =', JSON.stringify(r));
     return r;
   });
