@@ -4,7 +4,7 @@
  * 负责：无边框窗口、托盘常驻、全局热键、开机自启、IPC 路由
  */
 
-const { app, BrowserWindow, Tray, Menu, ipcMain, shell, globalShortcut, nativeImage, clipboard } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, shell, globalShortcut, nativeImage, clipboard, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
@@ -13,6 +13,7 @@ const actions = require('./lib/actions');
 const scanner = require('./lib/scan');
 const menus = require('./lib/menus');
 const importer = require('./lib/importer');
+const { imageFileToDataUrl, fileDefaultIconToDataUrl, isImageIcon } = require('./lib/icon');
 const { createUpdateService } = require('./lib/update-service');
 
 const ROOT = path.join(__dirname, '..');
@@ -578,7 +579,7 @@ function buildTray() {
     template.push({
       label: '快速启动',
       submenu: quick.map(i => ({
-        label: `${i.icon || '🚀'}  ${i.name}`,
+        label: `${isImageIcon(i.icon) ? '🚀' : (i.icon || '🚀')}  ${i.name}`,
         toolTip: i.path,
         click: () => runAndBump(i),
       })),
@@ -720,6 +721,24 @@ function registerIpc() {
   });
   ipcMain.handle('ql:scan', (_e, force) => scanner.scan(!!force));
 
+  /* 图标：提取默认 ICO / 选自定义图片 → dataURL（供编辑弹窗与导入用） */
+  ipcMain.handle('ql:icon:default', (_e, p) =>
+    fileDefaultIconToDataUrl(p).then(dataUrl => ({ ok: !!dataUrl, dataUrl })));
+  ipcMain.handle('ql:icon:pick', async (e) => {
+    const w = BrowserWindow.fromWebContents(e.sender);
+    const r = await dialog.showOpenDialog(w, {
+      title: '选择图标图片',
+      properties: ['openFile'],
+      filters: [
+        ['图片与图标', ['png', 'ico', 'jpg', 'jpeg', 'webp', 'bmp', 'gif', 'svg']],
+        ['所有文件', ['*']],
+      ],
+    });
+    if (r.canceled || !r.filePaths.length) return { ok: false, canceled: true };
+    const dataUrl = imageFileToDataUrl(r.filePaths[0]);
+    return dataUrl ? { ok: true, dataUrl } : { ok: false, msg: '无法读取该图片文件' };
+  });
+
   /* 拖入导入 */
   ipcMain.handle('ql:import', async (_e, payload) => {
     const { paths = [], urls = [], groupId = null, dryRun = false } = payload || {};
@@ -757,6 +776,11 @@ function registerIpc() {
       const created = store.newItem(it.name, it.icon, it.type, it.path, {
         args: it.args || '', cwd: it.cwd || '', desc: it.desc || '',
       });
+      // 应用类无自定义图标时，尝试提取程序自带的默认 ICO（失败保持 emoji 回退）
+      if (created.type === 'app' && !isImageIcon(created.icon) && created.path) {
+        const d = await fileDefaultIconToDataUrl(created.path, 128);
+        if (d) created.icon = d;
+      }
       g.items.unshift(created);
       ids.push({ id: created.id, groupId: g.id });
     }

@@ -28,6 +28,15 @@ const stub = {
     setLoginItemSettings: () => {},
     getLoginItemSettings: () => ({ openAtLogin: false }),
     quit: () => {},
+    // 图标提取用的桩：返回一个"非空图片"，用来验证「存在路径 → 能转出 dataURL」这条链路。
+    // ★ 真实 Windows 上 getFileIcon 对**不存在**的路径不报错、也不返回空，而是给个通用白板图标 ——
+    //   所以 icon.js 自己用 fs.existsSync 挡了一道，这条桩不模拟那个坑，由断言单独覆盖。
+    getFileIcon: async () => ({
+      isEmpty: () => false,
+      getSize: () => ({ width: 32, height: 32 }),
+      resize: () => ({ toDataURL: () => 'data:image/png;base64,ICON' }),
+      toDataURL: () => 'data:image/png;base64,ICON',
+    }),
   },
   shell: {
     openPath: async () => '',
@@ -318,6 +327,48 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
   } else {
     ok(true, '本机没找到开始菜单快捷方式，跳过真实 .lnk 解析断言');
   }
+
+  /* ---------------------------------------------------------- 图标提取 */
+  section('icon.js 图标提取与判定');
+  const iconMod = require('../src/lib/icon');
+  ok(typeof iconMod.isImageIcon === 'function', 'icon.js 暴露 isImageIcon');
+  ok(iconMod.isImageIcon('data:image/png;base64,xxx') === true, 'data: 开头判为图片图标');
+  ok(iconMod.isImageIcon('data:image/png;base64,'.replace('data:', 'data:')) === true, 'data:image 前缀识别（PNG）');
+  ok(iconMod.isImageIcon('🚀') === false, 'emoji 不是图片图标');
+  ok(iconMod.isImageIcon('') === false, '空串不是图片图标');
+  ok(iconMod.isImageIcon(null) === false, 'null 不是图片图标');
+  ok(iconMod.isImageIcon('data:text/plain;base64,xxx') === false, '非 image 的 data: 不算图片图标');
+  ok(typeof iconMod.imageToDataUrl === 'function', 'icon.js 暴露 imageToDataUrl');
+  ok(iconMod.imageToDataUrl(null) === '', 'null 图片转 dataURL → 空（不抛）');
+  ok(iconMod.imageToDataUrl({ isEmpty: () => true }) === '', '空图片转 dataURL → 空');
+  ok(typeof iconMod.MAX_NATIVE === 'number' && iconMod.MAX_NATIVE > 0, 'MAX_NATIVE 有合理值');
+  ok(typeof iconMod.fileDefaultIconToDataUrl === 'function', 'icon.js 暴露 fileDefaultIconToDataUrl');
+  ok(typeof iconMod.imageFileToDataUrl === 'function', 'icon.js 暴露 imageFileToDataUrl');
+  // 真实存在的文件 → 走桩 getFileIcon → 得到图片型 dataURL
+  const icReal = await iconMod.fileDefaultIconToDataUrl(exeP, 128);
+  ok(icReal === 'data:image/png;base64,ICON', '已存在路径 → 提取出 dataURL', icReal);
+  // ★ 不存在的路径必须返回空（否则会给"稍后才接入的盘"挂上通用白板图标，而不是保持 emoji）
+  const icMissing = await iconMod.fileDefaultIconToDataUrl('C:\\__nope__\\x.exe', 128);
+  ok(icMissing === '', '不存在的路径 → 空（不会拿到通用假图标）', icMissing);
+  // %ENV% 展开：%SystemRoot%\explorer.exe 应被当成真实存在
+  const icEnv = await iconMod.fileDefaultIconToDataUrl('%SystemRoot%\\explorer.exe', 128);
+  ok(icEnv === 'data:image/png;base64,ICON', '%ENV% 展开后按存在处理', icEnv);
+  // 渲染层判定函数与主进程同一约定（静态对账：app.js 里必须是正则 data:image 开头）
+  const iconAppSrc = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'app.js'), 'utf8');
+  const iconHtmlSrc = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'index.html'), 'utf8');
+  ok(/^data:image\//i.test('data:image/png;base64,x'), '数据URL格式约定可被 isImageIcon 识别');
+  ok(/function iconHtml/.test(iconAppSrc), '渲染层有 iconHtml()（卡片/弹窗图片图标渲染）');
+  ok(/function applyIcon/.test(iconAppSrc), '渲染层有 applyIcon()（选中图片/emoji 后统一刷新预览）');
+  ok(/tile-img/.test(iconAppSrc), '卡片用图片图标的缩略图类');
+  ok(/mh-img/.test(iconAppSrc), '弹窗头部图标支持图片缩略图');
+  ok(/btnIconDefault/.test(iconHtmlSrc) && /btnIconPick/.test(iconHtmlSrc) && /btnIconClear/.test(iconHtmlSrc),
+    '编辑弹窗有「还原默认图标 / 选择图片 / 清除自定义」三个按钮');
+  ok(/API\.iconDefault\(/.test(iconAppSrc) && /API\.iconPick\(/.test(iconAppSrc),
+    '渲染层接线了 iconDefault / iconPick 两个 IPC');
+  // 主进程注册了对应 handle（静态对账）：main.js 里必须有这两条 IPC
+  const iconMainSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  ok(/ql:icon:default/.test(iconMainSrc) && /ql:icon:pick/.test(iconMainSrc),
+    '主进程注册 ql:icon:default / ql:icon:pick 两个 handle');
 
   /* ---------------------------------------------------------- 数据目录 */
   section('datadir 数据目录决策');

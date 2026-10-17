@@ -23,6 +23,8 @@ contextBridge.exposeInMainWorld('ql', {
   openFolder: p => ipcRenderer.invoke('ql:folder', p),
   pick: kind => ipcRenderer.invoke('ql:pick', kind),
   scan: force => ipcRenderer.invoke('ql:scan', force),
+  iconDefault: p => ipcRenderer.invoke('ql:icon:default', p),
+  iconPick: () => ipcRenderer.invoke('ql:icon:pick'),
 
   /* 设置 */
   setSettings: patch => ipcRenderer.invoke('ql:settings:set', patch),

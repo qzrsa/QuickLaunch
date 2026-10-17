@@ -401,6 +401,11 @@ input, select, textarea { outline: none; }
   border: 1px solid color-mix(in srgb, var(--c) 26%, transparent);
   box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 22%, transparent);
   transition: transform .2s var(--ease);
+  overflow: hidden;
+}
+.tile-img {
+  width: 100%; height: 100%; object-fit: contain; padding: 7px;
+  border-radius: 13px;
 }
 .card:hover .tile { transform: scale(1.06) rotate(-2deg); }
 
@@ -539,6 +544,12 @@ body.edit-mode .content { padding-bottom: 108px; }
 .modal-head .mh-ic {
   width: 38px; height: 38px; display: grid; place-items: center;
   font-size: 18px; border-radius: 11px; background: var(--accent-soft); color: var(--accent);
+  overflow: hidden;
+}
+/* 弹窗头部图标：自定义图片时展示缩略图 */
+.mh-img {
+  width: 100%; height: 100%; object-fit: contain; padding: 5px;
+  border-radius: 11px;
 }
 .modal-head h2 { font-size: 16px; font-weight: 650; }
 .modal-head p { font-size: 12px; color: var(--text-3); margin-top: 1px; }
@@ -600,6 +611,8 @@ body.edit-mode .content { padding-bottom: 108px; }
 }
 .icon-btn:hover { background: var(--panel-3); }
 .icon-btn.on { background: var(--accent-soft); border-color: var(--accent); }
+
+.icon-tools { display: flex; gap: 8px; margin-top: 9px; flex-wrap: wrap; }
 
 .switch-row { display: flex; gap: 20px; flex-wrap: wrap; }
 .switch { display: flex; align-items: center; gap: 9px; cursor: pointer; font-size: 13px; color: var(--text-2); }

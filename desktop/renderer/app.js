@@ -67,6 +67,16 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g,
 
 const uid = () => Math.random().toString(16).slice(2, 10);
 
+/** 判断一项的图标是否为「图片型」dataURL（区别于 emoji 字符串） */
+const isImageIcon = ic => typeof ic === 'string' && /^data:image\//i.test(ic);
+
+/** 卡片/弹窗的图标 HTML：图片型 → <img>，否则按 emoji 文本渲染 */
+function iconHtml(item, fallback) {
+  const ic = (item && item.icon) || '';
+  if (isImageIcon(ic)) return `<img class="tile-img" src="${ic}" alt="" decoding="async">`;
+  return esc(ic || fallback || '');
+}
+
 function toast(kind, title, text = '') {
   const icons = { ok: '✓', bad: '!', info: 'i' };
   const el = document.createElement('div');
@@ -240,7 +250,7 @@ function cardHTML(item, color, delay) {
       <button class="act del" data-act="del" title="删除">🗑</button>
     </div>
     <div class="card-top">
-      <div class="tile">${esc(item.icon || TYPE_INFO[t].icon)}</div>
+      <div class="tile">${iconHtml(item, TYPE_INFO[t].icon)}</div>
       <div class="card-meta">
         <h3 title="${esc(item.name)}">${esc(item.name || '未命名')}</h3>
         <p title="${esc(item.path)}">${esc(sub)}</p>
@@ -388,7 +398,7 @@ function openEdit(item, groupId) {
 
   $('#editTitle').textContent = isNew ? '新建启动项' : '编辑启动项';
   $('#editSub').textContent = isNew ? '配置名称、类型与目标路径' : (it.name || '');
-  $('#editIc').textContent = isNew ? '＋' : (it.icon || '✎');
+  $('#editIc').innerHTML = isNew ? '＋' : (isImageIcon(it.icon) ? `<img class="mh-img" src="${it.icon}" alt="">` : esc(it.icon || '✎'));
 
   $('#fName').value = it.name || '';
   $('#fArgs').value = it.args || '';
@@ -415,8 +425,17 @@ function openEdit(item, groupId) {
 }
 
 function renderIconPicker(current) {
+  const img = isImageIcon(current);
   $('#fIcons').innerHTML = ICONS
-    .map(e => `<button class="icon-btn ${e === current ? 'on' : ''}" data-emoji="${e}">${e}</button>`).join('');
+    .map(e => `<button class="icon-btn ${(!img && e === current) ? 'on' : ''}" data-emoji="${e}">${e}</button>`).join('');
+  $('#fIcHint').textContent = img ? '当前是自定义图片，点击下方可更换/还原' : '';
+}
+
+/** 设置图标后统一刷新弹窗预览、emoji 选中态与提示（图片/emoji 两种形态都走这） */
+function applyIcon(value) {
+  state.editing.item.icon = value;
+  $('#editIc').innerHTML = isImageIcon(value) ? `<img class="mh-img" src="${value}" alt="">` : esc(value || '✎');
+  renderIconPicker(value);
 }
 
 function closeEdit() { $('#editOverlay').hidden = true; state.editing = null; }
@@ -1201,8 +1220,14 @@ async function importScan() {
     if (!state.scanPicked.has(it.path)) continue;
     if (have.has(it.path.toLowerCase())) continue;
     have.add(it.path.toLowerCase());
+    const icon = { icon: '🚀' };  // 默认 emoji 兜底
+    // 尝试提取程序自带默认 ICO（取不到就保持 emoji）
+    try {
+      const r = await API.iconDefault(it.path);
+      if (r && r.ok && r.dataUrl) icon.icon = r.dataUrl;
+    } catch { /* 提取失败保持兜底 */ }
     g.items.push({
-      id: uid(), name: it.name, icon: '🚀', type: 'app', path: it.path,
+      id: uid(), name: it.name, icon: icon.icon, type: 'app', path: it.path,
       args: '', cwd: '', desc: it.source, elevate: false, console: false,
       favorite: false, useCount: 0, lastUsed: 0,
     });
@@ -1954,9 +1979,30 @@ function bind() {
   $('#fIcons').addEventListener('click', e => {
     const b = e.target.closest('[data-emoji]');
     if (!b) return;
-    state.editing.item.icon = b.dataset.emoji;
-    renderIconPicker(b.dataset.emoji);
-    $('#editIc').textContent = b.dataset.emoji;
+    applyIcon(b.dataset.emoji);
+  });
+  // 还原为程序自带的默认 ICO（取不到时保持原图标）
+  $('#btnIconDefault').addEventListener('click', async () => {
+    const it = state.editing && state.editing.item;
+    if (!it) return;
+    const p = $('#fPath').value.trim();
+    if (!p) return toast('bad', '请先填写目标路径', '“还原默认图标”需要程序路径');
+    const r = await API.iconDefault(p);
+    if (r && r.ok && r.dataUrl) applyIcon(r.dataUrl);
+    else toast('info', '未取到默认图标', '保持当前图标');
+  });
+  // 从图片文件选一个做自定义图标
+  $('#btnIconPick').addEventListener('click', async () => {
+    const r = await API.iconPick();
+    if (r && r.ok && r.dataUrl) applyIcon(r.dataUrl);
+    else if (r && r.canceled) { /* 用户取消 */ }
+    else toast('bad', '选择图片失败', (r && r.msg) || '');
+  });
+  // 清掉自定义图片，回到类型默认 emoji
+  $('#btnIconClear').addEventListener('click', () => {
+    const it = state.editing && state.editing.item;
+    if (!it) return;
+    applyIcon((TYPE_INFO[it.type || 'app'] || {}).icon || '🚀');
   });
   $('#fGroup').addEventListener('change', e => {
     $('#newGroupField').hidden = e.target.value !== '__new__';
@@ -2278,6 +2324,8 @@ function createMockBridge() {
     run: async item => ({ ok: true, msg: `预览模式：不会真正启动 ${item.name || ''}` }),
     openFolder: async () => ({ ok: true, msg: '预览模式' }),
     pick: async () => '',
+    iconDefault: async () => ({ ok: false }),  // 预览模式不读盘
+    iconPick: async () => ({ ok: false, canceled: true }),  // 预览模式不读盘
     scan: async () => clone(sampleScan),
     /* 预览模式：没有 webUtils，路径由 text/uri-list 回退提供 */
     canResolvePath: false,
