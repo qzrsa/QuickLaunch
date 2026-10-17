@@ -32,6 +32,33 @@ function safeCwd(cwd) {
   return fileExists(cwd) ? cwd : undefined;
 }
 
+/** 读 .lnk 的目标；读不到（不是快捷方式 / 非 Windows / 没权限）一律 null，不抛 */
+function readShortcut(p) {
+  try {
+    if (!shell || typeof shell.readShortcutLink !== 'function') return null;
+    return shell.readShortcutLink(p) || null;
+  } catch { return null; }
+}
+
+/**
+ * 逐级向上找最近一个真实存在的目录（目标路径本身不存在时用）。
+ * 上限 32 级：既够深，又不会被畸形路径卡死。
+ */
+function nearestExistingDir(p, fsi = fs) {
+  let cur = String(p || '');
+  for (let i = 0; i < 32 && cur; i++) {
+    try {
+      if (fsi.existsSync(cur)) {
+        return fsi.statSync(cur).isDirectory() ? cur : path.dirname(cur);
+      }
+    } catch { /* 无权限 / 已失效的盘符，继续往上 */ }
+    const up = path.dirname(cur);
+    if (!up || up === cur) break;
+    cur = up;
+  }
+  return '';
+}
+
 /** 派生失败是**异步事件**，没监听器会直接把主进程抛崩；这里统一吞掉并返回 false */
 function spawnQuiet(file, args, opts) {
   try {
@@ -219,15 +246,63 @@ async function launch(item) {
 
 /* ---------------------------------------------------- 其他系统动作 */
 
+/**
+ * 「打开所在位置」—— 必须在资源管理器里真的定位到东西。
+ *
+ * 以前直接把配置里的 path 丢给 shell.showItemInFolder，三种情况会翻车：
+ *  ① **裸命令名**（`taskmgr.exe` / `notepad.exe` / `services.msc` / `python.exe` …）：
+ *     showItemInFolder 只认**绝对路径**，传一个相对名字时 Windows **静默什么都不做** ——
+ *     用户看到的就是「点了没反应」。这类项在真实配置里占一大半（「系统工具」整组都是）。
+ *  ② **`.lnk` 快捷方式**：扫描导入存的是开始菜单里的 `.lnk` 本身，定位过去是
+ *     「快捷方式所在的文件夹」，不是程序真正所在的位置 —— 要跟到它的 target。
+ *  ③ **路径不存在**：同样静默无反应。现在打开最近一个存在的上级目录，并把情况说清楚。
+ *
+ * ★ 解析裸名字必须复用 lib/resolve.js（与启动、存在性判定同一份实现），
+ *   否则「能启动但定位不到」这种两副面孔又会冒出来。
+ */
 async function openContaining(p) {
-  const t = store.expandEnv(p);
+  let t = store.expandEnv(String(p == null ? '' : p)).trim();
   if (!t) return { ok: false, msg: '路径为空' };
-  try {
-    shell.showItemInFolder(t);
-    return { ok: true, msg: '已在资源管理器中定位' };
-  } catch (e) {
-    return { ok: false, msg: e.message };
+  // 手填的路径可能带引号，showItemInFolder 不认
+  if (/^".*"$/.test(t)) t = t.slice(1, -1).trim();
+  if (!t) return { ok: false, msg: '路径为空' };
+
+  // ① 裸命令名 → 绝对路径
+  if (!path.isAbsolute(t)) {
+    const resolved = resolveLib.resolveCommand(t);
+    if (resolved && resolved !== t) t = resolved;
   }
+  if (path.isAbsolute(t)) t = path.normalize(t);
+
+  // ② .lnk → 跟到真实目标；跟不到就退而定位 .lnk 自身（至少不是「没反应」）
+  if (/\.lnk$/i.test(t) && fileExists(t)) {
+    const info = readShortcut(t);
+    const target = info && info.target ? store.expandEnv(String(info.target)).trim() : '';
+    if (target && fileExists(target)) t = path.normalize(target);
+  }
+
+  // ③ 存在 → 交给资源管理器定位并选中（目录会打开它的上级）
+  if (fileExists(t)) {
+    try {
+      shell.showItemInFolder(t);
+      return { ok: true, msg: '已在资源管理器中定位' };
+    } catch (e) {
+      return { ok: false, msg: e.message };
+    }
+  }
+
+  // ④ 不存在 → 打开最近一个存在的上级目录，明确告诉用户，别装没事
+  const near = nearestExistingDir(t, fs);
+  if (near) {
+    try {
+      const err = await shell.openPath(near);
+      if (err) return { ok: false, msg: err };
+      return { ok: true, msg: `路径不存在，已打开最近的目录：${near}` };
+    } catch (e) {
+      return { ok: false, msg: e.message };
+    }
+  }
+  return { ok: false, msg: `路径不存在：${t}` };
 }
 
 async function pick(kind, win) {
@@ -248,4 +323,4 @@ async function pick(kind, win) {
   return r.canceled || !r.filePaths.length ? '' : r.filePaths[0];
 }
 
-module.exports = { launch, openContaining, pick, resolveTarget };
+module.exports = { launch, openContaining, pick, resolveTarget, nearestExistingDir };

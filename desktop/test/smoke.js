@@ -43,7 +43,7 @@ const stub = {
     },
   },
   shell: {
-    openPath: async () => '',
+    openPath: async p => { stub.__lastOpenPath = p; return ''; },
     openExternal: async () => {},
     showItemInFolder: p => { stub.__lastFolder = p; },
     // .lnk 解析的桩：真机上是 shell.readShortcutLink(lnk) → {target, icon, ...}。
@@ -194,6 +194,48 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
   ok(actions.resolveTarget('powershell.exe') !== 'powershell.exe',
     'resolveTarget 也能解析只在 PATH 里的命令');
 
+  /* ---- 打开所在位置：必须真的定位到东西（v1.4.8） ----
+     以前直接把 path 丢给 showItemInFolder：
+       · 裸命令名（taskmgr.exe / notepad.exe / services.msc）→ 相对路径 → Windows 静默无反应
+       · .lnk（扫描导入存的是开始菜单里的快捷方式）→ 定位到开始菜单，不是程序真正所在
+       · 路径不存在 → 静默无反应
+     这三条就是用户说的「不是真的打开所在位置」。 */
+  section('打开所在位置：裸命令名 / .lnk / 不存在');
+  stub.__lastFolder = null; stub.__lastOpenPath = null;
+  r = await actions.openContaining('cmd.exe');
+  ok(r.ok && !!stub.__lastFolder && path.isAbsolute(stub.__lastFolder)
+    && path.basename(stub.__lastFolder).toLowerCase() === 'cmd.exe',
+    '★ 裸命令名先解析成绝对路径再定位（直接丢给 showItemInFolder 会静默无反应）',
+    stub.__lastFolder);
+
+  stub.__lastFolder = null;
+  r = await actions.openContaining(TMP);
+  ok(r.ok && stub.__lastFolder === path.normalize(TMP), '存在的目录 → 资源管理器里定位', stub.__lastFolder);
+
+  // .lnk → 跟到真实目标（扫描导入存的是开始菜单里的 .lnk 本身）
+  const lnkTest = path.join(TMP, 'ql-open-containing.lnk');
+  const lnkReal = path.join(TMP, 'ql-real-target.exe');
+  fs.writeFileSync(lnkTest, '');
+  fs.writeFileSync(lnkReal, 'x');
+  stub.__lnk = { [lnkTest]: { target: lnkReal, icon: '' } };
+  stub.__lastFolder = null;
+  r = await actions.openContaining(lnkTest);
+  ok(r.ok && stub.__lastFolder === lnkReal,
+    '★ .lnk 定位到 target（不是快捷方式自己所在的开始菜单文件夹）', stub.__lastFolder);
+  stub.__lnk = {};
+
+  // 路径不存在 → 打开最近一个存在的上级目录并说明，别装没事
+  stub.__lastFolder = null; stub.__lastOpenPath = null;
+  r = await actions.openContaining(path.join(TMP, '__nope__', 'deep', 'x.exe'));
+  ok(r.ok && stub.__lastOpenPath === path.normalize(TMP) && /不存在/.test(r.msg),
+    '★ 路径不存在 → 打开最近的上级目录并说明（不再静默无反应）', r.msg);
+  ok(stub.__lastFolder === null, '不存在时不该假装「已定位」');
+
+  r = await actions.openContaining('');
+  ok(r.ok === false && /路径为空/.test(r.msg), '空路径 → 明确报错');
+  ok(actions.nearestExistingDir('C:\\__ql_nope__\\a\\b\\c.exe') === 'C:\\',
+    'nearestExistingDir 一路向上找到盘符根');
+
   /* ---- 静态铁律：启动形态是被实测逼出来的，别改回去 ---- */
   section('启动形态铁律（实测对照见探针手册）');
   const actSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'lib', 'actions.js'), 'utf8');
@@ -211,6 +253,12 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
     '网址 / 协议链接统一走 urlshortcut.normalizeUrl（唯一实现，别在两处各写一份）');
   ok(!/'http:\/\/'\s*\+\s*target/.test(actCode),
     '★ 不许再手写「不是 http 就补 http://」（`steam://` 会被套成双层协议，点了打不开）');
+  ok(/resolveLib\.resolveCommand\(t\)/.test(actCode),
+    '★ openContaining 也走 resolve.js 解析裸命令名（否则「能启动但定位不到」）');
+  ok(/readShortcut\(t\)/.test(actCode) && /info\.target/.test(actCode),
+    '★ .lnk 定位跟到真实 target');
+  ok(/nearestExistingDir\(t, fs\)/.test(actCode),
+    '★ 路径不存在时退到最近的上级目录，不静默无反应');
 
   section('scan 软件扫描');
   const t0 = Date.now();
