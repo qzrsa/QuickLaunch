@@ -8,6 +8,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { app } = require('electron');
+const resolveLib = require('./resolve');
 
 const PALETTE = ['#3b6cf6', '#7c5cff', '#12b886', '#ff8a3d',
   '#f2506e', '#14b8c4', '#f0b429', '#8b8f9a'];
@@ -29,25 +30,24 @@ function pathExists(p) {
   if (!p) return false;
   const s = expandEnv(p);
   if (/^https?:\/\//i.test(s)) return true;
-  const candidates = [s];
-  // 裸命令名：交给 PATH 与系统关联判断
-  if (!path.isAbsolute(s) && !s.includes(path.sep)) {
-    candidates.push(path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', s));
-    candidates.push(path.join(process.env.SystemRoot || 'C:\\Windows', s));
-  }
-  return candidates.some(c => { try { return fs.existsSync(c); } catch { return false; } });
+  // 裸命令名（powershell.exe / python.exe / wt.exe）只存在于 PATH 里，
+  // 以前只查 System32 与 SystemRoot，于是卡片把一堆装好的程序标成「路径不存在」。
+  return resolveLib.exists(s);
 }
 
 const SHELL_EXT = ['.msc', '.cpl', '.appref-ms', '.url', '.lnk'];
 
 function itemOk(item) {
+  const type = item.type || 'app';
+  // 网址没有本地文件；命令是**一整行 shell 语句**，本来就没有"路径"可查。
+  // 这里必须与 keep() 的保留条件保持一致，否则「本机磁盘」这种
+  // `explorer.exe "shell:MyComputerFolder"` 会被标成「路径不存在」。
+  if (type === 'url' || type === 'cmd') return true;
   const p = expandEnv((item.path || '').trim());
   if (!p) return false;
-  if ((item.type || 'app') === 'url') return true;
   if (pathExists(p)) return true;
   const low = p.toLowerCase();
   if (SHELL_EXT.some(e => low.endsWith(e))) return true;
-  if (!p.includes(path.sep) && !path.basename(p).includes('.')) return true;
   return false;
 }
 

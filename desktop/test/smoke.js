@@ -108,9 +108,44 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
   section('itemOk 存在性判定');
   ok(store.itemOk({ type: 'url', path: 'https://github.com' }) === true, '网址恒为存在');
   ok(store.itemOk({ type: 'app', path: 'notepad.exe' }) === true, '裸命令名 notepad.exe 命中 System32');
+  ok(store.itemOk({ type: 'app', path: 'powershell.exe' }) === true,
+    'powershell.exe 不在 System32 但 PATH 里有 → 不许再报「路径不存在」');
   ok(store.itemOk({ type: 'app', path: 'C:\\__nope__\\x.exe' }) === false, '不存在的绝对路径判为缺失');
   ok(store.itemOk({ type: 'app', path: 'services.msc' }) === true, '.msc 交给 shell 关联');
+  ok(store.itemOk({ type: 'app', path: 'definitely_not_here_xyz.exe' }) === false,
+    'PATH 里也没有的裸名字判为缺失（以前这条会假阳性）');
+  ok(store.itemOk({ type: 'cmd', path: 'explorer.exe "shell:MyComputerFolder"' }) === true,
+    '「命令」是一整行 shell 语句，不校验路径（与 keep() 的保留条件一致）');
   ok(store.expandEnv('%SystemRoot%\\System32') === (process.env.SystemRoot + '\\System32'), '环境变量展开');
+
+  /* ---- 裸命令名解析：store 与 actions 共用的一份实现 ---- */
+  section('lib/resolve：裸命令名与控制台判定');
+  const resolveLib = require('../src/lib/resolve');
+  ok(resolveLib.isBareName('notepad.exe') === true, '裸名字识别');
+  ok(resolveLib.isBareName('C:\\Windows\\notepad.exe') === false, '绝对路径不算裸名字');
+  ok(resolveLib.isBareName('sub/x.exe') === false, '带分隔符不算裸名字');
+  const psResolved = resolveLib.resolveCommand('powershell.exe');
+  ok(path.isAbsolute(psResolved) && fs.existsSync(psResolved),
+    'powershell.exe 解析成真实绝对路径', psResolved);
+  ok(resolveLib.resolveCommand('C:\\__nope__\\x.exe') === 'C:\\__nope__\\x.exe', '绝对路径原样返回');
+  ok(resolveLib.resolveCommand('no_such_cmd_zz.exe') === 'no_such_cmd_zz.exe', '找不到就原样返回');
+  ok(resolveLib.exists('no_such_cmd_zz.exe') === false, 'exists() 对找不到的裸名字给 false');
+
+  // 注入假 fs / 假 env：不碰本机，验搜索顺序与 PATHEXT 展开
+  const fakeFs = { existsSync: p => String(p).toLowerCase() === 'c:\\shim\\thing.exe' };
+  const fakeEnv = { SystemRoot: 'C:\\Windows', PATH: 'C:\\shim', PATHEXT: '.EXE' };
+  ok(resolveLib.resolveCommand('thing', { fs: fakeFs, env: fakeEnv }).toLowerCase() === 'c:\\shim\\thing.exe',
+    '按 PATHEXT 展开（thing → thing.exe）');
+  ok(resolveLib.candidates('thing', fakeEnv)[0].toLowerCase() === 'c:\\windows\\system32\\thing',
+    '搜索顺序从 System32 开始');
+  ok(resolveLib.candidates('ps1', fakeEnv).some(p => /windows ?powershell/i.test(p)),
+    'PowerShell 5.1 的目录在候选里（PATH 被精简也找得到）');
+
+  ok(resolveLib.isConsoleExe(psResolved) === true, 'powershell.exe 识别为控制台程序');
+  ok(resolveLib.isConsoleExe(path.join(process.env.SystemRoot, 'System32', 'notepad.exe')) === false,
+    'notepad.exe 识别为窗口程序');
+  ok(resolveLib.isConsoleExe(path.join(TMP, 'no-such.exe')) === false,
+    '读不到 PE 头时不当成控制台程序（宁可普通启动）');
 
   section('actions 启动动作');
   const out = path.join(TMP, 'launch-ok.txt');
@@ -122,7 +157,8 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
   ok(content === 'ql-ok', '命令真的落盘（引号与重定向正确）', JSON.stringify(content));
 
   r = await actions.launch({ type: 'app', path: 'C:\\__nope__\\nope.exe' });
-  ok(!r.ok || typeof r.msg === 'string', '不存在的程序返回可读错误', r.msg);
+  ok(r.ok === false && /找不到/.test(r.msg),
+    '不存在的程序必须明确报错 —— 以前 spawn 的 ENOENT 没人接，会假装成功', r.msg);
 
   r = await actions.launch({ type: 'folder', path: TMP });
   ok(r.ok, '目录类型可打开', r.msg);
@@ -130,9 +166,24 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
   r = await actions.launch({ type: 'url', path: 'github.com' });
   ok(r.ok, '网址自动补 http:// 并交给 shell', r.msg);
 
-  ok(actions.splitArgs('"a b" c --flag=1').join('|') === 'a b|c|--flag=1', 'splitArgs 引号解析');
   ok(path.basename(actions.resolveTarget('notepad.exe')).toLowerCase() === 'notepad.exe',
     'resolveTarget 解析裸命令名');
+  ok(actions.resolveTarget('powershell.exe') !== 'powershell.exe',
+    'resolveTarget 也能解析只在 PATH 里的命令');
+
+  /* ---- 静态铁律：启动形态是被实测逼出来的，别改回去 ---- */
+  section('启动形态铁律（实测对照见探针手册）');
+  const actSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'lib', 'actions.js'), 'utf8');
+  // 先剥注释再断言：注释里会写到被禁的写法（否则这条永远红）
+  const actCode = actSrc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  ok(!/detached:\s*true/.test(actCode),
+    'actions.js 里不许再有 detached:true（控制台程序没有控制台，一行都不执行就退出）');
+  ok(/\/c start "" /.test(actCode),
+    '可执行文件统一经 cmd 的 start 启动（实测唯一「父进程退出后还活着」的形态）');
+  ok(/windowsVerbatimArguments:\s*true/.test(actCode),
+    'cmd 命令行必须原样传参（交给 CRT 再转义一遍会 exit 1，一个进程都起不来）');
+  ok(/isConsoleExe\(/.test(actCode),
+    '控制台程序自动给窗口，不指望用户自己去勾「显示命令行窗口」');
 
   section('scan 软件扫描');
   const t0 = Date.now();
