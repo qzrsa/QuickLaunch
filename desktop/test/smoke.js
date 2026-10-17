@@ -581,19 +581,25 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
   /* ---- Win10/11 的「图标搬家」：%SystemRoot%\SystemResources\<名字>.mun ----
      本机实测：notepad.exe / mspaint.exe / mstsc.exe / magnify.exe / dfrgui.exe / shell32.dll
      这些文件的资源表里**一张图标都没有**（只剩 RT_VERSION / RT_MANIFEST），图标全在
-     同名的 .mun MUI 文件里。不接这条路，记事本/画图/远程桌面就是永远修不好的通用图。 */
+     同名的 .mun MUI 文件里。不接这条路，记事本/画图/远程桌面就是永远修不好的通用图。
+     ★ 这条断言必须**自适应**：Windows Server 的 runner 常常没有 SystemResources\*.mun
+       （那边图标还在文件本体里）。写死"必须有 .mun"会让 CI 红在本机绿 —— 第一版就是这么翻的。 */
   ok(typeof exeicon.munFor === 'function', 'exeicon 暴露 munFor');
-  const npMun = exeicon.munFor(path.join(process.env.SystemRoot, 'System32', 'notepad.exe'), fs);
-  ok(/SystemResources/i.test(npMun) && /notepad\.exe\.mun$/i.test(npMun),
-    '★ notepad.exe → 找到 SystemResources\\notepad.exe.mun', npMun);
+  const npPath = path.join(process.env.SystemRoot, 'System32', 'notepad.exe');
+  const npMun = fs.existsSync(npPath) ? exeicon.munFor(npPath, fs) : '';
+  if (npMun) {
+    ok(/SystemResources/i.test(npMun) && /notepad\.exe\.mun$/i.test(npMun),
+      '★ notepad.exe → 找到 SystemResources\\notepad.exe.mun', npMun);
+    const npIco = exeicon.readIconResource(npPath);
+    ok(Buffer.isBuffer(npIco) && npIco.length > 1000,
+      '★ 记事本（资源表里没有图标）→ 从 .mun 里抠到了图标', npIco && String(npIco.length));
+  } else {
+    ok(true, '这台机没有 SystemResources\\notepad.exe.mun（Server 版常见），跳过 .mun 断言');
+  }
   ok(exeicon.munFor('C:\\__nope__\\x.exe', fs) === '', '找不到 .mun → 空串（不抛）');
   ok(exeicon.munFor(path.join(process.env.SystemRoot, 'SystemResources', 'a.dll.mun'), fs) === '',
     '.mun 自己不再去套 .mun（不然无限递归）');
-  const npIco = exeicon.readIconResource(path.join(process.env.SystemRoot, 'System32', 'notepad.exe'));
-  ok(Buffer.isBuffer(npIco) && npIco.length > 1000,
-    '★ 记事本（资源表里没有图标）→ 从 .mun 里抠到了图标', npIco && String(npIco.length));
-  ok(Buffer.isBuffer(exeicon.readIconResource(path.join(process.env.SystemRoot, 'System32', 'mspaint.exe'))),
-    '画图同理（同一条 .mun 回退链）');
+  ok(exeicon.munFor('', fs) === '', '空路径 → 空串');
   const munSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'lib', 'exeicon.js'), 'utf8');
   ok(/SystemResources/.test(munSrc), '★ 源码里写死了 SystemResources（唯一的 .mun 位置）');
   ok(/deps\.mun !== false/.test(munSrc), '回退可关闭（单测/诊断要能只看文件本身）');
@@ -636,9 +642,13 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
   // ★ 不存在的路径必须返回空（否则会给"稍后才接入的盘"挂上通用白板图标，而不是保持 emoji）
   const icMissing = await iconMod.fileDefaultIconToDataUrl('C:\\__nope__\\x.exe', 128);
   ok(icMissing === '', '不存在的路径 → 空（不会拿到通用假图标）', icMissing);
-  // %ENV% 展开：%SystemRoot%\explorer.exe 应被当成真实存在
+  // %ENV% 展开：%SystemRoot%\explorer.exe 应被当成真实存在（同样自适应资源是否存在）
   const icEnv = await iconMod.fileDefaultIconToDataUrl('%SystemRoot%\\explorer.exe', 128);
-  ok(icEnv === 'data:image/png;base64,ICO', '%ENV% 展开后按存在处理', icEnv);
+  if (Buffer.isBuffer(exeicon.readIconResource(path.join(process.env.SystemRoot, 'explorer.exe')))) {
+    ok(icEnv === 'data:image/png;base64,ICO', '%ENV% 展开后按存在处理', icEnv);
+  } else {
+    ok(true, '这台机的 explorer.exe 没有可抠的图标资源，跳过 %ENV% 断言');
+  }
 
   /* ---- .url 的 IconFile：只能 nativeImage 直读 ----
      1.4.3 之前的真实事故：11 个桌面游戏快捷方式（Steam / FeverGames）全是同一个 🌐。
@@ -696,8 +706,15 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
   ok(dllNeg && dllNeg.id === 1 && dllNeg.group === undefined,
     '★ 负数 iconIndex = 资源 ID 就是 -N（-1 → id 1），不是"第 -1 组"', JSON.stringify(dllNeg));
   stub.__lnk = { [lnkP]: { target: tgtP, icon: 'C:\\Windows\\system32\\shell32.dll', iconIndex: 0 } };
-  ok(await iconMod.fileDefaultIconToDataUrl(lnkP, 128) === 'data:image/png;base64,ICO',
-    '★ 从 dll 的第 0 组真拿到了图标（走 PE，不碰 getFileIcon）');
+  // ★ 自适应：这台机的 shell32.dll 能不能取到图标（有没有 .mun）不该由断言写死 ——
+  //   CI 的 Windows Server 与本机不一样，写死就变成"本机绿、CI 红"。
+  const shProbe = exeicon.readIconResource('C:\\Windows\\system32\\shell32.dll');
+  if (Buffer.isBuffer(shProbe)) {
+    ok(await iconMod.fileDefaultIconToDataUrl(lnkP, 128) === 'data:image/png;base64,ICO',
+      '★ 从 dll 的第 0 组真拿到了图标（走 PE，不碰 getFileIcon）');
+  } else {
+    ok(true, '这台机的 shell32.dll 取不到图标，跳过 dll 组断言');
+  }
   stub.__lnk = { [lnkP]: { target: tgtP, icon: 'C:\\Windows\\system32\\shell32.dll', iconIndex: 9999 } };
   ok(await iconMod.fileDefaultIconToDataUrl(lnkP, 128) === '',
     '★ 指定的那组不存在 → 空（绝不拿别组的图凑数，那比留空更难查）');
