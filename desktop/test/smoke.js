@@ -122,6 +122,42 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
   store.annotate(cfg);
   ok(all.every(i => typeof i._exists === 'boolean'), 'annotate 注入 _exists');
 
+  /* ---- 恢复默认分组：只补不删、幂等（v1.4.9，「全选误删」的后悔药） ---- */
+  section('恢复默认分组（只补不删）');
+  {
+    // 模拟「全选 → 删除」：默认分组和默认项全没了，只剩一个用户自建分组
+    const broken = store.defaultConfig();
+    broken.groups = [{ id: 'mine', name: '我的分组', icon: '⭐', color: '#3b6cf6', items: [
+      store.newItem('自制项', '🚀', 'app', 'notepad.exe'),
+    ] }];
+    const r1 = store.restoreDefaults(broken);
+    ok(r1.groupsAdded === 4, `缺失的 4 个默认分组被整组补回（实际 ${r1.groupsAdded}）`);
+    ok(r1.itemsAdded > 0, `补回默认启动项 ${r1.itemsAdded} 个`);
+    ok(broken.groups[0].id === 'mine' && broken.groups[0].items.length === 1,
+      '★ 用户自建分组与自加项原样保留（恢复是加法，不是重置）');
+    ok(broken.groups.some(g => g.id === 'files') && broken.groups.some(g => g.id === 'tools')
+      && broken.groups.some(g => g.id === 'dev') && broken.groups.some(g => g.id === 'web'),
+      '四个默认分组都回来了');
+
+    // 幂等：再点一次不该重复添加
+    const before = broken.groups.reduce((n, g) => n + g.items.length, 0);
+    const r2 = store.restoreDefaults(broken);
+    ok(r2.groupsAdded === 0 && r2.itemsAdded === 0, '★ 再点一次不重复添加（幂等）');
+    ok(broken.groups.reduce((n, g) => n + g.items.length, 0) === before, '总项数没变');
+
+    // 分组还在、只删了里面几项 → 只补缺的那几项，且按 type|path 去重（改过名也算同一项）
+    const partial = store.defaultConfig();
+    const files = partial.groups.find(g => g.id === 'files');
+    const keepItem = files.items[0];
+    files.items = [{ ...keepItem, name: '我自己改的名字' }];   // 路径没变，只是改了名
+    const r3 = store.restoreDefaults(partial);
+    ok(r3.groupsAdded === 0, '分组还在就不整组重建');
+    ok(!files.items.some(i => i.path === keepItem.path && i.name === keepItem.name),
+      '★ 改过名的默认项不会被再插一条（按 type|path 去重）');
+    ok(files.items.length === store.defaultConfig().groups.find(g => g.id === 'files').items.length,
+      `缺的默认项补齐（${files.items.length} 项）`);
+  }
+
   section('itemOk 存在性判定');
   ok(store.itemOk({ type: 'url', path: 'https://github.com' }) === true, '网址恒为存在');
   ok(store.itemOk({ type: 'app', path: 'notepad.exe' }) === true, '裸命令名 notepad.exe 命中 System32');
@@ -453,11 +489,13 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
   ok(dupBatch.items.length === 1, '同一批内重复路径只保留一项');
   ok(dupBatch.skipped.length === 2, '批内重复计入 skipped');
 
-  // 上限保护
+  // 上限保护：超出 MAX_ITEMS 的部分要截断，而且**明确回报**被截掉多少（不静默丢）
   const many = await importer.buildItems({
-    urls: Array.from({ length: 60 }, (_, i) => `https://h${i}.example.com`), existing: [],
+    urls: Array.from({ length: importer.MAX_ITEMS + 10 }, (_, i) => `https://h${i}.example.com`), existing: [],
   });
   ok(many.items.length === importer.MAX_ITEMS, `单次上限 ${importer.MAX_ITEMS} 项`);
+  ok(many.truncated === 10, `★ 超出上限的 10 项回报为 truncated（不再静默丢弃）`, String(many.truncated));
+  ok(importer.MAX_ITEMS > 50, '单次拖入上限已从 50 放开（有并发 + 进度条才敢放开）');
 
   ok(importer.keyOf({ type: 'app', path: 'C:\\A.EXE' }) === 'app|c:\\a.exe', 'keyOf 大小写归一');
 
@@ -520,8 +558,37 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
     ok(true, '本机没找到开始菜单快捷方式，跳过真实 .lnk 解析断言');
   }
 
-  /* ---------------------------------------------------------- 图标提取 */
-  /* -------------------------------------------------- .url 快捷方式解析 */
+  /* --------------------------------------------- 拖入导入：进度与上限（v1.4.9） */
+  section('拖入导入：进度条 / 上限放开 / 恢复默认接线');
+  {
+    const mainSrc2 = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+    const preloadSrc2 = fs.readFileSync(path.join(__dirname, '..', 'src', 'preload.js'), 'utf8');
+    const appSrc2 = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'app.js'), 'utf8');
+    const htmlSrc2 = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'index.html'), 'utf8');
+    const cssSrc2 = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'style.css'), 'utf8');
+
+    ok(/send\('ql:import-progress'/.test(mainSrc2), '★ 主进程逐项推 ql:import-progress（没进度就像卡死）');
+    ok(/Math\.min\(6, total\)/.test(mainSrc2), '提图标 6 路并发（串行时上百项要等很久）');
+    ok(/phase: 'resolve'/.test(mainSrc2) && /phase: 'icons'/.test(mainSrc2) && /phase: 'done'/.test(mainSrc2),
+      '三个阶段都推：解析 / 提图标 / 完成');
+    ok(/\.unshift\(\.\.\.slots\)/.test(mainSrc2), '并发提图后按原顺序插回（先占槽位再回填）');
+    ok(/'ql:import-progress'/.test(preloadSrc2), 'preload 白名单登记了 ql:import-progress');
+
+    ok(/id="dropProgress"/.test(htmlSrc2) && /id="dropBar"/.test(htmlSrc2), '拖入遮罩里有进度条元素');
+    ok(/function setDropProgress/.test(appSrc2) && /function showDropProgress/.test(appSrc2),
+      '渲染层有 setDropProgress / showDropProgress');
+    ok(/API\.on\('ql:import-progress'/.test(appSrc2), '渲染层订阅导入进度');
+    ok(/state\.importingDrop/.test(appSrc2), '导入中再拖一次直接忽略（避免同一批导两遍）');
+    ok(/truncated/.test(appSrc2), '★ 超出上限会明确告诉用户（不再静默丢弃）');
+    ok(/\.dv-bar/.test(cssSrc2) && /indeterminate/.test(cssSrc2), '进度条样式齐全（含解析阶段的滑块动画）');
+
+    ok(/ql:config:restore-defaults/.test(mainSrc2) && /restoreDefaults/.test(preloadSrc2),
+      '恢复默认：IPC 通道与 preload 桥都齐（漏一个就是静默失效）');
+    ok(/id="btnRestoreDefaults"/.test(htmlSrc2) && /restoreDefaultGroups/.test(appSrc2),
+      '设置面板有「恢复默认分组」按钮并已接线');
+    ok(/restoreDefaults: async/.test(appSrc2), '预览模式 mock 也实现了 restoreDefaults');
+  }
+
   section('urlshortcut .url 快捷方式（协议 + 图标）');
   const urlsc = require('../src/lib/urlshortcut');
 

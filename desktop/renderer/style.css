@@ -782,6 +782,28 @@ body.edit-mode .content { padding-bottom: 108px; }
 .drop-card b { font-size: 14.5px; font-weight: 650; color: var(--text); }
 .drop-card span { font-size: 12px; color: var(--text-3); }
 
+/* 导入进度（拖入几十上百项时逐项提图标）：解析阶段用不定长滑块，提图标阶段显示真实百分比 */
+.dv-progress { width: 100%; min-width: 240px; margin-top: 12px; }
+.dv-progress[hidden] { display: none; }
+.dv-bar { height: 6px; border-radius: 999px; background: var(--line); overflow: hidden; }
+.dv-bar > i {
+  display: block; height: 100%; width: 0; border-radius: 999px;
+  background: var(--accent); transition: width .18s var(--ease, ease);
+}
+.dv-bar > i.indeterminate {
+  width: 35%; animation: dvslide 1.1s ease-in-out infinite;
+}
+@keyframes dvslide { 0% { margin-left: -35%; } 100% { margin-left: 100%; } }
+.dv-txt {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  margin-top: 6px; font-size: 12px; color: var(--text-3);
+}
+.dv-txt #dropProgressPct { font-variant-numeric: tabular-nums; font-weight: 600; color: var(--text-2); }
+/* 导入期间别画那圈虚线：那不是"松手落点"，是已经在干活了 */
+.drop-veil.is-importing::after { display: none; }
+.drop-veil.is-importing .dv-ic { animation: dvpulse 1.2s ease-in-out infinite; }
+@keyframes dvpulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.12); } }
+
 /* 拖到侧栏分组上时的落点高亮 */
 .nav-item.drop-on {
   background: var(--accent-soft); color: var(--accent); font-weight: 600;

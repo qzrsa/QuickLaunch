@@ -260,8 +260,63 @@ function ensureGroup(cfg, id, name, icon, colorIdx = 4) {
 function configDir() { return configPath ? path.dirname(configPath) : app.getPath('userData'); }
 function configFile() { return configPath || init(); }
 
+/** 判断"同一个启动项"的指纹：类型 + 路径（大小写不敏感）。改过名字也算同一项。 */
+function itemKey(i) {
+  return `${(i && i.type) || 'app'}|${String((i && i.path) || '').toLowerCase()}`;
+}
+
+/**
+ * 恢复默认分组 / 默认启动项 —— **只补不删**，幂等。
+ *
+ * 用途：用户「全选 → 删除」把「文件与目录 / 系统工具 / 开发 / 常用网站」误删之后，
+ * 一键把它们找回来。刻意不做"清空重来"：那会把用户自己建的分组、改过的名字、
+ * 挑过的图标、收藏与使用次数一起冲掉 —— 恢复应该是加法，不是重置。
+ *
+ * 规则：
+ *  - 分组 id 已存在 → 只补它缺的默认项，追加到**末尾**（按 type|path 去重，改过名也不重复）
+ *  - 分组不存在 → 整组追加到**末尾**（不打乱用户自己的分组顺序）
+ *  - 用户自建的分组、自己加的项、所有设置，一律不碰
+ *  - `dropped` / `scanned` 这类"按需生成"的分组不在默认里，不会被凭空造出来
+ *
+ * @returns {{groupsAdded:number, itemsAdded:number, groups:string[]}}
+ */
+function restoreDefaults(cfg) {
+  const out = { groupsAdded: 0, itemsAdded: 0, groups: [] };
+  if (!cfg || !Array.isArray(cfg.groups)) return out;
+
+  for (const d of buildGroups()) {
+    let g = cfg.groups.find(x => x && x.id === d.id);
+    if (!g) {
+      g = {
+        id: d.id, name: d.name, icon: d.icon, color: d.color,
+        items: (d.items || []).map(i => Object.assign({}, i)),
+      };
+      cfg.groups.push(g);
+      out.groupsAdded++;
+      out.itemsAdded += g.items.length;
+      out.groups.push(`${g.name}（+${g.items.length}）`);
+      continue;
+    }
+    if (!Array.isArray(g.items)) g.items = [];
+    const have = new Set(g.items.map(itemKey));
+    let n = 0;
+    for (const di of (d.items || [])) {
+      const k = itemKey(di);
+      if (have.has(k)) continue;
+      g.items.push(Object.assign({}, di));
+      have.add(k);
+      n++;
+    }
+    if (n) {
+      out.itemsAdded += n;
+      out.groups.push(`${g.name}（+${n}）`);
+    }
+  }
+  return out;
+}
+
 module.exports = {
-  init, load, save, annotate, defaultConfig, ensureGroup,
+  init, load, save, annotate, defaultConfig, ensureGroup, restoreDefaults,
   expandEnv, pathExists, itemOk, uid, newItem,
   configDir, configFile, PALETTE,
 };

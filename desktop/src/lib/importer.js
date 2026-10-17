@@ -25,7 +25,13 @@ const VIDEO_EXT = ['.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm'];
 const AUDIO_EXT = ['.mp3', '.flac', '.wav', '.m4a', '.aac', '.ogg', '.ape'];
 const ARC_EXT = ['.zip', '.7z', '.rar', '.tar', '.gz'];
 
-const MAX_ITEMS = 50;
+/**
+ * 单次拖入的上限。
+ * 原来是 50：那时图标是串行提取、也没有进度条，上百项就是"卡死没反应"。
+ * 现在主进程 6 路并发 + 逐项进度，放开到 500 仍然可控（再多的场景更适合用「扫描导入」）。
+ * ★ 超出的部分不再静默丢弃：buildItems 会回传 truncated，界面明确告诉用户。
+ */
+const MAX_ITEMS = 500;
 
 /** 快捷方式常见的后缀噪声，Windows 生成时爱加 */
 const NAME_NOISE = [/[-—]\s*快捷方式$/i, /\s*-\s*shortcut$/i, /\.lnk$/i, /\.url$/i];
@@ -181,7 +187,7 @@ const keyOf = it => `${it.type}|${String(it.path || '').toLowerCase()}`;
  * @param {string[]} opt.paths    本地路径（文件 / 目录）
  * @param {string[]} opt.urls     网址
  * @param {object[]} opt.existing 现有启动项，用于去重
- * @returns {Promise<{items:object[], skipped:string[], failed:string[]}>}
+ * @returns {Promise<{items:object[], skipped:string[], failed:string[], truncated:number}>}
  */
 async function buildItems({ paths = [], urls = [], existing = [] } = {}) {
   const items = [];
@@ -265,7 +271,11 @@ async function buildItems({ paths = [], urls = [], existing = [] } = {}) {
     }
   }
 
-  return { items: items.slice(0, MAX_ITEMS), skipped, failed };
+  return {
+    items: items.slice(0, MAX_ITEMS),
+    truncated: Math.max(0, items.length - MAX_ITEMS),
+    skipped, failed,
+  };
 }
 
 module.exports = {

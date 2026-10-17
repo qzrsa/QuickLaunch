@@ -11,12 +11,13 @@ try { webUtils = require('electron').webUtils; } catch { /* 老版本或沙箱�
 // ★ 主进程 webContents.send 的**每一个**频道都必须在这里登记，否则 API.on 会静默
 //   返回一个空函数：探针看起来"跑了"，其实渲染层一个字都没收到（perf-probe 栽过）。
 //   smoke.js 有一条断言会拿 main.js 里所有 send('ql:…') 跟这张表逐一对账。
-const EVENTS = ['ql:win-state', 'ql:focus-search', 'ql:config-changed', 'ql:settings-changed', 'ql:menu-probe', 'ql:import-probe', 'ql:drag-probe', 'ql:group-probe', 'ql:info-probe', 'ql:rail-probe', 'ql:select-probe', 'ql:second-instance', 'ql:second-probe', 'ql:update-state', 'ql:update-available', 'ql:update-probe', 'ql:perf-probe'];
+const EVENTS = ['ql:win-state', 'ql:focus-search', 'ql:config-changed', 'ql:settings-changed', 'ql:menu-probe', 'ql:import-probe', 'ql:import-progress', 'ql:drag-probe', 'ql:group-probe', 'ql:info-probe', 'ql:rail-probe', 'ql:select-probe', 'ql:second-instance', 'ql:second-probe', 'ql:update-state', 'ql:update-available', 'ql:update-probe', 'ql:perf-probe'];
 
 contextBridge.exposeInMainWorld('ql', {
   /* 配置 */
   getConfig: () => ipcRenderer.invoke('ql:config:get'),
   saveConfig: cfg => ipcRenderer.invoke('ql:config:save', cfg),
+  restoreDefaults: () => ipcRenderer.invoke('ql:config:restore-defaults'),
 
   /* 动作 */
   run: item => ipcRenderer.invoke('ql:run', item),

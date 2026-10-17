@@ -59,6 +59,7 @@ const state = {
   dlgCancel: null,
   dropGroupId: null,
   dropDryRun: false,
+  importingDrop: false,   // 拖入导入进行中：再拖一次直接忽略，免得同一批导两遍
   drag: null,
   suppressClick: false,
   dragDryRun: false,
@@ -1299,6 +1300,51 @@ function dropTargetInfo(e) {
 function showDropVeil() { const el = $('#dropVeil'); if (el) el.hidden = false; }
 function hideDropVeil() { const el = $('#dropVeil'); if (el) el.hidden = true; }
 
+/* ---- 拖入导入进度（v1.4.9）----
+   拖几十上百项时，主进程要逐项解析快捷方式、提图标，没有反馈就像卡死。
+   解析阶段给不定长滑块，提图标阶段给真实百分比（主进程 ql:import-progress 推过来）。 */
+function setDropProgress(phase, done, total) {
+  const box = $('#dropProgress');
+  if (!box) return;
+  box.hidden = false;
+  const bar = $('#dropBar');
+  const txt = $('#dropProgressText');
+  const pctEl = $('#dropProgressPct');
+  if (phase === 'resolve') {
+    if (bar) { bar.classList.add('indeterminate'); bar.style.width = ''; }
+    if (txt) txt.textContent = total > 1 ? `正在解析 ${total} 项…` : '正在解析…';
+    if (pctEl) pctEl.textContent = '';
+    return;
+  }
+  if (bar) { bar.classList.remove('indeterminate'); }
+  const pct = total ? Math.round((done / total) * 100) : 0;
+  if (bar) bar.style.width = pct + '%';
+  if (txt) {
+    txt.textContent = phase === 'done'
+      ? `已完成 ${total} 项`
+      : `正在导入并提取图标… ${done} / ${total}`;
+  }
+  if (pctEl) pctEl.textContent = pct + '%';
+}
+
+function showDropProgress() {
+  const veil = $('#dropVeil');
+  if (!veil) return;
+  veil.hidden = false;
+  veil.classList.add('is-importing');
+  const t = $('#dropTitle'); if (t) t.textContent = '正在导入…';
+  const s = $('#dropSub'); if (s) s.textContent = '请稍候，正在解析快捷方式并提取图标';
+  const ic = $('#dropIc'); if (ic) ic.textContent = '📥';
+  setDropProgress('resolve', 0, 0);
+}
+
+function hideDropProgress() {
+  const veil = $('#dropVeil');
+  if (veil) { veil.hidden = true; veil.classList.remove('is-importing'); }
+  const box = $('#dropProgress');
+  if (box) box.hidden = true;
+}
+
 function markDropTarget(target) {
   $$('.nav-item.drop-on').forEach(el => el.classList.remove('drop-on'));
   state.dropGroupId = target ? target.id : null;
@@ -1334,10 +1380,25 @@ async function handleDrop(e) {
     toast('bad', '没有识别到可导入的内容', '支持快捷方式、程序、文件夹与网址');
     return;
   }
+  // 导入中又拖进来一批：直接忽略（否则两批同时写配置，还会互相抢进度条）
+  if (state.importingDrop) return;
 
   console.log('[drop] 识别到', paths.length, '个路径 /', urls.length, '个网址');
 
-  const r = await API.importDropped({ paths, urls, groupId: target ? target.id : null, dryRun: dry });
+  state.importingDrop = true;
+  if (!dry) showDropProgress();
+
+  let r;
+  try {
+    r = await API.importDropped({ paths, urls, groupId: target ? target.id : null, dryRun: dry });
+  } catch (err) {
+    state.importingDrop = false;
+    hideDropProgress();
+    return toast('bad', '导入失败', (err && err.message) || '');
+  }
+  state.importingDrop = false;
+  hideDropProgress();
+
   if (!r.ok) return toast('bad', '导入失败', r.msg || '');
   if (r.dryRun) {
     console.log('[drop] 探针模式：已送达主进程，未写入配置');
@@ -1363,6 +1424,7 @@ async function handleDrop(e) {
   const tail = [];
   if (r.skipped && r.skipped.length) tail.push(`跳过重复 ${r.skipped.length} 项`);
   if (r.failed && r.failed.length) tail.push(`无法识别 ${r.failed.length} 项`);
+  if (r.truncated) tail.push(`超出上限 ${r.truncated} 项未导入`);
   toast('ok', `已导入 ${r.added} 个启动项`,
     `分组：${r.groupName || '拖入的快捷方式'}${tail.length ? ' · ' + tail.join(' · ') : ''}`);
 }
@@ -1860,6 +1922,31 @@ function bindUpdate() {
     if (!dir) return;
     API.openFolder(dir).then(r => { if (!r || !r.ok) toast('bad', '打不开更新目录'); });
   });
+}
+
+/**
+ * 「恢复默认分组」：误删「文件与目录 / 系统工具 / 开发 / 常用网站」之后的后悔药。
+ * ★ 只补不删（主进程 store.restoreDefaults）：用户自建的分组、改过的名字、
+ *   收藏与使用次数都不动 —— 恢复是加法，不是重置。
+ */
+async function restoreDefaultGroups() {
+  const yes = await confirmDialog({
+    icon: '♻️',
+    title: '恢复默认分组？',
+    text: '会把缺失的默认分组与默认启动项补回来。不会删除、重命名或修改你现有的任何分组和启动项。',
+    okText: '恢复',
+    danger: false,
+  });
+  if (!yes) return;
+
+  const r = await API.restoreDefaults();
+  if (!r || r.ok === false) return toast('bad', '恢复失败', (r && r.msg) || '');
+  if (!r.groupsAdded && !r.itemsAdded) {
+    return toast('info', '已经是默认状态', '没有缺失的默认分组或启动项');
+  }
+  await refresh();
+  renderStartGroupOptions(state.config.settings.startGroup);
+  toast('ok', `已补回 ${r.itemsAdded} 个默认启动项`, r.groups.join('、'));
 }
 
 async function saveSettings() {
@@ -2376,6 +2463,8 @@ function bind() {
   $('#btnSetSave').addEventListener('click', saveSettings);
   // 手动修图标：只补"占位图 / 网址还挂着 emoji"那批，不会冲掉用户自己挑的表情/图片
   $('#btnReextractIcons').addEventListener('click', () => { healAllIcons(); });
+  // 恢复默认分组：误删「文件与目录 / 系统工具 / 开发 / 常用网站」的后悔药（只补不删）
+  $('#btnRestoreDefaults').addEventListener('click', () => { restoreDefaultGroups(); });
 
   /* 「关于」的两个入口：设置页脚的按钮，和侧栏底部那条状态行。
      状态行只在桌面版可点 —— 预览模式没有主进程，点开也拿不到真信息。 */
@@ -2468,6 +2557,12 @@ function bind() {
   API.on('ql:win-state', p => setWinMaxIcon(p && p.maximized));
   API.on('ql:focus-search', () => setTimeout(() => { $('#q').focus(); $('#q').select(); }, 60));
   API.on('ql:config-changed', () => refresh());
+
+  /* 拖入导入进度：主进程逐项提图标时推百分比（见 main.js ql:import） */
+  API.on('ql:import-progress', p => {
+    if (!p || !state.importingDrop) return;
+    setDropProgress(p.phase || 'icons', p.done || 0, p.total || 0);
+  });
   API.on('ql:settings-changed', p => {
     if (!p) return;
     Object.assign(state.config.settings, p);
@@ -2645,6 +2740,37 @@ function createMockBridge() {
     __mock: true,
     getConfig: async () => { cfg.groups.forEach(g => g.items.forEach(i => { i._exists = true; })); return clone(cfg); },
     saveConfig: async c => { cfg = clone(c); save(); return { ok: true }; },
+    /* 预览模式：按 demoConfig 的默认分组"只补不删"，与桌面版语义一致 */
+    restoreDefaults: async () => {
+      const defs = demoConfig().groups;
+      let groupsAdded = 0, itemsAdded = 0;
+      const touched = [];
+      for (const d of defs) {
+        let g = cfg.groups.find(x => x.id === d.id);
+        if (!g) {
+          const ng = clone(d);
+          cfg.groups.push(ng);
+          groupsAdded++;
+          itemsAdded += ng.items.length;
+          touched.push(`${ng.name}（+${ng.items.length}）`);
+          continue;
+        }
+        if (!Array.isArray(g.items)) g.items = [];
+        const key = i => `${i.type}|${String(i.path || '').toLowerCase()}`;
+        const have = new Set(g.items.map(key));
+        let n = 0;
+        for (const di of d.items) {
+          const k = key(di);
+          if (have.has(k)) continue;
+          g.items.push(clone(di));
+          have.add(k);
+          n++;
+        }
+        if (n) { itemsAdded += n; touched.push(`${g.name}（+${n}）`); }
+      }
+      save();
+      return { ok: true, groupsAdded, itemsAdded, groups: touched };
+    },
     run: async item => ({ ok: true, msg: `预览模式：不会真正启动 ${item.name || ''}` }),
     openFolder: async () => ({ ok: true, msg: '预览模式' }),
     pick: async () => '',

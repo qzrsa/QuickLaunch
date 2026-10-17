@@ -838,6 +838,26 @@ function registerIpc() {
     }
   });
 
+  /**
+   * 恢复默认分组 / 默认启动项（「全选误删」的后悔药）。
+   * ★ 只补不删：store.restoreDefaults 只追加缺失的分组与默认项，
+   *   用户自建分组、改过的名字、收藏与使用次数都不动。
+   */
+  ipcMain.handle('ql:config:restore-defaults', () => {
+    try {
+      const cfg = store.load();
+      const r = store.restoreDefaults(cfg);
+      if (r.groupsAdded || r.itemsAdded) {
+        store.save(cfg);
+        buildTray();
+        try { win?.webContents.send('ql:config-changed'); } catch { /* 窗口没了就算了 */ }
+      }
+      return Object.assign({ ok: true }, r);
+    } catch (e) {
+      return { ok: false, msg: e.message };
+    }
+  });
+
   ipcMain.handle('ql:run', (_e, item) => runAndBump(item));
   ipcMain.handle('ql:folder', (_e, p) => actions.openContaining(p));
   ipcMain.handle('ql:pick', (e, kind) => {
@@ -911,13 +931,20 @@ function registerIpc() {
   });
 
   /* 拖入导入 */
-  ipcMain.handle('ql:import', async (_e, payload) => {
+  ipcMain.handle('ql:import', async (event, payload) => {
     const { paths = [], urls = [], groupId = null, dryRun = false } = payload || {};
     if (!paths.length && !urls.length) return { ok: true, added: 0, skipped: [], failed: [] };
 
+    // 进度：解析（.lnk 要起一次 PowerShell 批量读目标，这一步最慢）→ 提图标 → 写盘。
+    // 拖入上百项时没有进度，用户会以为程序卡死。
+    const emit = p => { try { event.sender.send('ql:import-progress', p); } catch { /* 窗口没了 */ } };
+    const inputTotal = paths.length + urls.length;
+
     const cfg = store.load();
     const existing = cfg.groups.flatMap(g => g.items || []);
+    emit({ phase: 'resolve', done: 0, total: inputTotal });
     const r = await importer.buildItems({ paths, urls, existing });
+    emit({ phase: 'resolve', done: inputTotal, total: inputTotal });
 
     if (dryRun) {
       console.log('[import-probe] 目标分组 =', groupId || '(未指定 → 拖入的快捷方式)');
@@ -927,11 +954,12 @@ function registerIpc() {
       }))));
       console.log('[import-probe] 重复跳过 =', JSON.stringify(r.skipped),
         ' 无法识别 =', JSON.stringify(r.failed));
-      return { ok: true, dryRun: true, added: r.items.length, skipped: r.skipped, failed: r.failed };
+      return { ok: true, dryRun: true, added: r.items.length, skipped: r.skipped, failed: r.failed, truncated: r.truncated || 0 };
     }
 
     if (!r.items.length) {
-      return { ok: true, added: 0, skipped: r.skipped, failed: r.failed };
+      emit({ phase: 'done', done: 0, total: 0 });
+      return { ok: true, added: 0, skipped: r.skipped, failed: r.failed, truncated: r.truncated || 0 };
     }
 
     // 指定了分组就用它；否则落到「拖入的快捷方式」（没有则创建）
@@ -942,25 +970,46 @@ function registerIpc() {
     }
     if (!g) g = store.ensureGroup(cfg, 'dropped', '拖入的快捷方式', '📥');
 
-    const ids = [];
-    // 新项插到最前，拖完立刻能看见
-    for (const it of r.items.slice().reverse()) {
-      const created = store.newItem(it.name, it.icon, it.type, it.path, {
-        args: it.args || '', cwd: it.cwd || '', desc: it.desc || '',
-      });
-      // 图标：`.url` 用 IconFile 指的图片 → 网址按 URL 去桌面/开始菜单找 → 应用类提程序自带 ICO。
-      // 全都失败才保持 emoji 回退（🌐 就是"没找到真图标"的兜底，不是错误）。
-      if (!isImageIcon(created.icon)) {
-        let d = it._iconFile ? urlIconFileToDataUrl(it._iconFile, 128) : '';
-        if (!d && created.type === 'url') d = iconForUrl(created.path, 128);
-        if (!d && created.type === 'app' && created.path) d = await fileDefaultIconToDataUrl(created.path, 128);
-        if (d) created.icon = d;
+    const total = r.items.length;
+    emit({ phase: 'icons', done: 0, total });
+    const slots = new Array(total);
+    let cursor = 0;
+    let doneCount = 0;
+
+    // 6 路并发提图标（与扫描导入同一套思路）：串行时上百项要等很久。
+    // 先占好槽位再回填，顺序与候选列表严格一致。
+    const worker = async () => {
+      for (;;) {
+        const idx = cursor++;
+        if (idx >= total) return;
+        const it = r.items[idx];
+        const created = store.newItem(it.name, it.icon, it.type, it.path, {
+          args: it.args || '', cwd: it.cwd || '', desc: it.desc || '',
+        });
+        // 图标：`.url` 用 IconFile 指的图片 → 网址按 URL 去桌面/开始菜单找 → 应用类提程序自带 ICO。
+        // 全都失败才保持 emoji 回退（🌐 就是"没找到真图标"的兜底，不是错误）。
+        if (!isImageIcon(created.icon)) {
+          let d = it._iconFile ? urlIconFileToDataUrl(it._iconFile, 128) : '';
+          if (!d && created.type === 'url') d = iconForUrl(created.path, 128);
+          if (!d && created.type === 'app' && created.path) d = await fileDefaultIconToDataUrl(created.path, 128);
+          if (d) created.icon = d;
+        }
+        slots[idx] = created;
+        doneCount++;
+        emit({ phase: 'icons', done: doneCount, total });
       }
-      g.items.unshift(created);
-      ids.push({ id: created.id, groupId: g.id });
-    }
+    };
+    await Promise.all(Array.from({ length: Math.min(6, total) }, worker));
+
+    // unshift(...slots) 按原顺序插到最前，拖完立刻能看见
+    g.items.unshift(...slots);
+    const ids = slots.map(created => ({ id: created.id, groupId: g.id }));
     store.save(cfg);
-    return { ok: true, added: ids.length, ids, groupId: g.id, groupName: g.name, skipped: r.skipped, failed: r.failed };
+    emit({ phase: 'done', done: total, total });
+    return {
+      ok: true, added: ids.length, ids, groupId: g.id, groupName: g.name,
+      skipped: r.skipped, failed: r.failed, truncated: r.truncated || 0,
+    };
   });
 
   ipcMain.handle('ql:settings:set', (_e, patch) => {

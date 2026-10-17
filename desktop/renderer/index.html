@@ -292,6 +292,11 @@
         </div>
 
         <div class="field">
+          <label>恢复默认 <span class="hint">误删了「文件与目录 / 系统工具 / 开发 / 常用网站」时，把缺的分组和默认项补回来</span></label>
+          <button class="btn sm" id="btnRestoreDefaults">恢复默认分组</button>
+        </div>
+
+        <div class="field">
           <label>启动时打开 <span class="hint">每次打开程序停在这个分组，不必固定是「全部」</span></label>
           <select id="sStartGroup"></select>
         </div>
@@ -432,6 +437,14 @@
     <div class="dv-ic" id="dropIc">📥</div>
     <b id="dropTitle">松开即可导入</b>
     <span id="dropSub">支持快捷方式、程序、文件夹与网址</span>
+    <!-- 导入进度：拖入几十上百项时逐项提图标，没有进度会让人以为卡死 -->
+    <div class="dv-progress" id="dropProgress" hidden>
+      <div class="dv-bar"><i id="dropBar"></i></div>
+      <div class="dv-txt">
+        <span id="dropProgressText">正在导入…</span>
+        <span id="dropProgressPct"></span>
+      </div>
+    </div>
   </div>
 </div>
 
