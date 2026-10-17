@@ -289,7 +289,7 @@ function renderNav() {
   rows.push('<div class="nav-label">分组</div>');
   state.config.groups.forEach(g => {
     rows.push(`<button class="nav-item ${state.active === g.id ? 'active' : ''}"
-        data-nav="${esc(g.id)}" style="--c:${esc(g.color || PALETTE[0])}" title="${esc(g.name)}">
+        data-nav="${esc(g.id)}" draggable="true" style="--c:${esc(g.color || PALETTE[0])}" title="${esc(g.name)}">
       <i class="dot"></i><span class="nm">${esc(g.name)}</span>
       <span class="cnt">${g.items.length}</span>
     </button>`);
@@ -304,6 +304,23 @@ function renderNav() {
 function navRow(id, ic, name, count) {
   return `<button class="nav-item ${state.active === id ? 'active' : ''}" data-nav="${id}">
     <i class="ic">${ic}</i><span class="nm">${esc(name)}</span><span class="cnt">${count}</span></button>`;
+}
+
+/** 拖动左侧分组改变顺序（v1.4.7）。
+ *  `state.config.groups` 的数组顺序就是侧栏显示顺序，splice 移动即可；
+ *  落盘后主进程的 config-changed 广播会再 refresh 一次（与新建/删除分组同一套）。 */
+function reorderGroup(fromId, toId, before) {
+  const gs = state.config.groups;
+  const from = gs.findIndex(x => x.id === fromId);
+  const to = gs.findIndex(x => x.id === toId);
+  if (from < 0 || to < 0 || from === to) return;
+  const [moving] = gs.splice(from, 1);
+  let at = gs.findIndex(x => x.id === toId);
+  if (!before) at += 1;
+  gs.splice(at, 0, moving);
+  renderNav();                 // 立即更新侧栏，先给反馈
+  render({ noAnim: true });    // 「全部」视图下主区的分组 section 顺序也跟着变
+  API.saveConfig(state.config).catch(() => { /* 没存上也不影响本次使用 */ });
 }
 
 /* ------------------------------------------------------------ 主区 */
@@ -2040,6 +2057,63 @@ function bind() {
     if (state.editMode && state.picked.size) { state.picked.clear(); }
     rememberGroup(state.active);
     render();
+  });
+
+  /* 侧栏分组拖动排序（v1.4.7）：只有真实分组能拖、能当落点，
+     「全部/最近/收藏」三个虚拟视图和「新建分组」都不参与 —— 顺序就是 groups 数组顺序。 */
+  let dragNavId = null;
+  const navGroupAt = e => {
+    const btn = e.target.closest('[data-nav]');
+    if (!btn) return null;
+    return state.config.groups.find(g => g.id === btn.dataset.nav) || null;
+  };
+  const clearDropLine = () => {
+    $$('.nav-item.drop-before, .nav-item.drop-after').forEach(el =>
+      el.classList.remove('drop-before', 'drop-after'));
+  };
+
+  $('#nav').addEventListener('dragstart', e => {
+    const g = navGroupAt(e);
+    if (!g) { e.preventDefault(); return; }        // 虚拟视图 / 新建分组不许拖
+    dragNavId = g.id;
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = 'move';
+      try { e.dataTransfer.setData('text/plain', g.id); } catch { /* Firefox 需要，缺了不触发拖 */ }
+    }
+    // 源行半透明：等下一帧再上，否则拖影会带上这个透明度
+    const el = e.target.closest('[data-nav]');
+    requestAnimationFrame(() => el && el.classList.add('dragging'));
+  });
+
+  $('#nav').addEventListener('dragover', e => {
+    if (!dragNavId) return;
+    const g = navGroupAt(e);
+    clearDropLine();
+    if (!g || g.id === dragNavId) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+    const el = e.target.closest('[data-nav]');
+    const rect = el.getBoundingClientRect();
+    el.classList.add((e.clientY - rect.top) < rect.height / 2 ? 'drop-before' : 'drop-after');
+  });
+
+  $('#nav').addEventListener('drop', e => {
+    const fromId = dragNavId;
+    const g = navGroupAt(e);
+    dragNavId = null;
+    clearDropLine();
+    $$('.nav-item.dragging').forEach(el => el.classList.remove('dragging'));
+    if (!fromId || !g || g.id === fromId) return;
+    e.preventDefault();
+    const el = e.target.closest('[data-nav]');
+    const rect = el.getBoundingClientRect();
+    reorderGroup(fromId, g.id, (e.clientY - rect.top) < rect.height / 2);
+  });
+
+  $('#nav').addEventListener('dragend', () => {
+    dragNavId = null;
+    clearDropLine();
+    $$('.nav-item.dragging').forEach(el => el.classList.remove('dragging'));
   });
 
   /* 搜索 */

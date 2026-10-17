@@ -788,6 +788,14 @@ body.edit-mode .content { padding-bottom: 108px; }
   box-shadow: inset 0 0 0 1.5px var(--accent);
 }
 
+/* 侧栏分组拖动排序（v1.4.7）：源行半透明 + 目标上/下缘画一条插入线。
+   ★ 用 inset box-shadow 画线，别用 ::before/::after —— 分组行选中态已占用了 ::before（左竖条），
+     再叠一个伪元素会被覆盖，插入线就没了。 */
+.nav-item[draggable="true"] { cursor: grab; }
+.nav-item.dragging { opacity: .45; }
+.nav-item.drop-before { box-shadow: inset 0 2px 0 0 var(--accent); }
+.nav-item.drop-after  { box-shadow: inset 0 -2px 0 0 var(--accent); }
+
 /* 新导入的卡片闪一下，便于定位 */
 .card.flash { animation: flashCard 1.5s var(--ease); }
 @keyframes flashCard {

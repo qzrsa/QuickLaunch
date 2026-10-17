@@ -575,6 +575,28 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
   ok(/pinyinCache/.test(searchJs) && /Map/.test(searchJs), '拼音结果按 name 缓存（搜索时上千项不卡）');
   ok(/搜索名称、路径或描述，拼音也行/.test(searchHtml), '搜索框占位文案提示了支持拼音');
 
+  /* ---------------------------------------------------------- 侧栏分组拖动排序（v1.4.7） */
+  section('侧栏分组：拖动改变顺序');
+  const navCss = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'style.css'), 'utf8');
+  ok(/function reorderGroup/.test(searchJs), '渲染层有 reorderGroup()（splice 移动分组顺序）');
+  ok(/const gs = state\.config\.groups/.test(searchJs) && /gs\.splice/.test(searchJs),
+    '★ 排序就是改 state.config.groups 数组顺序（splice 移动，别无第二份数据源）');
+  ok(/draggable="true"/.test(searchJs), 'renderNav 给分组行加了 draggable="true"');
+  ok((searchJs.match(/draggable="true"/g) || []).length === 1,
+    '★ draggable 只出现在真实分组那一行（「全部/最近/收藏」和「新建分组」不可拖）');
+  ok(/addEventListener\('dragstart'/.test(searchJs) && /addEventListener\('dragover'/.test(searchJs)
+    && /addEventListener\('drop'/.test(searchJs) && /addEventListener\('dragend'/.test(searchJs),
+    '★ 四个拖拽事件都挂上了（dragstart / dragover / drop / dragend）');
+  ok(/const navGroupAt = e =>/.test(searchJs) && /state\.config\.groups\.find\(g => g\.id === btn\.dataset\.nav\)/.test(searchJs),
+    '★ navGroupAt 只在真实分组里找（虚拟视图 / 新建分组当不了拖拽落点）');
+  ok(/setData\('text\/plain'/.test(searchJs), '★ dragstart 里 setData 了（Firefox 缺这个不触发拖拽）');
+  ok(/requestAnimationFrame/.test(searchJs) && /\.dragging/.test(searchJs),
+    '拖影半透明等下一帧再上（避免拖影带上透明度）');
+  ok(/reorderGroup\(fromId, g\.id/.test(searchJs), 'drop 时调用 reorderGroup(fromId, g.id, 上半/下半)');
+  ok(/\.drop-before/.test(navCss) && /\.drop-after/.test(navCss), '★ CSS 有 drop-before / drop-after 两条插入线');
+  ok(/\.nav-item\[draggable="true"\]\s*\{\s*cursor:\s*grab/.test(navCss), '可拖分组鼠标悬停是抓手 cursor:grab');
+  ok(/\.nav-item\.dragging\s*\{\s*opacity:\s*\.45/.test(navCss), '拖拽中源行半透明（opacity .45）');
+
   /* ---------------------------------------------------------- 图标提取 */
   /* ---- 从 PE 资源里抠图标（v1.4.5 的核心：不再信 app.getFileIcon）---- */
   section('exeicon 从 PE 里抠图标');
