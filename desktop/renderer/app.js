@@ -348,13 +348,43 @@ function viewGroups() {
   return state.config.groups.filter(g => g.id === state.active);
 }
 
+// 拼音搜索（v1.4.6）：中文名 → 全拼 + 首字母，两个都拿来匹配。
+// ★ 依赖 index.html 里先引入的 pinyin-pro（window.pinyinPro），只在名字含中文时才转换，
+//   结果按 name 缓存（名字不常变，搜索时上千项反复问，不缓存会卡）。
+const pinyinCache = new Map();
+function pinyinKeys(name) {
+  if (!name || !window.pinyinPro) return '';
+  let k = pinyinCache.get(name);
+  if (k !== undefined) return k;
+  k = '';
+  if (/[\u4e00-\u9fff]/.test(name)) {
+    try {
+      const opt = { toneType: 'none', type: 'string' };
+      const full = window.pinyinPro.pinyin(name, opt).replace(/\s+/g, '').toLowerCase();
+      const first = window.pinyinPro.pinyin(name, { ...opt, pattern: 'first' })
+        .replace(/\s+/g, '').toLowerCase();
+      k = full + '\u0000' + first;
+    } catch { k = ''; }
+  }
+  pinyinCache.set(name, k);
+  if (pinyinCache.size > 4096) pinyinCache.clear();
+  return k;
+}
+
 function matches(item) {
   if (!state.q) return true;
-  const q = state.q.toLowerCase();
-  return (item.name || '').toLowerCase().includes(q)
-    || (item.path || '').toLowerCase().includes(q)
-    || (item.desc || '').toLowerCase().includes(q)
-    || (item.args || '').toLowerCase().includes(q);
+  const q = state.q.toLowerCase().trim();
+  if (!q) return true;
+  const name = item.name || '';
+  const hay = [
+    name.toLowerCase(),
+    (item.path || '').toLowerCase(),
+    (item.desc || '').toLowerCase(),
+    (item.args || '').toLowerCase(),
+  ];
+  // 拼音只对「纯字母/数字的查询词」有意义：查中文时走 name 本体就够了，别再白白转换拼音
+  if (!/[\u4e00-\u9fff]/.test(q)) hay.push(pinyinKeys(name));
+  return hay.some(h => h.includes(q));
 }
 
 function sortItems(list) {

@@ -544,6 +544,37 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
   ok(!!scReal && scReal.url === 'https://github.com/qzrsa', 'readUrlShortcut 读真实文件');
   ok(urlsc.readUrlShortcut(badUrlP) === null, '不是快捷方式的文件 → null');
 
+  /* ---------------------------------------------------------- 搜索拼音匹配（v1.4.6） */
+  section('搜索：拼音（全拼 / 首字母）匹配中文名');
+  // ★ pinyin-pro 是本地 vendored 的 UMD（renderer/pinyin-pro.js，v3.29.5），
+  //   在 node 里也能 require（走 exports 分支），所以这里能直接验转换结果，
+  //   顺带锁定"库没被换掉 / 全局名没改"。
+  const pinyinPro = require('../renderer/pinyin-pro.js');
+  ok(!!pinyinPro && typeof pinyinPro.pinyin === 'function', 'pinyin-pro 加载成功（UMD）');
+  const pyFull = s => pinyinPro.pinyin(s, { toneType: 'none', type: 'string' }).replace(/\s+/g, '').toLowerCase();
+  const pyFirst = s => pinyinPro.pinyin(s, { toneType: 'none', type: 'string', pattern: 'first' })
+    .replace(/\s+/g, '').toLowerCase();
+  ok(pyFull('记事本') === 'jishiben', '记事本 全拼 = jishiben', pyFull('记事本'));
+  ok(pyFirst('记事本') === 'jsb', '记事本 首字母 = jsb', pyFirst('记事本'));
+  ok(pyFull('微信') === 'weixin' && pyFirst('微信') === 'wx', '微信 = weixin / wx');
+  ok(pyFull('重庆') === 'chongqing', '多音字按常见读音（重庆 = chongqing）', pyFull('重庆'));
+
+  // 渲染层接线（静态对账）：index.html 先引入 pinyin-pro 再引入 app.js；matches 里真的用到它
+  const searchHtml = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'index.html'), 'utf8');
+  const searchJs = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'app.js'), 'utf8');
+  const ppPos = searchHtml.indexOf('pinyin-pro.js');
+  const appPos = searchHtml.indexOf('app.js');
+  ok(ppPos !== -1 && appPos !== -1 && ppPos < appPos,
+    '★ index.html 里 pinyin-pro.js 在 app.js 之前引入（否则 window.pinyinPro 是 undefined）');
+  ok(/function pinyinKeys/.test(searchJs), '渲染层有 pinyinKeys()（名字 → 全拼 + 首字母）');
+  ok(/window\.pinyinPro\.pinyin\(name/.test(searchJs), '★ 用的是 window.pinyinPro（全局名，别手写错）');
+  ok(/pinyinKeys\(name\)/.test(searchJs) && /function matches/.test(searchJs),
+    '★ matches() 里挂了拼音匹配分支');
+  ok(/!\/\[\\u4e00-\\u9fff\]\/\.test\(q\)/.test(searchJs),
+    '★ 查中文时跳过拼音转换（只在纯字母/数字查询词时才转换，省得白算）');
+  ok(/pinyinCache/.test(searchJs) && /Map/.test(searchJs), '拼音结果按 name 缓存（搜索时上千项不卡）');
+  ok(/搜索名称、路径或描述，拼音也行/.test(searchHtml), '搜索框占位文案提示了支持拼音');
+
   /* ---------------------------------------------------------- 图标提取 */
   /* ---- 从 PE 资源里抠图标（v1.4.5 的核心：不再信 app.getFileIcon）---- */
   section('exeicon 从 PE 里抠图标');

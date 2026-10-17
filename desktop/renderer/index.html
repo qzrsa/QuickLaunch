@@ -44,7 +44,7 @@
       <label class="search nodrag">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
              stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
-        <input id="q" type="text" placeholder="搜索名称、路径或描述…" autocomplete="off" spellcheck="false">
+        <input id="q" type="text" placeholder="搜索名称、路径或描述，拼音也行…" autocomplete="off" spellcheck="false">
         <kbd>/</kbd>
       </label>
 
@@ -473,6 +473,8 @@
   <span id="trashTxt">拖到这里删除</span>
 </div>
 
+<!-- pinyin-pro v3.29.5（本地 vendored，UMD 全局 window.pinyinPro）：搜索框拼音（全拼/首字母）匹配中文名 -->
+<script src="pinyin-pro.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
