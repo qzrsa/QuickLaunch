@@ -168,9 +168,9 @@ npm run release      # = check + test + verify:apply + 打三种产物 + 压绿�
 
 ```
 dist/
-├── QuickLaunch-Setup-1.2.1.exe
-├── QuickLaunch-Portable-1.2.1.exe
-├── QuickLaunch-Green-1.2.1.zip
+├── QuickLaunch-Setup-1.3.0.exe
+├── QuickLaunch-Portable-1.3.0.exe
+├── QuickLaunch-Green-1.3.0.zip
 ├── update.json              # 更新清单（CI 里由 make-update-manifest 生成并随 Release 发布）
 ├── QuickLaunch-Delta-*.bin  # 差量包（同上）
 └── win-unpacked/            # 绿色版的原始目录
@@ -191,10 +191,10 @@ npm run pack:green       # 把 win-unpacked 压成绿色版 zip
 （单文件便携版已移出 CI，理由见上）：
 
 ```bash
-git tag -a v1.2.1 -m "v1.2.1 · 一句话概括" -m "
+git tag -a v1.3.0 -m "v1.3.0 · 一句话概括" -m "
 - 改了什么，就写在这儿
 - 用户看得懂的话，不是 commit 标题的堆砌"
-git push origin v1.2.1        # ← 必须推 tag 名，推 main 不会顺带推 tag
+git push origin v1.3.0        # ← 必须推 tag 名，推 main 不会顺带推 tag
 ```
 
 **tag 的 message 就是 Release 发布说明**，CI 会 `git tag -l --format='%(contents)'` 取出来放到
