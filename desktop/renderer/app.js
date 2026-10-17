@@ -986,7 +986,8 @@ async function batchDelete() {
 
 /* ------------------------------------------------------------ 长按拖动排序 */
 
-const HOLD_MS = 1500;         // 长按多久进入拖动模式
+const HOLD_MS = 1500;         // 普通模式：长按多久进入拖动模式
+const HOLD_MS_EDIT = 300;     // 多选模式：点卡片是勾选，想拖动只需按住 0.3 秒
 const MOVE_TOLERANCE = 8;     // 长按期间允许的手抖幅度（px）
 // 拖动时底部会预留一条「死区」放垃圾桶（CSS 里 body.card-dragging .content 的 margin-bottom）。
 // 这条带子里永远没有卡片，所以只有指针进到条内才可能判定为删除 ——
@@ -1014,23 +1015,38 @@ function cancelHold(reason) {
   hold = null;
 }
 
+/** 这张卡片该按住多久才进拖动模式；返回 0 = 这里不启动拖动。
+ *
+ *  - 普通模式：一律 1.5 秒。★ 即使当前网格**不能排序**（全部/最近/收藏视图），
+ *    也要能长按 —— 那时的拖动是「拖到底部垃圾桶删除」，不能因为没有 data-gid 就禁掉。
+ *  - 多选模式：点卡片是「勾选」，所以只在**真能排序**的网格里启用，且只要 0.3 秒
+ *    （用户要求）。不能排序的地方返回 0，勾选保持零延迟，不会先卡 0.3 秒。
+ */
+function holdMsFor(card) {
+  if (!state.editMode) return HOLD_MS;
+  return (!state.q && sortableGidOf(card)) ? HOLD_MS_EDIT : 0;
+}
+
 function onGridPointerDown(e) {
-  if (state.editMode) return;                    // 编辑模式下长按不做拖动排序
   if (e.button !== 0) return;                    // 只认左键
   const card = e.target.closest('.card');
   if (!card || card.dataset.add || !card.dataset.id) return;
   if (e.target.closest('.act')) return;          // 右上角快捷按钮不参与长按
 
+  // ★ v1.5.0：多选模式下也允许拖动排序（按住 0.3 秒）。这里不再按 editMode 直接 return。
+  const holdMs = holdMsFor(card);
+  if (!holdMs) return;
+
   cancelHold('又按下了另一张卡片');
-  card.style.setProperty('--hold', HOLD_MS + 'ms');
+  card.style.setProperty('--hold', holdMs + 'ms');
   card.classList.add('holding');
   const h = {
     card, id: card.dataset.id, x0: e.clientX, y0: e.clientY,
     lastX: e.clientX, lastY: e.clientY, timer: null,
   };
-  h.timer = setTimeout(() => { if (hold === h) startDrag(h); }, HOLD_MS);
+  h.timer = setTimeout(() => { if (hold === h) startDrag(h); }, holdMs);
   hold = h;
-  if (state.probeMode) console.log('[hold] 开始长按', card.querySelector('h3')?.textContent, '@', e.clientX, e.clientY);
+  if (state.probeMode) console.log('[hold] 开始长按', card.querySelector('h3')?.textContent, '@', e.clientX, e.clientY, '时长', holdMs);
 }
 
 function onDocPointerMove(e) {
@@ -1057,6 +1073,11 @@ function onDocPointerUp(e) {
 function startDrag(h) {
   const card = h.card;
 
+  // 多选模式下拖动**只用来排序**（不出垃圾桶）：不能排序的网格压根不进入拖动。
+  // 兜底：onGridPointerDown 已经用 holdMsFor 挡过，这里再挡一次，防止将来改了入口。
+  const gid = sortableGidOf(card);
+  if (state.editMode && !gid) { cancelHold('多选模式：这个网格不支持排序'); return; }
+
   card.classList.remove('holding');
   card.style.removeProperty('--hold');
 
@@ -1067,7 +1088,6 @@ function startDrag(h) {
   const origStyle = card.getAttribute('style') || '';
   const rect = card.getBoundingClientRect();
 
-  const gid = sortableGidOf(card);
   const ph = document.createElement('div');
   ph.className = 'card-slot';
   ph.style.width = rect.width + 'px';
@@ -1081,9 +1101,15 @@ function startDrag(h) {
   card.style.height = rect.height + 'px';
 
   document.body.classList.add('card-dragging');
+  // 多选模式：不出垃圾桶 —— 那里已经有「删除」按钮，免得「想挪个位置」变成「删了一项」。
+  // 底部那条 88px 的死区是给垃圾桶留的，这里也不需要（CSS 用 card-drag-no-trash 覆盖掉）。
+  document.body.classList.toggle('card-drag-no-trash', !!state.editMode);
   const trash = $('#trash');
   let trashRect = null;
-  if (trash) {
+  if (trash && state.editMode) {
+    trash.hidden = true;
+    trash.classList.remove('hot');
+  } else if (trash) {
     trash.hidden = false;
     trash.classList.remove('hot');
     if ($('#trashTxt')) $('#trashTxt').textContent = '拖到这里删除';
@@ -1098,6 +1124,7 @@ function startDrag(h) {
     gid, sortable: !!gid,
     origStyle,
     dx: h.lastX - rect.left, dy: h.lastY - rect.top,
+    x0: h.lastX, y0: h.lastY, moved: false,
     overTrash: false, trashRect,
   };
   hold = null;
@@ -1108,6 +1135,9 @@ function moveDrag(e) {
   const d = state.drag;
   if (!d) return;
   const x = e.clientX, y = e.clientY;
+
+  // 真的挪动过没有：多选模式下「按久了却没动」要当成一次点选（见 endDrag）
+  if (!d.moved && (Math.abs(x - d.x0) > 6 || Math.abs(y - d.y0) > 6)) d.moved = true;
 
   d.card.style.left = (x - d.dx) + 'px';
   d.card.style.top = (y - d.dy) + 'px';
@@ -1159,6 +1189,7 @@ function resetDraggedCard(d) {
   d.card.style.removeProperty('width');
   d.card.style.removeProperty('height');
   document.body.classList.remove('card-dragging');
+  document.body.classList.remove('card-drag-no-trash');
   const trash = $('#trash');
   if (trash) { trash.hidden = true; trash.classList.remove('hot'); }
 }
@@ -1189,6 +1220,13 @@ async function endDrag(e) {
   const ids = grid ? [...grid.querySelectorAll('.card[data-id]')].map(c => c.dataset.id) : [];
   const dry = !!state.dragDryRun;
   resetDraggedCard(d);
+
+  // ★ 多选模式：按住 0.3 秒却**一步都没挪** → 当成一次普通点选。
+  //   否则「手按重了一点」既没排序、也没勾上，用户会觉得卡片点不动。
+  if (state.editMode && !d.moved && !overTrash && !dry && !state.probeMode) {
+    togglePick(d.id);
+    return;
+  }
 
   if (dry || state.probeMode) {
     console.log('[drag-probe] 判定 =', overTrash ? '删除' : '排序',

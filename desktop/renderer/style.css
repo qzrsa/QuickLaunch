@@ -864,6 +864,13 @@ body.card-dragging, body.card-dragging .card { cursor: grabbing; }
    88px 必须与 app.js 里的 STRIP_H 保持一致 —— 命中判定就卡在这条带子里，
    带子里永远没有卡片，所以「想拖到底部一行的卡片」不可能被误判成删除。 */
 body.card-dragging .content { margin-bottom: 88px; }
+/* 多选模式下拖动只用来排序、不出垃圾桶（见 app.js startDrag）：
+   这时既不需要那条死区，也要让底部操作栏停止拦截指针，
+   否则它压住的位置 elementFromPoint 打不到卡片，最后一行没法作为落点。 */
+body.card-dragging.card-drag-no-trash .content { margin-bottom: 0; }
+/* 用 #editBar 而不是类选择器：类选择器会抢先匹配到主规则那一条，
+   让 smoke 里按选择器取 CSS 块的断言读到错的那一条。 */
+body.card-dragging.card-drag-no-trash #editBar { opacity: .3; pointer-events: none; }
 
 /* 底部垃圾桶 */
 .trash {

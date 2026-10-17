@@ -1128,8 +1128,23 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
   ok(/function setEditMode[\s\S]{0,400}state\.picked = new Set\(\)/.test(appSrc),
     '退出/进入编辑模式都清空勾选（防上一轮的隐形残留）');
   ok(/state\.picked\.clear\(\)/.test(appSrc), '切换视图时会清空勾选');
-  ok(/function onGridPointerDown[\s\S]{0,160}state\.editMode\) return/.test(appSrc),
-    '编辑模式下不触发长按拖动');
+
+  /* ---- v1.5.0：多选模式下也能拖动排序（按住 0.3 秒） ---- */
+  const cssEdit = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'style.css'), 'utf8');
+  ok(/const HOLD_MS_EDIT = 300/.test(appSrc), '多选模式长按 0.3 秒即可拖动');
+  ok(/function holdMsFor\(card\)/.test(appSrc), '拖动等待时长统一由 holdMsFor 决定');
+  ok(/if \(!state\.editMode\) return HOLD_MS;/.test(appSrc) && /sortableGidOf\(card\)\) \? HOLD_MS_EDIT : 0/.test(appSrc),
+    '★ 普通模式 1.5s（"全部"视图也要能拖去垃圾桶）；多选模式只在可排序网格里 0.3s');
+  ok(!/function onGridPointerDown[\s\S]{0,220}state\.editMode\) return/.test(appSrc),
+    '★ onGridPointerDown 不再一见多选模式就 return（否则永远拖不动）');
+  ok(/card-drag-no-trash/.test(appSrc) && /card-drag-no-trash/.test(cssEdit),
+    '多选模式拖动不出垃圾桶（只排序，避免"想挪位置"变成"删了一项"）');
+  ok(/state\.editMode && !d\.moved && !overTrash/.test(appSrc) && /togglePick\(d\.id\)/.test(appSrc),
+    '★ 按住够久但一步没挪 → 当成点选（不然按重一点就既没排序也没勾上）');
+  ok(/card-drag-no-trash \.content \{ margin-bottom: 0/.test(cssEdit),
+    '多选拖动时不预留底部 88px 死区');
+  ok(/card-drag-no-trash #editBar \{[^}]*pointer-events: none/.test(cssEdit),
+    '★ 拖动时操作栏不拦截指针（否则它压住的最后一行当不了落点）');
 
   /* ★ 快捷键守卫的两面：Esc 不能被输入框焦点挡住，Delete/Ctrl+A 必须被挡住。
      反面案例：程序启动自动聚焦搜索框 → 右键进编辑模式不移焦点 → 按 Esc 被 typing
