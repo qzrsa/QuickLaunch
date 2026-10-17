@@ -31,17 +31,29 @@ const stub = {
     // 图标提取用的桩：返回一个"非空图片"，用来验证「存在路径 → 能转出 dataURL」这条链路。
     // ★ 真实 Windows 上 getFileIcon 对**不存在**的路径不报错、也不返回空，而是给个通用白板图标 ——
     //   所以 icon.js 自己用 fs.existsSync 挡了一道，这条桩不模拟那个坑，由断言单独覆盖。
-    getFileIcon: async () => ({
-      isEmpty: () => false,
-      getSize: () => ({ width: 32, height: 32 }),
-      resize: () => ({ toDataURL: () => 'data:image/png;base64,ICON' }),
-      toDataURL: () => 'data:image/png;base64,ICON',
-    }),
+    // ★ 记下最后一次调用路径：用来断言「.lnk 是先解析出目标再取图标」。
+    getFileIcon: async p => {
+      stub.__lastIconPath = p;
+      return {
+        isEmpty: () => false,
+        getSize: () => ({ width: 32, height: 32 }),
+        resize: () => ({ toDataURL: () => 'data:image/png;base64,ICON' }),
+        toDataURL: () => 'data:image/png;base64,ICON',
+      };
+    },
   },
   shell: {
     openPath: async () => '',
     openExternal: async () => {},
     showItemInFolder: p => { stub.__lastFolder = p; },
+    // .lnk 解析的桩：真机上是 shell.readShortcutLink(lnk) → {target, icon, ...}。
+    // ★ 真实行为（本机实测 4/4）：对 .lnk 直接 getFileIcon 只会拿到同一张通用图；
+    //   解析出 target 再取，才拿到各自不同的真图标。
+    readShortcutLink: p => {
+      const v = (stub.__lnk || {})[p];
+      if (!v) throw new Error('不是有效的快捷方式');
+      return v;
+    },
   },
   dialog: { showOpenDialog: async () => ({ canceled: true, filePaths: [] }) },
   BrowserWindow: class { static fromWebContents() { return null; } },
@@ -353,9 +365,52 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
   // %ENV% 展开：%SystemRoot%\explorer.exe 应被当成真实存在
   const icEnv = await iconMod.fileDefaultIconToDataUrl('%SystemRoot%\\explorer.exe', 128);
   ok(icEnv === 'data:image/png;base64,ICON', '%ENV% 展开后按存在处理', icEnv);
+
+  /* ---- .lnk 必须解析出目标再取图标 ----
+     1.3.1 的真实事故：开始菜单里 173 个 .lnk 拿到的图标**哈希完全一样**（一张 32×32 通用图），
+     界面上就是"一片空白"，而桌面上都正常。真机实测 4/4 解析出 target 后各不相同。 */
+  ok(typeof iconMod.shortcutTarget === 'function', 'icon.js 暴露 shortcutTarget');
+  const lnkP = mk('desk-shortcut.lnk');
+  const tgtP = mk('target-app.exe');
+  stub.__lnk = { [lnkP]: { target: tgtP, icon: '', args: '' } };
+  ok(iconMod.shortcutTarget(lnkP) === tgtP, '.lnk → 解析出真实目标');
+  stub.__lastIconPath = null;
+  const icLnk = await iconMod.fileDefaultIconToDataUrl(lnkP, 128);
+  ok(icLnk === 'data:image/png;base64,ICON', '.lnk 也能提出图标');
+  ok(stub.__lastIconPath === tgtP,
+    '★ 取图标用的是解析后的目标，不是 .lnk 本身（用 .lnk 只会拿到通用图）');
+  // 目标不存在 → 不采信，退回 .lnk 自身
+  stub.__lnk = { [lnkP]: { target: 'C:\\__nope__\\gone.exe', icon: '' } };
+  ok(iconMod.shortcutTarget(lnkP) === '', '目标不存在 → 不被采信');
+  // 自定义 .ico 优先
+  const icoP = mk('my-custom.ico');
+  stub.__lnk = { [lnkP]: { target: tgtP, icon: icoP } };
+  ok(iconMod.shortcutTarget(lnkP) === icoP, '.lnk 指定了 .ico → 优先用这张');
+  // .dll/.exe 的 icon 字段带 iconIndex，getFileIcon 取不到"那一张" → 忽略，退回目标
+  stub.__lnk = { [lnkP]: { target: tgtP, icon: 'C:\\Windows\\system32\\shell32.dll' } };
+  ok(iconMod.shortcutTarget(lnkP) === tgtP,
+    '.lnk 指定的是 .dll → 忽略（带 iconIndex 取不到），退回目标程序');
+  // 读不了 .lnk → 空且不抛
+  ok(iconMod.shortcutTarget('C:\\__nope__\\broken.lnk') === '', '读不了 .lnk → 返回空且不抛');
+  stub.__lnk = {};
+
   // 渲染层判定函数与主进程同一约定（静态对账：app.js 里必须是正则 data:image 开头）
   const iconAppSrc = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'app.js'), 'utf8');
   const iconHtmlSrc = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'index.html'), 'utf8');
+  const iconStoreSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'lib', 'store.js'), 'utf8');
+  /* ---- 老数据自愈（<=1.3.1 存进去的是通用占位图，光修提取逻辑救不了存量数据）---- */
+  ok(/iconRev: 1/.test(iconStoreSrc), 'store 默认值带 iconRev（一次性自愈的开关）');
+  ok(/function reextractIcons/.test(iconAppSrc), '渲染层有 reextractIcons()（补老数据的图标）');
+  ok(/function placeholderIconItems/.test(iconAppSrc), '渲染层有 placeholderIconItems()（挑出占位图条目）');
+  ok(/\(use\.get\(ic\) \|\| 0\) >= 3/.test(iconAppSrc),
+    '★ 只挑「同一张图被 >=3 个条目共用」的项 —— 用户自己挑的图片不会被冲掉');
+  ok(/isImageIcon\(ic\) && \(use\.get\(ic\) \|\| 0\) >= 3 && \/\\\.lnk\$\/i\.test/.test(iconAppSrc),
+    '★ 自愈只处理 .lnk 条目（通用占位图就是它们贡献的）');
+  ok(/settings\.iconRev = ICON_REV/.test(iconAppSrc), '自愈跑完会写回 iconRev，避免每次启动重扫');
+  ok(/btnReextractIcons/.test(iconHtmlSrc) && /btnReextractIcons/.test(iconAppSrc),
+    '设置里有「重新提取图标」手动入口');
+  ok(/readShortcutLink/.test(fs.readFileSync(path.join(__dirname, '..', 'src', 'lib', 'icon.js'), 'utf8')),
+    '主进程用 shell.readShortcutLink 解析 .lnk（不是硬编码/手写 LNK 解析）');
   ok(/^data:image\//i.test('data:image/png;base64,x'), '数据URL格式约定可被 isImageIcon 识别');
   ok(/function iconHtml/.test(iconAppSrc), '渲染层有 iconHtml()（卡片/弹窗图片图标渲染）');
   ok(/function applyIcon/.test(iconAppSrc), '渲染层有 applyIcon()（选中图片/emoji 后统一刷新预览）');

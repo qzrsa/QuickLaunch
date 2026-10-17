@@ -77,6 +77,71 @@ function iconHtml(item, fallback) {
   return esc(ic || fallback || '');
 }
 
+/* ------------------------------------------------------- 图标自愈 */
+
+/**
+ * 旧版本（≤1.3.1）给 `.lnk` 提图标时**不追目标**，只拿到一张 32×32 的通用占位图 ——
+ * 本机 232 个已安装软件里有 173 个共用同一张，界面上看着就是"图标一片空白"。
+ * 提取逻辑修好之后，老数据还得补一次，但**不能见图就重提**（会冲掉用户自己挑的表情/图片）。
+ *
+ * 判据：同一张图被 ≥3 个 `.lnk` 条目共用 = 一定是系统占位图。
+ * 用户自己挑的 emoji 不是图片；自己选的图片几乎不可能几十个条目共用同一张。
+ * 幂等：真图标重提还是它自己，来回跑不会把数据搅乱。
+ */
+const ICON_REV = 2;
+
+function placeholderIconItems() {
+  const use = new Map();
+  const all = allItems();
+  for (const { i } of all) {
+    const ic = i.icon || '';
+    if (isImageIcon(ic)) use.set(ic, (use.get(ic) || 0) + 1);
+  }
+  return all.filter(({ i }) => {
+    const ic = i.icon || '';
+    return isImageIcon(ic) && (use.get(ic) || 0) >= 3 && /\.lnk$/i.test(i.path || '');
+  });
+}
+
+/**
+ * 重新提取"占位图标"那批条目的图标。
+ * @param {{quiet?:boolean}} [opts] quiet = 没人点按钮，别弹"正在…"和"没有要修的"
+ * @returns {Promise<number>} 真正改掉的个数
+ */
+async function reextractIcons(opts = {}) {
+  if (!state.config.settings) state.config.settings = {};
+  const targets = placeholderIconItems();
+  if (!targets.length) {
+    state.config.settings.iconRev = ICON_REV;
+    await API.saveConfig(state.config);
+    if (!opts.quiet) toast('info', '没有需要修复的图标', '图标都已经是各自程序自己的了');
+    return 0;
+  }
+  if (!opts.quiet) toast('info', `正在重新提取 ${targets.length} 个图标…`, '走一遍开始菜单里的快捷方式');
+
+  let changed = 0;
+  const queue = targets.slice();
+  // 小并发：getFileIcon 是异步的，两百多个串行太慢；并发再大容易把主进程顶住。
+  const worker = async () => {
+    while (queue.length) {
+      const { i } = queue.shift();
+      try {
+        const r = await API.iconDefault(i.path);
+        if (r && r.ok && r.dataUrl && r.dataUrl !== i.icon) { i.icon = r.dataUrl; changed++; }
+      } catch { /* 单个失败不影响其它 */ }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(6, targets.length) }, worker));
+
+  state.config.settings.iconRev = ICON_REV;
+  const saved = await API.saveConfig(state.config);
+  if (!saved.ok) return toast('bad', '图标提取完了但保存失败', saved.msg), 0;
+  if (changed) await refresh();
+  toast('ok', changed ? `已修复 ${changed} 个图标` : '图标都是对的',
+    `检查了 ${targets.length} 个快捷方式`);
+  return changed;
+}
+
 function toast(kind, title, text = '') {
   const icons = { ok: '✓', bad: '!', info: 'i' };
   const el = document.createElement('div');
@@ -2059,6 +2124,8 @@ function bind() {
   });
   $('#btnOpenCfg').addEventListener('click', () => API.openConfigDir());
   $('#btnSetSave').addEventListener('click', saveSettings);
+  // 手动修图标：只补"占位图"那批，不会冲掉用户自己挑的表情/图片
+  $('#btnReextractIcons').addEventListener('click', () => { reextractIcons(); });
 
   /* 「关于」的两个入口：设置页脚的按钮，和侧栏底部那条状态行。
      状态行只在桌面版可点 —— 预览模式没有主进程，点开也拿不到真信息。 */
@@ -2397,6 +2464,11 @@ function createMockBridge() {
     if (state.info && state.info.update) applyUpdateState(state.info.update);
     else await refreshUpdateState();
     await refresh({ initView: true });
+    // 一次性补图标：<=1.3.1 给 .lnk 提的是通用占位图（见 reextractIcons）。
+    // 放到首屏渲染之后、且只跑一次 —— 别让启动变慢，也别每次都重扫。
+    if (Number((state.config.settings || {}).iconRev || 1) < ICON_REV) {
+      setTimeout(() => { reextractIcons({ quiet: true }).catch(() => {}); }, 900);
+    }
     console.log(`[quicklaunch] 渲染层就绪 · ${PREVIEW ? 'preview' : 'desktop'} · `
       + `${state.config.groups.length} 组 / ${allItems().length} 项 · 起始视图 ${state.active}`);
   })();

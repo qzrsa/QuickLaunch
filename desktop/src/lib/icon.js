@@ -62,11 +62,38 @@ function expandEnv(p) {
 }
 
 /**
+ * 解析 `.lnk` 的真实目标文件；解析不出来返回 ''。
+ *
+ * ★★ 为什么必须自己解析：`app.getFileIcon()` 对 `.lnk` **不追目标**，一律返回
+ *   一张 32×32 的通用「应用」图标（实测本机 173 个开始菜单快捷方式拿到**同一个**
+ *   32×32 图，哈希一模一样）。用户看到的就是"图标一片空白/全一样"，而桌面上一切正常。
+ *   改成先 `shell.readShortcutLink()` 拿到 target，再对 target 取图标 —— 实测 4/4 都拿到了
+ *   各自不同的 48×48 真图标。
+ * ★ 自定义图标只认 `.ico`：`.dll`/`.exe` 的 `icon` 字段还带着 `iconIndex`，而 `getFileIcon`
+ *   只能取"文件自己的默认图标"，取不到那一张 —— 这时候不如退回目标程序的默认图标。
+ */
+function shortcutTarget(lnkPath) {
+  try {
+    const { shell } = require('electron');
+    if (!shell || typeof shell.readShortcutLink !== 'function') return '';
+    const fs = require('fs');
+    const info = shell.readShortcutLink(lnkPath);
+    if (!info) return '';
+    const ic = expandEnv(info.icon || '');
+    if (ic && /\.ico$/i.test(ic) && fs.existsSync(ic)) return ic;
+    const t = expandEnv(info.target || '');
+    if (t && fs.existsSync(t)) return t;
+    return '';
+  } catch { return ''; }
+}
+
+/**
  * 把程序路径（exe/lnk/任何有默认图标的文件）→ 提取自带 ICO 转 dataURL。返回 '' 表示失败。
  *
  * ★ 必须先确认路径**真实存在**：实测 `app.getFileIcon` 对不存在的路径不报错、也不返回空，
  *   而是回一个通用的"白板"图标 —— 直接采信就会给"稍后才接入的盘"挂上一个假图标。
  *   不存在时返回 ''，上层保持 emoji 回退。裸命令名（如 notepad.exe）同理按不存在处理。
+ * ★ `.lnk` 先解析目标（见 shortcutTarget），否则拿到的是通用图标。
  */
 async function fileDefaultIconToDataUrl(filePath, size = 128) {
   try {
@@ -77,7 +104,8 @@ async function fileDefaultIconToDataUrl(filePath, size = 128) {
     let exists = false;
     try { exists = fs.existsSync(p); } catch { exists = false; }
     if (!exists) return '';
-    const img = await app.getFileIcon(p, { size: 'large' });
+    const pick = /\.lnk$/i.test(p) ? (shortcutTarget(p) || p) : p;
+    const img = await app.getFileIcon(pick, { size: 'large' });
     return imageToDataUrl(img, size);
   } catch { return ''; }
 }
@@ -87,4 +115,4 @@ function isImageIcon(icon) {
   return typeof icon === 'string' && /^data:image\//i.test(icon);
 }
 
-module.exports = { imageToDataUrl, imageFileToDataUrl, fileDefaultIconToDataUrl, isImageIcon, MAX_NATIVE };
+module.exports = { imageToDataUrl, imageFileToDataUrl, fileDefaultIconToDataUrl, isImageIcon, shortcutTarget, MAX_NATIVE };
