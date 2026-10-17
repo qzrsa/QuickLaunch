@@ -114,8 +114,12 @@ function buildGroups() {
       ]),
     },
     {
+      // 顺序有讲究：Google 第一、百度第二（用户明确要求）。
+      // 已有配置不会因为改了这里就自动重排 —— 见下面的 WEB_TOP / ensureWebOrder()。
       id: 'web', name: '常用网站', icon: '🌐', color: PALETTE[5],
       items: [
+        newItem('Google', '🔍', 'url', 'https://www.google.com/', { desc: 'google.com' }),
+        newItem('百度', '🐾', 'url', 'https://www.baidu.com/', { desc: 'baidu.com' }),
         newItem('GitHub', '🐙', 'url', 'https://github.com/qzrsa', { desc: 'github.com' }),
         newItem('阿里云控制台', '☁️', 'url', 'https://ecs.console.aliyun.com/', { desc: 'ecs.console.aliyun.com' }),
         newItem('腾讯云 EdgeOne', '🌀', 'url', 'https://console.cloud.tencent.com/edgeone', { desc: 'console.cloud.tencent.com' }),
@@ -315,8 +319,79 @@ function restoreDefaults(cfg) {
   return out;
 }
 
+/* ---------------------------------------------- 常用网站：前两项固定 */
+
+/**
+ * 「常用网站」第一项 = Google、第二项 = 百度。
+ *
+ * ★ 光改 `buildGroups()` 只对新装生效 —— 配置一旦落盘就再也不看默认值了，
+ *   老用户永远是当初那套顺序（GitHub / 阿里云在最前）。所以这里补一次
+ *   **一次性修正**，开关是 `settings.webOrderRev`：
+ *    - 已有的 Google / 百度 → **移**到最前两位（不重新造，收藏与使用次数都留着）
+ *    - 没有 → 补在第一位 / 第二位
+ *    - 认项**按网址域名**，不按名字：用户把「百度」改名成「搜中文」也认得出
+ *    - 其余项（含用户自建的）保持原来的相对顺序，一个都不删
+ *    - 只跑一次；跑完置 rev，之后用户自己怎么排都不再干预
+ */
+const WEB_ORDER_REV = 1;
+
+/** 取网址的 host（小写、去 www、去端口）。不是 http(s) 开头的返回 ''。 */
+function hostOf(p) {
+  const m = String(p || '').trim().match(/^[a-z]+:\/\/([^/?#]+)/i);
+  if (!m) return '';
+  return m[1].toLowerCase().replace(/:\d+$/, '').replace(/^www\./, '');
+}
+
+const WEB_TOP = [
+  { name: 'Google', icon: '🔍', path: 'https://www.google.com/', desc: 'google.com',
+    test: h => /^google\.[a-z.]+$/.test(h) },
+  { name: '百度', icon: '🐾', path: 'https://www.baidu.com/', desc: 'baidu.com',
+    test: h => /^baidu\.com$/.test(h) },
+];
+
+/**
+ * @returns {{changed:boolean, added:number, moved:number, note:string}}
+ *   changed=true 表示 cfg 被改动过（含仅仅置了 rev），调用方据此决定要不要写盘。
+ */
+function ensureWebOrder(cfg) {
+  const out = { changed: false, added: 0, moved: 0, note: '' };
+  if (!cfg || typeof cfg !== 'object') return out;
+  if (!cfg.settings || typeof cfg.settings !== 'object') cfg.settings = {};
+
+  // 修正过就再也不动它 —— 之后是用户自己的顺序
+  if (Number(cfg.settings.webOrderRev || 0) >= WEB_ORDER_REV) return out;
+
+  cfg.settings.webOrderRev = WEB_ORDER_REV;
+  out.changed = true;
+
+  const g = Array.isArray(cfg.groups) ? cfg.groups.find(x => x && x.id === 'web') : null;
+  if (!g || !Array.isArray(g.items)) {
+    // 分组被删掉 / 还没建：只打标记。恢复默认时会按新顺序整组补回来
+    out.note = '没有「常用网站」分组，只记标记';
+    return out;
+  }
+
+  const posBefore = new Map();
+  g.items.forEach((i, n) => { if (i) posBefore.set(i, n); });
+
+  const rest = g.items.slice();
+  const head = [];
+  for (const t of WEB_TOP) {
+    const idx = rest.findIndex(i => i && i.type === 'url' && t.test(hostOf(i.path)));
+    if (idx >= 0) head.push(rest.splice(idx, 1)[0]);
+    else { head.push(newItem(t.name, t.icon, 'url', t.path, { desc: t.desc })); out.added++; }
+  }
+  // 已有项里真的被挪了位置的有几个（只用于日志，别拿它当"变没变"的判据）
+  head.forEach((i, n) => { if (posBefore.has(i) && posBefore.get(i) !== n) out.moved++; });
+
+  g.items = head.concat(rest);
+  out.note = `新增 ${out.added} 项、挪动 ${out.moved} 项`;
+  return out;
+}
+
 module.exports = {
-  init, load, save, annotate, defaultConfig, ensureGroup, restoreDefaults,
+  init, load, save, annotate, defaultConfig, buildGroups, ensureGroup, restoreDefaults,
+  ensureWebOrder, WEB_TOP, hostOf, WEB_ORDER_REV,
   expandEnv, pathExists, itemOk, uid, newItem,
   configDir, configFile, PALETTE,
 };

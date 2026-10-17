@@ -2733,6 +2733,8 @@ function createMockBridge() {
         {
           id: 'web', name: '常用网站', icon: '🌐', color: PALETTE[5],
           items: [
+            { id: 'c0a', name: 'Google', icon: '🔍', type: 'url', path: 'https://www.google.com/', args: '', cwd: '', desc: 'google.com', favorite: false, useCount: 34, lastUsed: 1792170000, elevate: false, console: false },
+            { id: 'c0b', name: '百度', icon: '🐾', type: 'url', path: 'https://www.baidu.com/', args: '', cwd: '', desc: 'baidu.com', favorite: false, useCount: 28, lastUsed: 1792168000, elevate: false, console: false },
             { id: 'c1', name: 'GitHub', icon: '🐙', type: 'url', path: 'https://github.com/qzrsa', args: '', cwd: '', desc: 'github.com', favorite: false, useCount: 21, lastUsed: 1792165000, elevate: false, console: false },
             { id: 'c2', name: '阿里云控制台', icon: '☁️', type: 'url', path: 'https://ecs.console.aliyun.com/', args: '', cwd: '', desc: 'ecs.console.aliyun.com', favorite: false, useCount: 6, lastUsed: 1792130000, elevate: false, console: false },
           ],

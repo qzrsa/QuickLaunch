@@ -1147,6 +1147,19 @@ if (!app.requestSingleInstanceLock()) {
 
   app.whenReady().then(() => {
     store.init();
+    // 一次性修正「常用网站」前两项（Google / 百度）。必须排在 createWindow / createTray 之前，
+    // 否则首屏与托盘菜单先按旧顺序铺出来，用户会看到顺序"闪一下才变"。
+    try {
+      const c = store.load();
+      const r = store.ensureWebOrder(c);
+      if (r.changed) {
+        store.save(c);
+        if (r.added || r.moved) console.log('[migrate] 常用网站顺序已修正：' + r.note);
+        else if (r.note) console.log('[migrate] ' + r.note);
+      }
+    } catch (e) {
+      console.warn('[migrate] 常用网站顺序修正失败：', e.message);
+    }
     createUpdateSvc();
     registerIpc();
     createWindow();

@@ -589,6 +589,95 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
     ok(/restoreDefaults: async/.test(appSrc2), '预览模式 mock 也实现了 restoreDefaults');
   }
 
+  /* -------------------------------- 常用网站：前两项固定（v1.5.1） */
+  section('常用网站：第一项 Google、第二项百度');
+  {
+    const w = store.buildGroups().find(g => g.id === 'web');
+    ok(!!w && w.items.length >= 2, '「常用网站」分组存在');
+    ok(store.hostOf(w.items[0].path) === 'google.com', `默认第一项是 Google（实际 ${w.items[0].name}）`);
+    ok(store.hostOf(w.items[1].path) === 'baidu.com', `默认第二项是百度（实际 ${w.items[1].name}）`);
+    ok(w.items.every(i => i.type === 'url'), '常用网站都是网址类型');
+    ok(w.items.length >= 6, `原有站点一个没丢（共 ${w.items.length} 项）`);
+
+    // hostOf 是「按域名认项」的地基：改名/换图标都不影响识别
+    ok(store.hostOf('https://www.google.com/') === 'google.com', '去 www');
+    ok(store.hostOf('http://WWW.Baidu.com/s?wd=1') === 'baidu.com', '小写 + 去路径');
+    ok(store.hostOf('https://www.google.com.hk/') === 'google.com.hk', '域名原样（google.com.hk 也算 Google）');
+    ok(store.hostOf('https://localhost:3000/x') === 'localhost', '去端口');
+    ok(store.hostOf('') === '' && store.hostOf('notepad.exe') === '', '非网址 → 空串');
+
+    // 老配置（<= v1.5.0）：GitHub 第一、阿里云第二，压根没有 Google / 百度
+    const old = store.defaultConfig();
+    const web = old.groups.find(g => g.id === 'web');
+    web.items = [
+      store.newItem('GitHub', '🐙', 'url', 'https://github.com/qzrsa'),
+      store.newItem('阿里云控制台', '☁️', 'url', 'https://ecs.console.aliyun.com/'),
+      store.newItem('我的收藏夹', '⭐', 'url', 'https://example.com/'),
+    ];
+    const r1w = store.ensureWebOrder(old);
+    ok(r1w.changed === true && r1w.added === 2, '老配置补上 Google / 百度两项');
+    ok(store.hostOf(web.items[0].path) === 'google.com' && store.hostOf(web.items[1].path) === 'baidu.com',
+      '★ 补在最前两位，不是追加到末尾');
+    ok(web.items.length === 5, '原有 3 项一个都不丢');
+    ok(web.items[2].path === 'https://github.com/qzrsa'
+      && web.items[3].path === 'https://ecs.console.aliyun.com/'
+      && web.items[4].path === 'https://example.com/', '其余项保持原来的相对顺序');
+    ok(old.settings.webOrderRev === store.WEB_ORDER_REV, '置 webOrderRev 标记');
+
+    // 幂等：再跑一次什么都不做
+    const r2w = store.ensureWebOrder(old);
+    ok(r2w.changed === false && r2w.added === 0, '★ 只跑一次（幂等）');
+
+    // 已有 Google / 百度 但排在后面 → 挪上来，**不重新造**（收藏与使用次数一起搬）
+    const mid = store.defaultConfig();
+    const web2 = mid.groups.find(g => g.id === 'web');
+    web2.items = [
+      store.newItem('GitHub', '🐙', 'url', 'https://github.com/qzrsa'),
+      store.newItem('搜中文', '🐾', 'url', 'https://www.baidu.com/', { favorite: true, useCount: 99 }),
+      store.newItem('Google 香港', '🔍', 'url', 'https://www.google.com.hk/'),
+    ];
+    const baiduId = web2.items[1].id;
+    const r3w = store.ensureWebOrder(mid);
+    ok(r3w.added === 0 && r3w.moved === 1, `已有项只挪不新增（挪动 ${r3w.moved} 项）`);
+    ok(web2.items.length === 3, '总项数不变');
+    ok(store.hostOf(web2.items[0].path) === 'google.com.hk', '★ google.com.hk 也认作 Google，排第一');
+    ok(web2.items[1].id === baiduId, '★ 改过名的百度排第二（按域名认，不按名字）');
+    ok(web2.items[1].favorite === true && web2.items[1].useCount === 99, '收藏与使用次数一起跟着搬');
+
+    // rev 之后是用户的顺序，再也不干预。
+    // ★★ 前提：defaultConfig() 里**绝不能**出现 webOrderRev —— load() 会拿默认值补字段，
+    //    默认值一旦带上 rev，老配置一读进来就被标成"已修正"，迁移永远不跑（静默失效）。
+    ok(!('webOrderRev' in store.defaultConfig().settings),
+      '★ defaultConfig 不含 webOrderRev（否则 load 补齐后迁移永远不跑）');
+
+    const later = store.defaultConfig();
+    later.settings.webOrderRev = store.WEB_ORDER_REV;   // 模拟"已经修正过"
+    const web3 = later.groups.find(g => g.id === 'web');
+    web3.items.reverse();
+    const firstAfter = web3.items[0].id;
+    const r4w = store.ensureWebOrder(later);
+    ok(r4w.changed === false, '★ rev 已置位后不再动用户的顺序');
+    ok(web3.items[0].id === firstAfter, '顺序原样（真实分组里用户自己拖过的顺序必须尊重）');
+
+    // 分组被删了 → 只记标记，不报错、不凭空建组（恢复默认会按新顺序整组补回）
+    const noWeb = store.defaultConfig();
+    noWeb.groups = noWeb.groups.filter(g => g.id !== 'web');
+    const r5w = store.ensureWebOrder(noWeb);
+    ok(r5w.changed === true && r5w.added === 0, '没有该分组时不报错、不凭空建组');
+    ok(noWeb.groups.length === 3, '分组数没变');
+
+    // 接线：必须跑在 whenReady 里，且排在 createWindow() 之前
+    const mainSrcW = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+    const bootAt = mainSrcW.indexOf('app.whenReady()');
+    const bootSrcW = bootAt >= 0 ? mainSrcW.slice(bootAt, bootAt + 2600) : '';
+    ok(/store\.ensureWebOrder\(/.test(bootSrcW), '主进程启动时调用 ensureWebOrder');
+    ok(bootSrcW.indexOf('store.ensureWebOrder(') < bootSrcW.indexOf('createWindow();'),
+      '★ 修正排在 createWindow() 之前（否则首屏先铺旧顺序，再闪一下变成新的）');
+
+    const appSrcW = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'app.js'), 'utf8');
+    ok(/name: 'Google'/.test(appSrcW) && /name: '百度'/.test(appSrcW), '预览模式的 demo 数据也同步了前两项');
+  }
+
   section('urlshortcut .url 快捷方式（协议 + 图标）');
   const urlsc = require('../src/lib/urlshortcut');
 
