@@ -1184,6 +1184,40 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
   ok(dlErr.ok === false && /ECONNRESET/.test(dlErr.reason), '传输异常 → 失败并带上原始原因', dlErr.reason);
   ok(!fs.existsSync(DL), '传输异常后也没有残留文件');
 
+  // ---- ★ 真传输层 httpGetBuffer：给了 destPath 必须真的落盘 ----
+  //   上面所有假传输层都"守规矩地"落了盘，却从没验过**真实现**也守规矩 —— "下载后读不到文件：
+  //   ENOENT" 那个线上 bug 就藏在这儿：httpGetBuffer 曾把 destPath 写死成 null，于是真实下载
+  //   只把字节收进内存 Buffer、从不写盘，下游 statSync 直接 ENOENT。
+  //   这里起一个 127.0.0.1 本地服务（**不触外网**，离线可重复）直接跑真实现。
+  {
+    const http = require('http');
+    const payload = Buffer.from('DELTA-PAYLOAD-'.repeat(64)); // 896 字节
+    const srv = http.createServer((_req, res) => {
+      res.writeHead(200, { 'content-length': String(payload.length) });
+      res.end(payload);
+    });
+    await new Promise(r => srv.listen(0, '127.0.0.1', r));
+    const port = srv.address().port;
+    const url = `http://127.0.0.1:${port}/QuickLaunch-Delta-1.1.1-to-2.0.0.bin`;
+    const outFile = path.join(TMP, 'real-dl.bin');
+    try { fs.unlinkSync(outFile); } catch { /* noop */ }
+    try {
+      // ① 给了 destPath：必须落盘，且返回 {path,size,total}
+      const rWrite = await updater.httpGetBuffer(url, { destPath: outFile });
+      ok(fs.existsSync(outFile), '★ 真传输层：给了 destPath 就会真的写盘（线上 ENOENT 的根因）');
+      const onDisk = fs.existsSync(outFile) ? fs.readFileSync(outFile) : Buffer.alloc(0);
+      ok(onDisk.equals(payload), '★ 真传输层落盘的字节与响应体逐字节一致');
+      ok(!!(rWrite && rWrite.path === outFile && rWrite.size === payload.length),
+        '真传输层给了 destPath 时返回 {path,size}', JSON.stringify(rWrite));
+
+      // ② 不给 destPath：返回 Buffer（getJson 走这条，别把这条也改坏）
+      const rBuf = await updater.httpGetBuffer(url);
+      ok(Buffer.isBuffer(rBuf) && rBuf.equals(payload), '真传输层不给 destPath 时返回 Buffer');
+    } finally {
+      srv.close();
+    }
+  }
+
   // ---- stage()：用真引擎造真差量，端到端摊进暂存区 ----
   const oldExe = Buffer.from('OLD-EXE-'.repeat(300));
   const newExe = Buffer.from(oldExe); newExe.write('NEW', 100, 'utf8');

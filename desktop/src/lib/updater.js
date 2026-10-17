@@ -95,12 +95,20 @@ const feedUrl = (base) => normalizeBase(base) + '/' + MANIFEST_ASSET;
 
 /**
  * 带进度、带上限、跟随重定向的 GET。
+ *
+ * ★★ 必须把 `opts.destPath` 透传给 httpGetTo：传了路径就"边收边写盘"、返回 {path,size,total}；
+ *    不传才回 Buffer。曾经这里写死 `httpGetTo(url, null, opts)` —— **真实传输层永远不落盘**，
+ *    于是 downloadAsset 紧接着 `statSync(dest)` 直接 ENOENT（界面报"下载后读不到文件"，
+ *    而文件其实压根没被写过，那个"已下好"的字节数只是内存 Buffer 的大小）。
+ *    ★ 这个 bug 长期没被发现的原因值得记：全部单测都注入了"更守规矩"的假传输层（给了 destPath
+ *      就往那里写），**真实现本身从没被任何一条测试直接跑过**。教训：假替身必须与真实现同一套
+ *      约定，且真实现的关键分支也要有测试直接覆盖（见 smoke 的 `httpGetBuffer 真实现` 一节）。
  * @param {string} url
- * @param {{onChunk?:(got:number,total:number)=>void, maxBytes?:number, ua?:string}} [opts]
- * @returns {Promise<Buffer>}
+ * @param {{destPath?:string, onChunk?:(got:number,total:number)=>void, maxBytes?:number, ua?:string}} [opts]
+ * @returns {Promise<Buffer|{path:string,size:number,total:number}>}
  */
 function httpGetBuffer(url, opts = {}) {
-  return httpGetTo(url, null, opts);
+  return httpGetTo(url, opts.destPath || null, opts);
 }
 
 /**
