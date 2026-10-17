@@ -66,12 +66,18 @@ const UPDATE_PROBE = !app.isPackaged && process.argv.includes('--update-probe');
 // 开发期自检：--perf-probe 灌 100~2000 个启动项（只在内存，不写盘），量全量重绘 /
 // 逐字输入 / 滚动的主线程耗时，并原地注入 content-visibility 做同一次运行的 A/B 对照
 const PERF_PROBE = process.argv.includes('--perf-probe');
+// 开发期自检：--drop-probe 用 CDP 的 Input.dispatchDragEvent 合成一次**真文件拖放**
+// （带 files，走的是和资源管理器拖过来一模一样的链路）。
+// 为什么不能只靠 --import-probe：那个是渲染层自己捏 DataTransfer + uri-list，
+// 根本碰不到 webUtils.getPathForFile() 那一段 —— 而"拖图标进来没反应"恰恰最可能坏在那里。
+const DROP_PROBE = !app.isPackaged && process.argv.includes('--drop-probe');
 
 // ★ 任何自检都不许联网：探针必须可重复、可离线。一次真实请求就会让它变成"看运气"。
 //   所以启动时的静默检查只在**没有**任何探针时才会跑。
 // ★★ 加新探针时把这个常量一起改 —— 漏了的话新探针会带上一次不确定的网络请求。
 const ANY_PROBE = !!SHOT || MENU_PROBE || IMPORT_PROBE || DRAG_PROBE || GROUP_PROBE
-  || INFO_PROBE || RAIL_PROBE || SELECT_PROBE || SECOND_PROBE || UPDATE_PROBE || PERF_PROBE;
+  || INFO_PROBE || RAIL_PROBE || SELECT_PROBE || SECOND_PROBE || UPDATE_PROBE || PERF_PROBE
+  || DROP_PROBE;
 
 /** 启动后多久才去静默检查更新。★ 刻意晚一点：启动那一刻最该做的事是把窗口画出来，
  *  而不是抢带宽；而且更新是"知道了就行"的信息，晚 8 秒没有任何损失。 */
@@ -117,6 +123,71 @@ let tray = null;
 let quitting = false;
 let hotkeyFail = '';
 let lastBounds = null;
+
+/* ------------------------------------------------------------ 拖入探针 */
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+/**
+ * 用 CDP 合成一次真实的「从外面拖文件进来」：
+ * Input.dispatchDragEvent 带 files 时，Chromium 会造出和资源管理器拖放一样的
+ * DataTransfer（types=['Files'] + 真正的 File 对象），所以 webUtils.getPathForFile()
+ * 那一段才真的被走到。合成 uri-list 的 --import-probe 覆盖不到这里。
+ *
+ * 探针自己负责**不污染配置**：先把 config.json 原文存一份，跑完原样写回去。
+ */
+async function runDropProbe() {
+  const samples = probeSamplePaths();
+  const files = samples.paths.filter(p => /\.lnk$/i.test(p));
+  if (!files.length) {
+    console.log('[drop-probe] 没找到可拖的 .lnk，跳过');
+    return;
+  }
+
+  // 渲染层到底有没有 webUtils（Electron 32 起 File.path 被删，只能靠它）
+  const cap = await win.webContents.executeJavaScript(
+    '({ canResolvePath: !!(window.ql && window.ql.canResolvePath) })');
+  console.log('[drop-probe] 渲染层 canResolvePath =', cap.canResolvePath);
+
+  const cfgFile = store.configFile();
+  const countItems = raw => JSON.parse(raw).groups.reduce((n, g) => n + (g.items || []).length, 0);
+
+  const dbg = win.webContents.debugger;
+  if (!dbg.isAttached()) dbg.attach('1.3');
+  const b = win.getContentBounds();
+
+  // ★ 三个落点分别验：网格中间、顶栏（-webkit-app-region: drag 那块）、左侧分组栏。
+  //   顶栏被系统当成"标题栏"时，drop 会被吃在非客户区 —— 用户很自然会往那儿拖。
+  const points = [
+    { name: '网格中间', x: Math.round(b.width / 2), y: Math.round(b.height / 2) },
+    { name: '顶栏', x: Math.round(b.width / 2), y: 18 },
+    { name: '侧栏分组', x: 70, y: Math.round(b.height / 2) },
+  ];
+
+  for (const pt of points) {
+    const before = fs.readFileSync(cfgFile, 'utf8');
+    const n0 = countItems(before);
+    const data = { items: [], files, dragOperationsMask: 1 };
+    const step = type => dbg.sendCommand('Input.dispatchDragEvent', { type, x: pt.x, y: pt.y, data });
+    await step('dragEnter');
+    await sleep(350);
+    const veil = await win.webContents.executeJavaScript(
+      `(() => { const v = document.getElementById('dropVeil'); return v ? !v.hidden : 'no-el'; })()`);
+    await step('dragOver');
+    await sleep(250);
+    await step('drop');
+    await sleep(2200);
+    const n1 = countItems(fs.readFileSync(cfgFile, 'utf8'));
+    console.log(`[drop-probe] ${pt.name}(${pt.x},${pt.y}) 遮罩=${veil} 新增=${n1 - n0}`
+      + (n1 > n0 ? ' ✅' : ' ❌'));
+    fs.writeFileSync(cfgFile, before, 'utf8');    // 探针不改用户配置
+    try { win.webContents.send('ql:config-changed'); } catch { /* noop */ }
+    await sleep(400);
+  }
+
+  try { dbg.detach(); } catch { /* noop */ }
+}
+
 
 /* ------------------------------------------------------------ 数据目录
  * 打包后把 Electron 的 userData 放到**程序自己所在目录**：
@@ -280,6 +351,18 @@ function createWindow() {
         try { win.setOpacity(1); } catch { /* noop */ }
       }, 2600);
       setTimeout(() => quitApp(), 9000);
+    });
+  }
+
+  // --drop-probe：合成一次真文件拖放，验证「拖图标进来新建」整条链路
+  if (DROP_PROBE) {
+    win.webContents.once('did-finish-load', () => {
+      setTimeout(async () => {
+        try { win.setOpacity(0); } catch { /* noop */ }
+        try { await runDropProbe(); }
+        catch (e) { console.error('[drop-probe] 失败:', e && e.message); }
+        setTimeout(() => quitApp(), 400);
+      }, 1800);
     });
   }
 
