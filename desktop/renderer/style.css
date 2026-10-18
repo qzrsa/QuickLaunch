@@ -959,3 +959,37 @@ body.card-dragging.card-drag-no-trash #editBar { opacity: .3; pointer-events: no
   .win-ctrls { align-self: stretch; }
   .content { padding: 16px; }
 }
+
+/* ---------- 多选拖拽：悬停到左侧分组上 = 松手批量移进去（v1.5.3） ----------
+   拖动中的卡片是 pointer-events:none，指针能真正落在 .nav-item 上，
+   所以这条规则既服务视觉反馈，也对应 app.js 里 groupAtPoint() 的命中结果。 */
+.nav-item.drop-target {
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+  transform: translateX(2px);
+  box-shadow: 0 0 0 2px var(--accent), 0 8px 20px color-mix(in srgb, var(--accent) 38%, transparent);
+  transition: background .16s var(--ease), color .16s var(--ease), transform .12s var(--ease);
+}
+.nav-item.drop-target .cnt { background: rgba(255, 255, 255, .9); color: var(--accent); }
+.nav-item.drop-target::after {
+  content: attr(data-drop-label);
+  flex: none; margin-left: 4px; padding: 1px 7px;
+  font-size: 11px; font-weight: 600; white-space: nowrap;
+  border-radius: 999px; background: rgba(255, 255, 255, .24); color: #fff;
+}
+
+/* 悬停到左侧分组上时，被拖的卡片要让开：它正好盖住目标那一行，
+   高亮和「移入 N 项」都会被压在下面看不见。淡出 + 往右下闪开一点点，
+   卡片仍是 pointer-events:none，不影响 elementFromPoint 的命中。 */
+.card.dragging.over-group {
+  opacity: .55;
+  transform: translate(104px, 18px) rotate(0deg) scale(.84);
+  box-shadow: var(--shadow-m);
+  transition: opacity .12s var(--ease), transform .12s var(--ease);
+}
+/* 目标行再加一圈描边，隔着半透明卡片也能一眼看到 */
+.nav-item.drop-target {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}

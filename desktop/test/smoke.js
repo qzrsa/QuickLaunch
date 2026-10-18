@@ -1222,8 +1222,8 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
   const cssEdit = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'style.css'), 'utf8');
   ok(/const HOLD_MS_EDIT = 300/.test(appSrc), '多选模式长按 0.3 秒即可拖动');
   ok(/function holdMsFor\(card\)/.test(appSrc), '拖动等待时长统一由 holdMsFor 决定');
-  ok(/if \(!state\.editMode\) return HOLD_MS;/.test(appSrc) && /sortableGidOf\(card\)\) \? HOLD_MS_EDIT : 0/.test(appSrc),
-    '★ 普通模式 1.5s（"全部"视图也要能拖去垃圾桶）；多选模式只在可排序网格里 0.3s');
+  ok(/if \(!state\.editMode\) return HOLD_MS;/.test(appSrc) && /return state\.q \? 0 : HOLD_MS_EDIT;/.test(appSrc),
+    '★ 普通模式 1.5s（"全部"视图也要能拖去垃圾桶）；多选模式只要不在搜索中就 0.3s');
   ok(!/function onGridPointerDown[\s\S]{0,220}state\.editMode\) return/.test(appSrc),
     '★ onGridPointerDown 不再一见多选模式就 return（否则永远拖不动）');
   ok(/card-drag-no-trash/.test(appSrc) && /card-drag-no-trash/.test(cssEdit),
@@ -1507,6 +1507,46 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
       '★ 0 → 1 次（原来没有这个节点）也是就地补一个 span，不整块重绘');
     ok(/if \(flatten\(cur\) !== flatten\(next\)\) return false;/.test(appSrcF),
       '★ 别处有任何差异就老实重绘（宁可多绘，不能漏掉用户的改动）');
+  }
+
+  /* --------------------- 多选拖到左侧分组批量移动（v1.5.3） */
+  section('多选拖到左侧分组：批量移动');
+  {
+    const appSrcG = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'app.js'), 'utf8');
+    const cssSrcG = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'style.css'), 'utf8');
+
+    ok(/function groupAtPoint\(x, y\)/.test(appSrcG), '有 groupAtPoint（指针落在哪个分组上）');
+    ok(/document\.elementFromPoint\(x, y\)/.test(appSrcG),
+      '★ 用 elementFromPoint 现取，不缓存矩形（侧栏能滚动，缓存必失准）');
+    ok(/state\.config\.groups\.find\(g => g\.id === btn\.dataset\.nav\)/.test(appSrcG),
+      '★ 只认真实分组（全部/最近/收藏是虚拟视图，不算目的地）');
+    ok(/function dragMoveCount\(d\)/.test(appSrcG), '有 dragMoveCount（这次要移几项）');
+    ok(/state\.picked\.has\(d\.id\)\) \? state\.picked\.size : 1/.test(appSrcG),
+      '★ 被拖的卡已勾选 = 整批走；没勾选就只移它自己（拖谁移谁）');
+    ok(/function paintGroupDrop\(gid, count\)/.test(appSrcG), '有 paintGroupDrop（落点高亮）');
+
+    ok(/async function moveItemsTo\(gid, ids, opts\)/.test(appSrcG), '有 moveItemsTo（移动的唯一实现）');
+    ok(/await moveItemsTo\(gid, pairs\.map\(p => p\.i\.id\)\)/.test(appSrcG),
+      '★ 浮动栏的「移动分组」复用它，不是各写一份');
+    ok(/const moving = found\.filter\(p => p\.g\.id !== gid\)/.test(appSrcG),
+      '★ 已经在目标分组里的排除掉（否则先摘后加会把它自己摘没）');
+
+    ok(/if \(state\.editMode\) \{\s*const g = groupAtPoint/.test(appSrcG),
+      'moveDrag 只在多选模式下判定分组落点（普通模式拖动只有排序/删除）');
+    ok(/if \(overGid\) return;/.test(appSrcG),
+      '★ 悬在分组上时停止"实时让位" —— 此刻表达的是"移走"，不是"排到这里"');
+    ok(/if \(d\.overGid\) \{/.test(appSrcG) && /moveItemsTo\(d\.overGid, ids/.test(appSrcG),
+      'endDrag 里松手就移进去');
+    ok(/if \(!state\.editMode\) \{\s*toast\('info', '这里不支持拖动排序'/.test(appSrcG),
+      '★ 多选在「全部/最近/收藏」里拖到空白处不弹"不支持排序"（那里本来只为拖去分组）');
+    ok(/paintGroupDrop\(null\);/.test(appSrcG), '重置时清掉落点高亮');
+    ok(/const stillVisible = state\.active === 'all'/.test(appSrcG),
+      '★ 移走且已不在当前视图时清空勾选（否则下次批量操作作用到看不见的项）');
+
+    ok(/\.nav-item\.drop-target \{/.test(cssSrcG), '落点高亮样式存在');
+    ok(/content: attr\(data-drop-label\)/.test(cssSrcG), '高亮上直接写「移入 N 项」');
+    ok(/\.card\.dragging[\s\S]{0,200}pointer-events: none/.test(cssSrcG),
+      '★ 被拖卡片 pointer-events:none —— elementFromPoint 才能打到侧栏');
   }
 
   section('事件白名单对账');

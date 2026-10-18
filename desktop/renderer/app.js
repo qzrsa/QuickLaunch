@@ -948,20 +948,55 @@ async function batchFavorite(on) {
   await refresh();      // 勾选状态在 state.picked 里，重绘后会自动带上
 }
 
+/**
+ * 把一批启动项移进指定分组（**唯一实现**：浮动栏的「移动分组」与多选拖到侧栏共用）。
+ *
+ * @param {string} gid 目标分组 id
+ * @param {string[]} ids 要移动的启动项 id（可以跨分组）
+ * @param {{quiet?:boolean}} [opts]
+ * @returns {Promise<number>} 实际移动的项数
+ */
+async function moveItemsTo(gid, ids, opts) {
+  const dest = state.config.groups.find(g => g.id === gid);
+  if (!dest) { toast('bad', '目标分组不存在'); return 0; }
+
+  const want = new Set(ids || []);
+  const found = [];
+  if (want.size) {
+    state.config.groups.forEach(g => (g.items || []).forEach(i => {
+      if (want.has(i.id)) found.push({ g, i });
+    }));
+  }
+  // 已经在目标分组里的不算"移动"（先摘后加会把它们摘没，必须排除）
+  const moving = found.filter(p => p.g.id !== gid);
+  if (!moving.length) {
+    if (!(opts && opts.quiet)) toast('info', '这些项已经都在这个分组里了', dest.name);
+    return 0;
+  }
+
+  moving.forEach(({ g, i }) => { g.items = g.items.filter(x => x.id !== i.id); });
+  moving.forEach(({ i }) => dest.items.push(i));
+
+  const r = await API.saveConfig(state.config);
+  if (!r.ok) { toast('bad', '移动失败', r.msg); return 0; }
+  toast('ok', `已移动 ${moving.length} 项到「${dest.name}」`);
+
+  /* ★ 移走之后这些项可能已经不在当前视图里了（停在某个分组时最典型）。
+     这时若不取消勾选，下一轮批量删除/收藏会作用到"看不见的项"上（铁律八第 2 条）。 */
+  const stillVisible = state.active === 'all' || state.active === 'recent'
+    || state.active === 'fav' || state.active === gid;
+  if (!stillVisible && state.picked.size) {
+    state.picked.clear();
+    updateEditBar();
+  }
+  await refresh();
+  return moving.length;
+}
+
 async function batchMove(gid) {
   const pairs = pickedPairs();
   if (!pairs.length) return toast('bad', '先勾选要操作的启动项');
-  const dest = state.config.groups.find(g => g.id === gid);
-  if (!dest) return toast('bad', '目标分组不存在');
-  const moving = pairs.filter(p => p.g.id !== gid);
-  if (!moving.length) return toast('info', '选中项已经都在这个分组里');
-  // 先摘后加：同一批里若有两项本来就在目标分组，不能既删又加它自己
-  moving.forEach(({ g, i }) => { g.items = g.items.filter(x => x.id !== i.id); });
-  moving.forEach(({ i }) => dest.items.push(i));
-  const r = await API.saveConfig(state.config);
-  if (!r.ok) return toast('bad', '移动失败', r.msg);
-  toast('ok', `已移动 ${moving.length} 项到「${dest.name}」`);
-  await refresh();
+  await moveItemsTo(gid, pairs.map(p => p.i.id));
 }
 
 async function batchDelete() {
@@ -1008,6 +1043,44 @@ function sortableGidOf(card) {
   return state.config.groups.some(g => g.id === gid) ? gid : null;
 }
 
+/* ------------------------------------ 多选拖动：拖到左侧分组里批量移动（v1.5.3） */
+
+/**
+ * 指针下是不是左侧某个**真实分组**。
+ *
+ * 用 `elementFromPoint` 现取，不缓存矩形：侧栏能滚动，缓存一次就会失准。
+ * 被拖的卡片是 `pointer-events:none`（见 `.card.dragging`），所以不会挡住命中。
+ * 「全部 / 最近使用 / 收藏」是虚拟视图，没有 items 可放，一律不算目的地。
+ */
+function groupAtPoint(x, y) {
+  const rail = document.querySelector('.rail');
+  if (!rail) return null;
+  const r = rail.getBoundingClientRect();
+  if (x < r.left || x > r.right || y < r.top || y > r.bottom) return null;
+  const el = document.elementFromPoint(x, y);
+  const btn = el && el.closest ? el.closest('[data-nav]') : null;
+  if (!btn) return null;
+  return state.config.groups.find(g => g.id === btn.dataset.nav) || null;
+}
+
+/** 这次拖动会移动几项：被拖的卡已勾选 = 全部勾选项，否则就它自己 */
+function dragMoveCount(d) {
+  return (d && d.id && state.picked.has(d.id)) ? state.picked.size : 1;
+}
+
+/** 高亮"松手就会移进去"的那个分组；传 null 清掉 */
+function paintGroupDrop(gid, count) {
+  $$('.nav-item.drop-target').forEach(el => {
+    el.classList.remove('drop-target');
+    el.removeAttribute('data-drop-label');
+  });
+  if (!gid) return;
+  const btn = document.querySelector(`.nav-item[data-nav="${gid}"]`);
+  if (!btn) return;
+  btn.classList.add('drop-target');
+  btn.dataset.dropLabel = `移入 ${count} 项`;
+}
+
 function cancelHold(reason) {
   if (!hold) return;
   clearTimeout(hold.timer);
@@ -1021,12 +1094,13 @@ function cancelHold(reason) {
  *
  *  - 普通模式：一律 1.5 秒。★ 即使当前网格**不能排序**（全部/最近/收藏视图），
  *    也要能长按 —— 那时的拖动是「拖到底部垃圾桶删除」，不能因为没有 data-gid 就禁掉。
- *  - 多选模式：点卡片是「勾选」，所以只在**真能排序**的网格里启用，且只要 0.3 秒
- *    （用户要求）。不能排序的地方返回 0，勾选保持零延迟，不会先卡 0.3 秒。
+ *  - 多选模式：点卡片是「勾选」，所以只要 0.3 秒（用户要求）。
+ *    ★ v1.5.3 起，虚拟视图（全部/最近/收藏）里也接管：那里虽然不能排序，
+ *      但可以**拖到左侧分组批量移进去** —— 跨分组整理就靠这条路径。
  */
 function holdMsFor(card) {
   if (!state.editMode) return HOLD_MS;
-  return (!state.q && sortableGidOf(card)) ? HOLD_MS_EDIT : 0;
+  return state.q ? 0 : HOLD_MS_EDIT;   // 搜索结果里拖动没有意义，勾选保持零延迟
 }
 
 function onGridPointerDown(e) {
@@ -1075,10 +1149,9 @@ function onDocPointerUp(e) {
 function startDrag(h) {
   const card = h.card;
 
-  // 多选模式下拖动**只用来排序**（不出垃圾桶）：不能排序的网格压根不进入拖动。
-  // 兜底：onGridPointerDown 已经用 holdMsFor 挡过，这里再挡一次，防止将来改了入口。
+  // 多选模式下拖动有两件事可做：具体分组里**排序**，或拖到左侧分组**批量移动**。
+  // 所以这里不再因为「这个网格不能排序」就拒绝 —— 虚拟视图（全部/最近/收藏）也能拖去分组。
   const gid = sortableGidOf(card);
-  if (state.editMode && !gid) { cancelHold('多选模式：这个网格不支持排序'); return; }
 
   card.classList.remove('holding');
   card.style.removeProperty('--hold');
@@ -1128,6 +1201,7 @@ function startDrag(h) {
     dx: h.lastX - rect.left, dy: h.lastY - rect.top,
     x0: h.lastX, y0: h.lastY, moved: false,
     overTrash: false, trashRect,
+    overGid: null,           // 多选：当前悬停的目标分组（松手就移进去）
   };
   hold = null;
   moveDrag({ clientX: h.lastX, clientY: h.lastY });
@@ -1159,6 +1233,23 @@ function moveDrag(e) {
     if (t) t.textContent = over ? '松手删除' : '拖到这里删除';
   }
 
+  /* ★ 多选模式：指针移到左侧某个真实分组上 = 松手把这批卡片移进去（v1.5.3）。
+     普通模式不接管 —— 那里拖动只有"排序 / 丢垃圾桶"两种语义，再加一种是误操作。
+     一旦悬在分组上就**停止实时让位**：那是排序语义，此刻应该表达"移走"。 */
+  if (state.editMode) {
+    const g = groupAtPoint(x, y);
+    const overGid = g ? g.id : null;
+    if (overGid !== d.overGid) {
+      d.overGid = overGid;
+      paintGroupDrop(overGid, dragMoveCount(d));
+      // ★ 指针在侧栏上时，被拖的卡片正好盖住目标分组那一行 —— 高亮被挡在下面，
+      //   用户根本看不见"会移去哪儿"。这里让卡片淡出并往右下方闪开一点，
+      //   目标行（以及它的「移入 N 项」）就露出来了。
+      d.card.classList.toggle('over-group', !!overGid);
+    }
+    if (overGid) return;
+  }
+
   /* 实时让位：把占位格挪到指针位置 */
   if (!d.sortable || d.overTrash) return;
   const grid = d.ph.parentElement;
@@ -1183,6 +1274,7 @@ function moveDrag(e) {
 function resetDraggedCard(d) {
   d.ph.remove();
   d.card.classList.remove('dragging');
+  d.card.classList.remove('over-group');
   d.card.setAttribute('style', d.origStyle);
   // 兜底：拖动期间的定位样式只应活在 .dragging 里。万一 origStyle 抓早了/抓晚了
   // 混进 left/top/width/height，这里再清一次，避免卡片带着 relative 偏移停在别处。
@@ -1192,6 +1284,7 @@ function resetDraggedCard(d) {
   d.card.style.removeProperty('height');
   document.body.classList.remove('card-dragging');
   document.body.classList.remove('card-drag-no-trash');
+  paintGroupDrop(null);
   const trash = $('#trash');
   if (trash) { trash.hidden = true; trash.classList.remove('hot'); }
 }
@@ -1239,8 +1332,24 @@ async function endDrag(e) {
 
   if (overTrash) return trashItem(d.id);
 
+  /* ★ 松手时指针停在左侧分组上 → 批量移动（仅多选模式会置 overGid）。
+     被拖的卡已勾选就整批走；没勾选就只移它自己（"拖谁移谁"）。
+     落点在目标分组自身上时 moveItemsTo 会因为"已经在里面"返回 0，这里补一句提示。 */
+  if (d.overGid) {
+    const target = state.config.groups.find(g => g.id === d.overGid);
+    const ids = (d.id && state.picked.has(d.id)) ? [...state.picked] : (d.id ? [d.id] : []);
+    if (target && ids.length) {
+      const n = await moveItemsTo(d.overGid, ids, { quiet: true });
+      if (!n) toast('info', '这些项已经在这个分组里了', target.name);
+    }
+    return;
+  }
+
   if (!d.sortable) {
-    toast('info', '这里不支持拖动排序', '把排序切回「自定义顺序」、并进入具体分组再试');
+    // 多选在「全部 / 最近 / 收藏」里拖动只为了"拖到分组"，落在空白处就当没发生
+    if (!state.editMode) {
+      toast('info', '这里不支持拖动排序', '把排序切回「自定义顺序」、并进入具体分组再试');
+    }
     return;
   }
 
