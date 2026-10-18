@@ -1509,8 +1509,8 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
       '★ 别处有任何差异就老实重绘（宁可多绘，不能漏掉用户的改动）');
   }
 
-  /* --------------------- 多选拖到左侧分组批量移动（v1.5.3） */
-  section('多选拖到左侧分组：批量移动');
+  /* --------------------- 拖到左侧分组：批量移动 + 普通模式单张（v1.5.3 → v1.5.4） */
+  section('拖到左侧分组：批量移动 + 普通模式单张');
   {
     const appSrcG = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'app.js'), 'utf8');
     const cssSrcG = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'style.css'), 'utf8');
@@ -1520,9 +1520,11 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
       '★ 用 elementFromPoint 现取，不缓存矩形（侧栏能滚动，缓存必失准）');
     ok(/state\.config\.groups\.find\(g => g\.id === btn\.dataset\.nav\)/.test(appSrcG),
       '★ 只认真实分组（全部/最近/收藏是虚拟视图，不算目的地）');
-    ok(/function dragMoveCount\(d\)/.test(appSrcG), '有 dragMoveCount（这次要移几项）');
-    ok(/state\.picked\.has\(d\.id\)\) \? state\.picked\.size : 1/.test(appSrcG),
+    ok(/function dragIds\(d\)/.test(appSrcG), '有 dragIds（这次拖动带走哪些项）');
+    ok(/if \(d && d\.id && state\.picked\.has\(d\.id\)\) return \[\.\.\.state\.picked\];/.test(appSrcG),
       '★ 被拖的卡已勾选 = 整批走；没勾选就只移它自己（拖谁移谁）');
+    ok(/function dragMoveCount\(d\)[\s\S]{0,90}dragIds\(d\)\.length \|\| 1/.test(appSrcG),
+      'dragMoveCount 复用 dragIds（不另算一遍）');
     ok(/function paintGroupDrop\(gid, count\)/.test(appSrcG), '有 paintGroupDrop（落点高亮）');
 
     ok(/async function moveItemsTo\(gid, ids, opts\)/.test(appSrcG), '有 moveItemsTo（移动的唯一实现）');
@@ -1531,22 +1533,41 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
     ok(/const moving = found\.filter\(p => p\.g\.id !== gid\)/.test(appSrcG),
       '★ 已经在目标分组里的排除掉（否则先摘后加会把它自己摘没）');
 
-    ok(/if \(state\.editMode\) \{\s*const g = groupAtPoint/.test(appSrcG),
-      'moveDrag 只在多选模式下判定分组落点（普通模式拖动只有排序/删除）');
+    /* ---- v1.5.4：普通模式（非编辑）也能拖到左侧分组 ---- */
+    ok(/const g = d\.overTrash \? null : groupAtPoint\(x, y\);/.test(appSrcG),
+      '★ v1.5.4：分组落点判定不再只看多选模式（普通模式单张也能拖过去）');
+    ok(!/if \(state\.editMode\) \{\s*const g = groupAtPoint/.test(appSrcG),
+      '★ 旧的「仅多选模式才判定分组」分支已经去掉（留着就是普通模式永远拖不过去）');
+    ok(/d\.overTrash \? null : groupAtPoint/.test(appSrcG),
+      '★ 垃圾桶优先：指针在底部删除带里时不判定分组（否则"想删却移走"）');
+    ok(/function dragWouldMove\(d, gid\)/.test(appSrcG), '有 dragWouldMove（这次拖过去有没有意义）');
+    ok(/return dragIds\(d\)\.some\(id => !have\.has\(id\)\);/.test(appSrcG),
+      '★ 全都已经在目标分组里 → 不算移动，不高亮也不接管');
+    ok(/const overGid = \(g && dragWouldMove\(d, g\.id\)\) \? g\.id : null;/.test(appSrcG),
+      '落点要过 dragWouldMove 才认');
     ok(/if \(overGid\) return;/.test(appSrcG),
       '★ 悬在分组上时停止"实时让位" —— 此刻表达的是"移走"，不是"排到这里"');
-    ok(/if \(d\.overGid\) \{/.test(appSrcG) && /moveItemsTo\(d\.overGid, ids/.test(appSrcG),
-      'endDrag 里松手就移进去');
+    ok(/if \(d\.overGid\) \{[\s\S]{0,240}const moving = dragIds\(d\);/.test(appSrcG),
+      '★ endDrag 里松手就移进去，多选/普通同一套（普通模式勾选集是空的，自然只移一张）');
+    ok(/const n = await moveItemsTo\(d\.overGid, moving, \{ quiet: true \}\);/.test(appSrcG),
+      '松手时真正落库');
+    ok(/\? `移入 \$\{count\} 项` : '移到这里'/.test(appSrcG),
+      '单张写「移到这里」，成批才报「移入 N 项」');
+    ok(/已移到「\$\{dest\.name\}」/.test(appSrcG), '单张成功的提示是「已移到「X」」（不是"移动 1 项"）');
     ok(/if \(!state\.editMode\) \{\s*toast\('info', '这里不支持拖动排序'/.test(appSrcG),
       '★ 多选在「全部/最近/收藏」里拖到空白处不弹"不支持排序"（那里本来只为拖去分组）');
+    ok(/想换分组就直接拖到左侧的分组上/.test(appSrcG),
+      '普通模式在虚拟视图拖空白时，提示里带上"拖到左侧分组"这条路');
     ok(/paintGroupDrop\(null\);/.test(appSrcG), '重置时清掉落点高亮');
     ok(/const stillVisible = state\.active === 'all'/.test(appSrcG),
       '★ 移走且已不在当前视图时清空勾选（否则下次批量操作作用到看不见的项）');
 
     ok(/\.nav-item\.drop-target \{/.test(cssSrcG), '落点高亮样式存在');
-    ok(/content: attr\(data-drop-label\)/.test(cssSrcG), '高亮上直接写「移入 N 项」');
+    ok(/content: attr\(data-drop-label\)/.test(cssSrcG), '高亮上直接写「移到这里 / 移入 N 项」');
     ok(/\.card\.dragging[\s\S]{0,200}pointer-events: none/.test(cssSrcG),
       '★ 被拖卡片 pointer-events:none —— elementFromPoint 才能打到侧栏');
+    ok(/\.card\.dragging\.over-group \{/.test(cssSrcG),
+      '★ 悬在分组上时被拖卡片让位（否则它正好盖住要高亮的那一行）');
   }
 
   section('事件白名单对账');

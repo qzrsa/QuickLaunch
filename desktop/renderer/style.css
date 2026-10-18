@@ -971,7 +971,8 @@ body.card-dragging.card-drag-no-trash #editBar { opacity: .3; pointer-events: no
   box-shadow: 0 0 0 2px var(--accent), 0 8px 20px color-mix(in srgb, var(--accent) 38%, transparent);
   transition: background .16s var(--ease), color .16s var(--ease), transform .12s var(--ease);
 }
-.nav-item.drop-target .cnt { background: rgba(255, 255, 255, .9); color: var(--accent); }
+/* 拖动悬停时把计数徽标让出来：侧栏只有 160px，名称 + 徽标 + 「移到这里」挤不下 */
+.nav-item.drop-target .cnt { display: none; }
 .nav-item.drop-target::after {
   content: attr(data-drop-label);
   flex: none; margin-left: 4px; padding: 1px 7px;

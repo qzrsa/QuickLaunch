@@ -979,7 +979,9 @@ async function moveItemsTo(gid, ids, opts) {
 
   const r = await API.saveConfig(state.config);
   if (!r.ok) { toast('bad', '移动失败', r.msg); return 0; }
-  toast('ok', `已移动 ${moving.length} 项到「${dest.name}」`);
+  toast('ok', moving.length === 1
+    ? `已移到「${dest.name}」`
+    : `已移动 ${moving.length} 项到「${dest.name}」`);
 
   /* ★ 移走之后这些项可能已经不在当前视图里了（停在某个分组时最典型）。
      这时若不取消勾选，下一轮批量删除/收藏会作用到"看不见的项"上（铁律八第 2 条）。 */
@@ -1043,7 +1045,7 @@ function sortableGidOf(card) {
   return state.config.groups.some(g => g.id === gid) ? gid : null;
 }
 
-/* ------------------------------------ 多选拖动：拖到左侧分组里批量移动（v1.5.3） */
+/* ------------------------------------ 拖动到左侧分组：移进去（v1.5.3 多选批量 / v1.5.4 单张） */
 
 /**
  * 指针下是不是左侧某个**真实分组**。
@@ -1063,9 +1065,28 @@ function groupAtPoint(x, y) {
   return state.config.groups.find(g => g.id === btn.dataset.nav) || null;
 }
 
-/** 这次拖动会移动几项：被拖的卡已勾选 = 全部勾选项，否则就它自己 */
+/** 这次拖动会带走哪些项：被拖的卡已勾选 = 全部勾选项，否则就它自己 */
+function dragIds(d) {
+  if (d && d.id && state.picked.has(d.id)) return [...state.picked];
+  return (d && d.id) ? [d.id] : [];
+}
+
+/** 这次拖动会移动几项 */
 function dragMoveCount(d) {
-  return (d && d.id && state.picked.has(d.id)) ? state.picked.size : 1;
+  return dragIds(d).length || 1;
+}
+
+/**
+ * 拖到这个分组上**会不会真的发生移动**。
+ *
+ * 普通模式下把卡片拖到自己所在的分组上（或整批勾选项都已在该分组里）时，
+ * 高亮一个"松手也不会变"的落点只会误导人 —— 干脆不高亮，也不接管这次拖动。
+ */
+function dragWouldMove(d, gid) {
+  const dest = state.config.groups.find(g => g.id === gid);
+  if (!dest) return false;
+  const have = new Set((dest.items || []).map(i => i.id));
+  return dragIds(d).some(id => !have.has(id));
 }
 
 /** 高亮"松手就会移进去"的那个分组；传 null 清掉 */
@@ -1078,7 +1099,8 @@ function paintGroupDrop(gid, count) {
   const btn = document.querySelector(`.nav-item[data-nav="${gid}"]`);
   if (!btn) return;
   btn.classList.add('drop-target');
-  btn.dataset.dropLabel = `移入 ${count} 项`;
+  // 单张时写「移到这里」更像人话；成批才报数量
+  btn.dataset.dropLabel = count > 1 ? `移入 ${count} 项` : '移到这里';
 }
 
 function cancelHold(reason) {
@@ -1093,7 +1115,8 @@ function cancelHold(reason) {
 /** 这张卡片该按住多久才进拖动模式；返回 0 = 这里不启动拖动。
  *
  *  - 普通模式：一律 1.5 秒。★ 即使当前网格**不能排序**（全部/最近/收藏视图），
- *    也要能长按 —— 那时的拖动是「拖到底部垃圾桶删除」，不能因为没有 data-gid 就禁掉。
+ *    也要能长按 —— 那时的拖动是「拖到底部垃圾桶删除」或「拖到左侧分组移进去」，
+ *    不能因为没有 data-gid 就禁掉。
  *  - 多选模式：点卡片是「勾选」，所以只要 0.3 秒（用户要求）。
  *    ★ v1.5.3 起，虚拟视图（全部/最近/收藏）里也接管：那里虽然不能排序，
  *      但可以**拖到左侧分组批量移进去** —— 跨分组整理就靠这条路径。
@@ -1149,7 +1172,7 @@ function onDocPointerUp(e) {
 function startDrag(h) {
   const card = h.card;
 
-  // 多选模式下拖动有两件事可做：具体分组里**排序**，或拖到左侧分组**批量移动**。
+  // 拖动现在有三件事可做：具体分组里**排序**、拖到底部**删除**、拖到左侧分组**移走**。
   // 所以这里不再因为「这个网格不能排序」就拒绝 —— 虚拟视图（全部/最近/收藏）也能拖去分组。
   const gid = sortableGidOf(card);
 
@@ -1233,22 +1256,23 @@ function moveDrag(e) {
     if (t) t.textContent = over ? '松手删除' : '拖到这里删除';
   }
 
-  /* ★ 多选模式：指针移到左侧某个真实分组上 = 松手把这批卡片移进去（v1.5.3）。
-     普通模式不接管 —— 那里拖动只有"排序 / 丢垃圾桶"两种语义，再加一种是误操作。
-     一旦悬在分组上就**停止实时让位**：那是排序语义，此刻应该表达"移走"。 */
-  if (state.editMode) {
-    const g = groupAtPoint(x, y);
-    const overGid = g ? g.id : null;
-    if (overGid !== d.overGid) {
-      d.overGid = overGid;
-      paintGroupDrop(overGid, dragMoveCount(d));
-      // ★ 指针在侧栏上时，被拖的卡片正好盖住目标分组那一行 —— 高亮被挡在下面，
-      //   用户根本看不见"会移去哪儿"。这里让卡片淡出并往右下方闪开一点，
-      //   目标行（以及它的「移入 N 项」）就露出来了。
-      d.card.classList.toggle('over-group', !!overGid);
-    }
-    if (overGid) return;
+  /* ★ 拖到左侧分组 = 移进去（v1.5.3 多选批量 / v1.5.4 普通模式单张）。
+     普通模式原先只有"排序 / 丢垃圾桶"两种语义，现在补上第三种；
+     但**垃圾桶优先**：指针在底部那条删除带里时一概不判定分组，避免"想删却移走"。
+     一旦悬在分组上就**停止实时让位**：那是排序语义，此刻应该表达"移走"。
+     ★ dragWouldMove：拖到自己所在的分组（或整批都已在里面）不高亮 ——
+       高亮一个"松手也不会变"的落点只会误导人。 */
+  const g = d.overTrash ? null : groupAtPoint(x, y);
+  const overGid = (g && dragWouldMove(d, g.id)) ? g.id : null;
+  if (overGid !== d.overGid) {
+    d.overGid = overGid;
+    paintGroupDrop(overGid, dragMoveCount(d));
+    // ★ 指针在侧栏上时，被拖的卡片正好盖住目标分组那一行 —— 高亮被挡在下面，
+    //   用户根本看不见"会移去哪儿"。这里让卡片淡出并往右下方闪开一点，
+    //   目标行（以及它的「移到这里 / 移入 N 项」）就露出来了。
+    d.card.classList.toggle('over-group', !!overGid);
   }
+  if (overGid) return;
 
   /* 实时让位：把占位格挪到指针位置 */
   if (!d.sortable || d.overTrash) return;
@@ -1332,23 +1356,24 @@ async function endDrag(e) {
 
   if (overTrash) return trashItem(d.id);
 
-  /* ★ 松手时指针停在左侧分组上 → 批量移动（仅多选模式会置 overGid）。
+  /* ★ 松手时指针停在左侧分组上 → 移进去（普通模式单张 / 多选整批）。
      被拖的卡已勾选就整批走；没勾选就只移它自己（"拖谁移谁"）。
      落点在目标分组自身上时 moveItemsTo 会因为"已经在里面"返回 0，这里补一句提示。 */
   if (d.overGid) {
     const target = state.config.groups.find(g => g.id === d.overGid);
-    const ids = (d.id && state.picked.has(d.id)) ? [...state.picked] : (d.id ? [d.id] : []);
-    if (target && ids.length) {
-      const n = await moveItemsTo(d.overGid, ids, { quiet: true });
-      if (!n) toast('info', '这些项已经在这个分组里了', target.name);
+    const moving = dragIds(d);
+    if (target && moving.length) {
+      const n = await moveItemsTo(d.overGid, moving, { quiet: true });
+      if (!n) toast('info', '已经在这个分组里了', target.name);
     }
     return;
   }
 
   if (!d.sortable) {
-    // 多选在「全部 / 最近 / 收藏」里拖动只为了"拖到分组"，落在空白处就当没发生
+    // 「全部 / 最近 / 收藏」里拖到空白处：多选时只为"拖到分组"，静默；
+    // 普通模式提醒一下 —— 顺带告诉他还有"拖到左侧分组"这条路。
     if (!state.editMode) {
-      toast('info', '这里不支持拖动排序', '把排序切回「自定义顺序」、并进入具体分组再试');
+      toast('info', '这里不支持拖动排序', '想换分组就直接拖到左侧的分组上；想排序请进入具体分组');
     }
     return;
   }
