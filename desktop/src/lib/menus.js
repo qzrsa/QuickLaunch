@@ -5,7 +5,7 @@
  *
  * 卡片动作： launch | elevate | folder | copy | fav | edit | multiselect | del
  * 分组动作： new | newgroup | rename | color:#rrggbb | del
- * 空白动作： new | newgroup | multiselect | scan | settings
+ * 空白动作： new | newgroup | multiselect | scan | prune | settings
  */
 
 const DEFAULT_COLORS = [
@@ -68,6 +68,7 @@ function blankMenuTemplate() {
     { label: '多选编辑…', click: () => 'multiselect' },
     { type: 'separator' },
     { label: '扫描本机软件…', click: () => 'scan' },
+    { label: '清理无效项…', click: () => 'prune' },
     { type: 'separator' },
     { label: '设置…', click: () => 'settings' },
   ];

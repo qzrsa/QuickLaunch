@@ -11,6 +11,7 @@ const fs = require('fs');
 const store = require('./lib/store');
 const actions = require('./lib/actions');
 const scanner = require('./lib/scan');
+const prune = require('./lib/prune');
 const menus = require('./lib/menus');
 const importer = require('./lib/importer');
 const { imageFileToDataUrl, fileDefaultIconToDataUrl, urlIconFileToDataUrl, isImageIcon } = require('./lib/icon');
@@ -860,6 +861,68 @@ function registerIpc() {
 
   ipcMain.handle('ql:run', (_e, item) => runAndBump(item));
   ipcMain.handle('ql:folder', (_e, p) => actions.openContaining(p));
+
+  /* ---------------- 清理无效项：路径确实不在了的启动项 ----------------
+   * 三条不许省（用户原话：「千万不要清理错了」）：
+   *   ① 只删 classify() 判为 **certain** 的；存疑（U 盘没插、网络盘、裸命令…）一律不碰。
+   *   ② 执行前逐个**重判**：渲染层拿的是几十秒前的扫描结果，甚至可能被伪造。
+   *   ③ **先备份再删**，备份写不出来就整批放弃（不写盘、不弹"已清理"）。
+   */
+  ipcMain.handle('ql:invalid:scan', () => {
+    try {
+      return Object.assign({ ok: true }, prune.scan(store.load()));
+    } catch (e) {
+      return { ok: false, msg: e.message, certain: [], unsure: [] };
+    }
+  });
+
+  ipcMain.handle('ql:invalid:prune', (_e, ids) => {
+    try {
+      const cfg = store.load();
+      const r = prune.prune(cfg, ids);
+      if (!r.removed.length) {
+        return { ok: true, removed: [], skipped: r.skipped, backup: '' };
+      }
+      let backup = '';
+      try {
+        backup = prune.writeBackup(r.removed, path.join(app.getPath('userData'), 'backup'));
+      } catch (e) {
+        // ★ 备份失败 → 一个都不删（此时 cfg 只在内存里被改过，没有 save）
+        return { ok: false, msg: '备份没写成，已放弃这次清理：' + e.message, removed: [], skipped: r.skipped };
+      }
+      store.save(cfg);
+      buildTray();
+      try { win?.webContents.send('ql:config-changed'); } catch { /* 窗口没了就算了 */ }
+      return { ok: true, removed: r.removed, skipped: r.skipped, backup };
+    } catch (e) {
+      return { ok: false, msg: e.message, removed: [], skipped: [] };
+    }
+  });
+
+  /** 撤销一次清理：把备份里的 item 原样塞回原分组（已在别处的不重复插） */
+  ipcMain.handle('ql:items:restore', (_e, pairs) => {
+    try {
+      const cfg = store.load();
+      let restored = 0;
+      (Array.isArray(pairs) ? pairs : []).forEach(p => {
+        const g = cfg.groups.find(x => x.id === (p && p.gid));
+        const it = p && p.item;
+        if (!g || !it || !it.id) return;
+        if (cfg.groups.some(x => (x.items || []).some(i => i.id === it.id))) return;
+        g.items.push(it);
+        restored++;
+      });
+      if (restored) {
+        store.save(cfg);
+        buildTray();
+        try { win?.webContents.send('ql:config-changed'); } catch { /* 窗口没了就算了 */ }
+      }
+      return { ok: true, restored };
+    } catch (e) {
+      return { ok: false, msg: e.message, restored: 0 };
+    }
+  });
+
   ipcMain.handle('ql:pick', (e, kind) => {
     const w = BrowserWindow.fromWebContents(e.sender);
     return actions.pick(kind, w);

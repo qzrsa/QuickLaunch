@@ -66,6 +66,9 @@ const state = {
   probeMode: false,
   editMode: false,        // 多选编辑模式
   picked: new Set(),      // 编辑模式下勾选的启动项 id
+  // 清理无效项：rows = 扫描结果（certain + unsure），picked 只放用户勾的 id，
+  // last = 这一轮真的删掉的东西（撤销就用它，不读磁盘上的备份文件）。
+  prune: { rows: [], picked: new Set(), last: null, busy: false },
   update: null,           // 自更新快照（主进程推过来的，界面只读）
 };
 
@@ -850,6 +853,7 @@ async function blankMenu() {
     openEdit(null, gid);
   } else if (act === 'newgroup') createGroup();
   else if (act === 'scan') openScan();
+  else if (act === 'prune') openPrune();
   else if (act === 'multiselect') setEditMode(true);
   else if (act === 'settings') openSettings();
 }
@@ -1731,6 +1735,178 @@ async function importScan() {
   await refresh();
 }
 
+/* ------------------------------------------------------------ 清理无效项 */
+/*
+ * 分流规则**只在主进程**（src/lib/prune.js）：这里只负责展示、勾选、发 id。
+ * ★ 默认只勾「确定失效」那一组；存疑组（U 盘没插 / 网络盘 / 裸命令 / 没权限）
+ *   一律不预选，勾了也只能由用户自己动手 —— 误删的代价远大于多点两下。
+ */
+
+const PRUNE_HINT_OK = '路径不存在';
+const PRUNE_HINT_WARN = '存疑，默认不动';
+
+function pruneRows() {
+  return state.prune.rows || [];
+}
+
+function renderPruneList() {
+  const rows = pruneRows();
+  const certain = rows.filter(r => r.level === 'certain');
+  const unsure = rows.filter(r => r.level === 'unsure');
+
+  const line = r => {
+    const on = state.prune.picked.has(r.id);
+    return `<div class="scan-item ${on ? 'on' : ''} ${r.level === 'unsure' ? 'warn' : ''}" data-id="${esc(r.id)}">
+      <div class="cb">${on ? '✓' : ''}</div>
+      <div class="si-txt"><b>${esc(r.name)}<span class="gsrc">${esc(r.gname)}</span></b>
+        <span>${esc(r.path || '（空）')}</span></div>
+      <span class="src-tag ${r.level === 'unsure' ? 'warn' : 'bad'}">${esc(r.reason)}</span>
+    </div>`;
+  };
+
+  let html = '';
+  if (certain.length) {
+    html += `<div class="prune-sec"><span>确定失效 · ${certain.length}</span>
+      <em>路径真的不存在了，可以安全清理</em></div>` + certain.map(line).join('');
+  }
+  if (unsure.length) {
+    html += `<div class="prune-sec warn"><span>存疑 · ${unsure.length}</span>
+      <em>${PRUNE_HINT_WARN}：看不到 ≠ 不存在，确认过再勾</em></div>` + unsure.map(line).join('');
+  }
+  if (!rows.length) {
+    html = `<div class="prune-empty">没有发现无效项 —— 每一项的路径都还在。</div>`;
+  }
+  $('#pruneList').innerHTML = html;
+
+  const n = state.prune.picked.size;
+  $('#pruneCount').textContent = rows.length
+    ? `已选 ${n} 项 · 确定失效 ${certain.length} 项 / 存疑 ${unsure.length} 项`
+    : '已选 0 项';
+  const go = $('#btnPruneGo');
+  if (go) {
+    go.disabled = !n || state.prune.busy;
+    go.textContent = n ? `清理选中 ${n} 项` : '清理选中项';
+  }
+  $('#btnPruneAll').disabled = !certain.length || state.prune.busy;
+  $('#btnPruneNone').disabled = !n || state.prune.busy;
+}
+
+async function openPrune() {
+  state.prune = { rows: [], picked: new Set(), last: null, busy: false };
+  $('#pruneOverlay').hidden = false;
+  $('#pruneResult').hidden = true;
+  $('#pruneList').hidden = false;
+  $('#pruneBar').hidden = false;
+  $('#btnPruneUndo').hidden = true;
+  $('#btnPruneGo').hidden = false;
+  $('#pruneSub').textContent = '正在逐项检查路径…';
+  $('#pruneList').innerHTML = '<div class="skeleton" style="height:56px;margin-bottom:6px"></div>'.repeat(4);
+  $('#pruneCount').textContent = '已选 0 项';
+
+  const r = await API.scanInvalid();
+  if (!r || !r.ok) {
+    $('#pruneSub').textContent = '检查失败：' + ((r && r.msg) || '未知错误');
+    $('#pruneList').innerHTML = '<div class="prune-empty">没能读出清单，请稍后再试。</div>';
+    return;
+  }
+  state.prune.rows = [
+    ...(r.certain || []).map(x => Object.assign({ level: 'certain' }, x)),
+    ...(r.unsure || []).map(x => Object.assign({ level: 'unsure' }, x)),
+  ];
+  // ★ 默认只勾「确定失效」
+  state.prune.picked = new Set((r.certain || []).map(x => x.id));
+  const n = state.prune.rows.length;
+  $('#pruneSub').textContent = n
+    ? `共 ${n} 项需要看一眼：${(r.certain || []).length} 项确定失效、${(r.unsure || []).length} 项存疑`
+    : '每一项的路径都还在，不用清理';
+  renderPruneList();
+}
+
+function togglePrunePick(id) {
+  if (state.prune.busy) return;
+  if (state.prune.picked.has(id)) state.prune.picked.delete(id);
+  else state.prune.picked.add(id);
+  renderPruneList();
+}
+
+async function runPrune() {
+  if (state.prune.busy) return;
+  const ids = [...state.prune.picked];
+  if (!ids.length) return toast('info', '还没有勾选任何项');
+
+  const rows = pruneRows().filter(r => state.prune.picked.has(r.id));
+  const sure = rows.filter(r => r.level === 'certain').length;
+  const doubt = rows.length - sure;
+  const sample = rows.slice(0, 4).map(r => `· ${r.name}`).join('\n');
+  const ok = await confirmDialog({
+    icon: '🧹',
+    title: `清理这 ${rows.length} 项？`,
+    text: `会从各自的分组里移除。清理前会把完整内容备份到 data\\backup\\，清理完可以一键撤销。`
+      + (doubt ? `\n\n其中 ${doubt} 项属于「存疑」（${sure} 项确定失效）—— 存疑项请你再确认一遍真的不需要了。` : '')
+      + `\n\n${sample}${rows.length > 4 ? '\n· …' : ''}`,
+    okText: '清理',
+  });
+  if (!ok) return;
+
+  state.prune.busy = true;
+  renderPruneList();
+  const r = await API.pruneInvalid(ids);
+  state.prune.busy = false;
+
+  if (!r || !r.ok) {
+    renderPruneList();
+    return toast('bad', '清理失败', (r && r.msg) || '未知错误');
+  }
+
+  const removed = r.removed || [];
+  state.prune.last = removed.length ? removed : null;
+  // 主进程可能因为"重判后已经不算失效"而跳过一些，如实告诉用户
+  const skipped = r.skipped || [];
+  $('#pruneList').hidden = true;
+  $('#pruneBar').hidden = true;
+  $('#pruneResult').hidden = false;
+  $('#pruneResult').innerHTML = removed.length
+    ? `<div class="prune-done">
+         <div class="pd-ic">✓</div>
+         <div>
+           <b>已清理 ${removed.length} 项</b>
+           <p>备份：<code>${esc(r.backup || '')}</code></p>
+           ${skipped.length ? `<p class="muted-note">另有 ${skipped.length} 项在复查时已不算失效，没有动：${esc(skipped.map(s => s.name).slice(0, 6).join('、'))}</p>` : ''}
+           <p class="muted-note">需要的话，点右下角「撤销这次清理」就能原样放回去。</p>
+         </div>
+       </div>`
+    : `<div class="prune-empty">没有动任何东西：这些项在复查时都已经不算失效了。</div>`;
+  $('#pruneCount').textContent = removed.length ? `已清理 ${removed.length} 项` : '未改动';
+  $('#btnPruneGo').hidden = true;
+  $('#btnPruneUndo').hidden = !removed.length;
+  $('#pruneSub').textContent = removed.length ? '清理完成' : '没有需要清理的项';
+
+  if (removed.length) {
+    toast('ok', `已清理 ${removed.length} 项`, '可在弹窗里撤销');
+    await refresh();
+  }
+}
+
+async function undoPrune() {
+  const last = state.prune.last;
+  if (!last || !last.length) return;
+  const ok = await confirmDialog({
+    icon: '↩️',
+    title: `把 ${last.length} 项放回去？`,
+    text: '会按清理前的位置放回各自的分组（顺序追加到该分组末尾）。',
+    okText: '撤销清理',
+    danger: false,
+  });
+  if (!ok) return;
+  const r = await API.restoreItems(last.map(x => ({ gid: x.gid, item: x.item })));
+  if (!r || !r.ok) return toast('bad', '撤销失败', (r && r.msg) || '未知错误');
+  state.prune.last = null;
+  $('#btnPruneUndo').hidden = true;
+  $('#pruneOverlay').hidden = true;
+  toast('ok', `已放回 ${r.restored || 0} 项`);
+  await refresh();
+}
+
 /* ------------------------------------------------------------ 设置 */
 
 function accelFromEvent(e) {
@@ -2514,6 +2690,26 @@ function bind() {
   $('#btnScanNone').addEventListener('click', () => { state.scanPicked.clear(); renderScanList(); });
   $('#btnScanImport').addEventListener('click', importScan);
 
+  /* 清理无效项 */
+  $('#btnPruneInvalid').addEventListener('click', openPrune);
+  $('#pruneList').addEventListener('click', e => {
+    const row = e.target.closest('.scan-item');
+    if (row && row.dataset.id) togglePrunePick(row.dataset.id);
+  });
+  $('#btnPruneAll').addEventListener('click', () => {
+    if (state.prune.busy) return;
+    // 只全选「确定失效」，存疑永远不跟着全选
+    pruneRows().filter(r => r.level === 'certain').forEach(r => state.prune.picked.add(r.id));
+    renderPruneList();
+  });
+  $('#btnPruneNone').addEventListener('click', () => {
+    if (state.prune.busy) return;
+    state.prune.picked.clear();
+    renderPruneList();
+  });
+  $('#btnPruneGo').addEventListener('click', runPrune);
+  $('#btnPruneUndo').addEventListener('click', undoPrune);
+
   /* 右键菜单 */
   document.addEventListener('contextmenu', async e => {
     const el = e.target;
@@ -2920,6 +3116,9 @@ function createMockBridge() {
             { id: 'a1', name: '下载', icon: '📥', type: 'folder', path: 'C:\\Users\\QZRS\\Downloads', args: '', cwd: '', desc: 'Downloads', favorite: true, useCount: 12, lastUsed: 1792100000, elevate: false, console: false },
             { id: 'a2', name: '工作区', icon: '🧰', type: 'folder', path: 'D:\\WorkBuddy', args: '', cwd: '', desc: 'D:\\WorkBuddy', favorite: false, useCount: 31, lastUsed: 1792150000, elevate: false, console: false },
             { id: 'a3', name: '本机磁盘', icon: '💽', type: 'cmd', path: 'explorer.exe "shell:MyComputerFolder"', args: '', cwd: '', desc: '资源管理器 · 此电脑', favorite: false, useCount: 4, lastUsed: 1792110000, elevate: false, console: false },
+            // 预览用的"失效项"样例：__gone 只有假桥认（真机由 src/lib/prune.js 判），
+            // 用来在浏览器里演示「清理无效项」弹窗，不会影响桌面版。
+            { id: 'a9', name: '旧版工具（示例）', icon: '🧹', type: 'app', path: 'C:\\Program Files\\OldTool\\old.exe', args: '', cwd: '', desc: '', favorite: false, useCount: 0, lastUsed: 0, elevate: false, console: false, __gone: true },
           ],
         },
         {
@@ -3017,6 +3216,49 @@ function createMockBridge() {
     iconDefault: async () => ({ ok: false }),  // 预览模式不读盘
     iconPick: async () => ({ ok: false, canceled: true }),  // 预览模式不读盘
     scan: async () => clone(sampleScan),
+    /* 预览模式：只演示界面。真判据在 src/lib/prune.js，浏览器里没法读盘，
+       所以给两条"确定失效"+ 一条"存疑"做样例，清理时从 demo 配置里摘掉。 */
+    scanInvalid: async () => {
+      const rows = [];
+      cfg.groups.forEach(g => g.items.forEach(i => {
+        if (i.__gone) {
+          rows.push({ id: i.id, name: i.name, path: i.path, type: i.type, gid: g.id, gname: g.name, reason: '路径不存在' });
+        }
+      }));
+      const first = cfg.groups[0] && cfg.groups[0].items[0];
+      if (first && !first.__gone) {
+        rows.push({ id: first.id, name: first.name, path: first.path, type: first.type, gid: cfg.groups[0].id, gname: cfg.groups[0].name, reason: '所在磁盘（Z:）现在没接入' });
+      }
+      const certain = rows.filter(r => r.reason === '路径不存在');
+      const unsure = rows.filter(r => r.reason !== '路径不存在');
+      return { ok: true, certain, unsure };
+    },
+    pruneInvalid: async ids => {
+      const want = new Set(ids || []);
+      const removed = [];
+      cfg.groups.forEach(g => {
+        const keep = [];
+        g.items.forEach(i => {
+          if (want.has(i.id)) removed.push({ gid: g.id, gname: g.name, item: clone(i) });
+          else keep.push(i);
+        });
+        g.items = keep;
+      });
+      save();
+      return { ok: true, removed, skipped: [], backup: '（预览模式不写备份）' };
+    },
+    restoreItems: async pairs => {
+      let restored = 0;
+      (pairs || []).forEach(p => {
+        const g = cfg.groups.find(x => x.id === p.gid);
+        if (!g || !p.item) return;
+        if (cfg.groups.some(x => x.items.some(i => i.id === p.item.id))) return;
+        g.items.push(clone(p.item));
+        restored++;
+      });
+      save();
+      return { ok: true, restored };
+    },
     /* 预览模式：没有 webUtils，路径由 text/uri-list 回退提供 */
     canResolvePath: false,
     pathForFile: () => '',

@@ -242,6 +242,39 @@
   </div>
 </div>
 
+<!-- ===================== 清理无效项 ===================== -->
+<!-- 只处理「路径确实不在了」的项。存疑的一律单列、默认不勾：
+     U 盘没插、网络盘没连、只写了命令名、没权限确认 —— 这些"看不到"不等于"不存在"。 -->
+<div class="overlay" id="pruneOverlay" hidden>
+  <div class="modal wide">
+    <div class="modal-head">
+      <div class="mh-ic">🧹</div>
+      <div>
+        <h2>清理无效项</h2>
+        <p id="pruneSub">正在逐项检查路径…</p>
+      </div>
+      <div class="spacer"></div>
+      <button class="x-btn" data-close>✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="prune-bar" id="pruneBar">
+        <button class="btn sm" id="btnPruneAll">全选确定失效</button>
+        <button class="btn sm" id="btnPruneNone">全不选</button>
+        <span class="muted-note" id="pruneHint">只清理「确定失效」；存疑项默认不选</span>
+      </div>
+      <div class="scan-list" id="pruneList"></div>
+      <div class="prune-result" id="pruneResult" hidden></div>
+    </div>
+    <div class="modal-foot">
+      <span id="pruneCount" class="muted-note">已选 0 项</span>
+      <div class="spacer"></div>
+      <button class="btn sm" data-close>取消</button>
+      <button class="btn sm" id="btnPruneUndo" hidden>撤销这次清理</button>
+      <button class="btn danger sm" id="btnPruneGo">清理选中项</button>
+    </div>
+  </div>
+</div>
+
 <!-- ===================== 设置 ===================== -->
 <div class="overlay" id="setOverlay" hidden>
   <div class="modal">
@@ -294,6 +327,11 @@
         <div class="field">
           <label>恢复默认 <span class="hint">误删了「文件与目录 / 系统工具 / 开发 / 常用网站」时，把缺的分组和默认项补回来</span></label>
           <button class="btn sm" id="btnRestoreDefaults">恢复默认分组</button>
+        </div>
+
+        <div class="field">
+          <label>清理无效项 <span class="hint">路径确实不存在才会列出（U 盘没插、网络盘、只写命令名都算"存疑"，默认不动）；删前自动备份，可撤销</span></label>
+          <button class="btn sm" id="btnPruneInvalid">检查无效项…</button>
         </div>
 
         <div class="field">

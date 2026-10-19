@@ -400,7 +400,7 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
   // —— 空白 ——
   const bt = menus.blankMenuTemplate();
   const bacts = bt.filter(i => typeof i.click === 'function').map(i => i.click());
-  ok(bacts.join(',') === 'new,newgroup,multiselect,scan,settings', '空白菜单动作 = new,newgroup,multiselect,scan,settings', bacts.join(','));
+  ok(bacts.join(',') === 'new,newgroup,multiselect,scan,prune,settings', '空白菜单动作 = new,newgroup,multiselect,scan,prune,settings', bacts.join(','));
 
   ok(menus.DEFAULT_COLORS.length === 8 && menus.DEFAULT_COLORS.every(c => c.name && /^#[0-9a-f]{6}$/i.test(c.value)),
     'DEFAULT_COLORS 均为合法 #rrggbb');
@@ -1568,6 +1568,158 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
       '★ 被拖卡片 pointer-events:none —— elementFromPoint 才能打到侧栏');
     ok(/\.card\.dragging\.over-group \{/.test(cssSrcG),
       '★ 悬在分组上时被拖卡片让位（否则它正好盖住要高亮的那一行）');
+  }
+
+  /* --------------------- 清理无效项（v1.5.5） */
+  section('清理无效项：只判「确定失效」，存疑一律不动');
+  {
+    const prune = require('../src/lib/prune');
+    const resolveLib = require('../src/lib/resolve');
+    resolveLib.resetCache();
+
+    const ENV = { SystemRoot: 'C:\\Windows', PATHEXT: '.EXE', PATH: '' };
+    const HOME = 'C:\\Users\\tester';
+    /* 假 fs：键统一小写；'ok' = 存在；其它字符串 = statSync 抛该 code。
+       ★ existsSync 也实现，因为裸命令要经 resolve 的 PATH 搜索。 */
+    const mkFs = map => ({
+      statSync(p) {
+        const v = map[String(p).toLowerCase()];
+        if (v === 'ok' || v === true) return { size: 0 };
+        const e = new Error(v || 'ENOENT'); e.code = v || 'ENOENT'; throw e;
+      },
+      existsSync(p) {
+        const v = map[String(p).toLowerCase()];
+        return v === 'ok' || v === true;
+      },
+    });
+    const cls = (item, map, env) => prune.classify(item, { fs: mkFs(map || {}), env: env || ENV, home: HOME });
+    const it = o => Object.assign({ id: 'i', name: 'n', type: 'app', path: '' }, o);
+
+    // ---- 不参与清理的三类 ----
+    ok(cls(it({ type: 'url', path: 'https://a.b' })).level === 'ok', '网址项不参与清理');
+    ok(cls(it({ type: 'cmd', path: 'explorer.exe "shell:MyComputerFolder"' })).level === 'ok',
+      '★ type=cmd 是整行命令，没有"路径"可查 → 永不清理');
+    ok(cls(it({ type: 'app', path: 'https://example.com/x' })).level === 'ok', 'path 是网址也不参与');
+
+    // ---- 确定失效：绝对路径 + 盘在 + 明确 ENOENT ----
+    const fsGone = mkFs({ 'd:\\': 'ok' });
+    ok(prune.classify(it({ path: 'D:\\gone\\a.exe' }), { fs: fsGone, env: ENV, home: HOME }).level === 'certain',
+      '★ 盘在、文件 ENOENT → 确定失效');
+
+    // ---- 存疑的各种情形（一个都不许判成 certain） ----
+    const fsNoDrive = mkFs({});   // 连 D:\ 都没有
+    const rDrive = prune.classify(it({ path: 'D:\\gone\\a.exe' }), { fs: fsNoDrive, env: ENV, home: HOME });
+    ok(rDrive.level === 'unsure' && /磁盘/.test(rDrive.reason),
+      '★★ U 盘/移动硬盘没插（盘符不存在）→ 存疑，绝不清理', rDrive.reason);
+
+    const fsDeny = mkFs({ 'd:\\': 'ok', 'd:\\gone\\a.exe': 'EACCES' });
+    const rDeny = prune.classify(it({ path: 'D:\\gone\\a.exe' }), { fs: fsDeny, env: ENV, home: HOME });
+    ok(rDeny.level === 'unsure' && /EACCES/.test(rDeny.reason),
+      '★★ 没权限看不到（EACCES）→ 存疑，绝不清理（existsSync 也会回 false，不能拿它当失效）', rDeny.reason);
+
+    ok(cls(it({ path: '\\\\nas\\share\\a.exe' })).level === 'unsure', '★★ 网络位置 → 存疑');
+    ok(cls(it({ path: '' })).level === 'unsure', '没填路径 → 存疑');
+    ok(cls(it({ path: 'bin\\a.exe' })).level === 'unsure', '相对路径 → 存疑');
+    ok(cls(it({ path: '%NOPE_VAR%\\a.exe' })).level === 'unsure', '★ 环境变量没展开 → 存疑');
+
+    // ★ 展开必须在"还有没有 %VAR%"的判断**之前**，否则 %SystemRoot%\… 会被全判成存疑
+    const fsSys = mkFs({ 'c:\\': 'ok', 'c:\\windows\\ok.exe': 'ok' });
+    ok(prune.classify(it({ path: '%SystemRoot%\\ok.exe' }), { fs: fsSys, env: ENV, home: HOME }).level === 'ok',
+      '★ 能展开的环境变量先展开再判断（%SystemRoot%\\ok.exe → 路径存在）');
+
+    // 带引号的路径：不去引号就必判失效 —— 这正是"误删"的经典来源
+    const fsQ = mkFs({ 'd:\\': 'ok', 'd:\\a b\\c.exe': 'ok' });
+    ok(prune.classify(it({ path: '"D:\\a b\\c.exe"' }), { fs: fsQ, env: ENV, home: HOME }).level === 'ok',
+      '★ 带引号的路径先去引号（否则引号里的路径必然"不存在"→ 误删）');
+
+    // 裸命令：PATH 里能找到就不是无效项；找不到也只算存疑
+    const fsBare = mkFs({ 'c:\\windows\\system32\\zzfind1.exe': 'ok' });
+    ok(prune.classify(it({ path: 'zzfind1.exe' }), { fs: fsBare, env: ENV, home: HOME }).level === 'ok',
+      '裸命令能在 PATH/System32 里找到 → 正常');
+    const rBare = prune.classify(it({ path: 'zznosuchcmd9.exe' }), { fs: mkFs({}), env: ENV, home: HOME });
+    ok(rBare.level === 'unsure', '★ PATH 里找不到的裸命令 → 存疑（可能是 Store 别名 / 打错了）', rBare.reason);
+
+    // ---- scan：分流 + 行内容 ----
+    const cfgP = store.defaultConfig();
+    cfgP.groups = [
+      { id: 'g1', name: '一号组', items: [
+        it({ id: 'ok1', name: '正常', path: 'C:\\Windows\\ok.exe' }),
+        it({ id: 'bad1', name: '没了', path: 'D:\\gone\\a.exe' }),
+        it({ id: 'u1', name: 'U 盘上的', path: 'Z:\\x\\a.exe' }),
+        it({ id: 'u2', name: '裸命令', path: 'nope_zz_cmd.exe' }),
+      ] },
+      { id: 'g2', name: '二号组', items: [it({ id: 'bad2', name: '也没了', path: 'D:\\gone\\b.exe' })] },
+    ];
+    const scanMap = { 'c:\\': 'ok', 'c:\\windows\\ok.exe': 'ok', 'd:\\': 'ok' };
+    const scanned = prune.scan(cfgP, { fs: mkFs(scanMap), env: ENV, home: HOME });
+    ok(scanned.certain.length === 2 && scanned.unsure.length === 2,
+      `scan 分流正确：确定 ${scanned.certain.length} / 存疑 ${scanned.unsure.length}`);
+    ok(scanned.certain.every(r => r.gid && r.gname && r.reason && r.path),
+      '★ 每行都带 gid/gname/reason/path（弹窗要按分组显示，删的时候也按 gid 回写）');
+    ok(!scanned.certain.some(r => r.id === 'ok1'), '正常项不出现在清单里');
+    ok(scanned.unsure.some(r => r.id === 'u1') && scanned.unsure.some(r => r.id === 'u2'),
+      '存疑项进的是 unsure 组（默认不勾选）');
+
+    // ---- prune：只删 certain；传进来的 unsure id 要跳过 ----
+    const cfgQ = JSON.parse(JSON.stringify(cfgP));
+    const pr = prune.prune(cfgQ, ['bad1', 'u1', 'u2', 'ok1', 'not-exist'], { fs: mkFs(scanMap), env: ENV, home: HOME });
+    ok(pr.removed.length === 1 && pr.removed[0].item.id === 'bad1',
+      '★ 只删确定失效那一项（存疑的 u1/u2、正常的 ok1 都不动）');
+    ok(pr.skipped.length === 3 && pr.skipped.every(s => /路径存在|PATH|磁盘/.test(s.reason)),
+      '★ 被跳过的项带原因回传（界面要如实告诉用户"这几项没动"）');
+    ok(cfgQ.groups[0].items.map(i => i.id).join(',') === 'ok1,u1,u2',
+      '★ 没被选中的项保持原顺序（不是重建数组）');
+    ok(cfgQ.groups[1].items.length === 1 && cfgQ.groups[1].items[0].id === 'bad2',
+      '另一组没被选中的 bad2 仍在原位');
+
+    const prSame = prune.prune(cfgQ, ['not-exist'], { fs: mkFs(scanMap), env: ENV, home: HOME });
+    ok(prSame.removed.length === 0, '传一个不存在的 id → 什么都不删（不抛错）');
+
+    // ---- 备份：写不出来就别删（main.js 据此中止） ----
+    const bakDir = path.join(TMP, 'prune-bak');
+    fs.rmSync(bakDir, { recursive: true, force: true });
+    const bak = prune.writeBackup(pr.removed, bakDir, Date.UTC(2026, 9, 19, 4, 5, 6));
+    ok(fs.existsSync(bak) && /invalid-\d{8}-\d{6}\.json$/.test(bak), '备份文件按 invalid-日期-时间.json 落盘', path.basename(bak));
+    const rawBak = fs.readFileSync(bak, 'utf8');
+    ok(rawBak.charCodeAt(0) === 0x7b, '★ 备份是纯 JSON（不带 BOM，PowerShell 5.1 那种 BOM 会让 JSON.parse 抛）');
+    const parsedBak = JSON.parse(rawBak);
+    ok(parsedBak.removed.length === 1 && parsedBak.removed[0].gid === 'g1'
+      && parsedBak.removed[0].item.id === 'bad1',
+      '★ 备份里带着分组与完整 item（撤销就是照它塞回去）');
+    ok(typeof parsedBak.savedAt === 'string' && !!parsedBak.note, '备份带时间与说明');
+
+    // ---- 主进程接线：备份成功之后才 save；备份失败整批放弃 ----
+    const mainSrcP = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+    const iWrite = mainSrcP.indexOf('prune.writeBackup');
+    const iSave = mainSrcP.indexOf('store.save(cfg)', iWrite);
+    ok(iWrite > 0 && iSave > iWrite, '★★ 先写备份、再 store.save（顺序反了就是"删完才发现没备份"）');
+    ok(/备份没写成，已放弃这次清理/.test(mainSrcP), '★★ 备份失败 → 整批放弃，不写盘也不报"已清理"');
+    ok(/const r = prune\.prune\(cfg, ids\)/.test(mainSrcP),
+      '★ 服务端按同一份 classify 再判一遍（渲染层传来的 id 不可信）');
+
+    const preSrcP = fs.readFileSync(path.join(__dirname, '..', 'src', 'preload.js'), 'utf8');
+    ok(/scanInvalid: \(\) => ipcRenderer\.invoke\('ql:invalid:scan'\)/.test(preSrcP), 'preload 暴露 scanInvalid');
+    ok(/pruneInvalid: ids => ipcRenderer\.invoke\('ql:invalid:prune', ids\)/.test(preSrcP), 'preload 暴露 pruneInvalid');
+    ok(/restoreItems: pairs => ipcRenderer\.invoke\('ql:items:restore', pairs\)/.test(preSrcP), 'preload 暴露 restoreItems');
+    ['ql:invalid:scan', 'ql:invalid:prune', 'ql:items:restore'].forEach(ch => {
+      ok(new RegExp(`ipcMain\\.handle\\('${ch}'`).test(mainSrcP), `主进程注册了 ${ch}`);
+    });
+
+    const menusSrcP = fs.readFileSync(path.join(__dirname, '..', 'src', 'lib', 'menus.js'), 'utf8');
+    ok(/label: '清理无效项…', click: \(\) => 'prune'/.test(menusSrcP), '空白处右键有「清理无效项…」入口');
+
+    const appSrcP = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'app.js'), 'utf8');
+    ok(/const PRUNE_HINT_WARN = '存疑，默认不动'/.test(appSrcP), '存疑组有明确文案');
+    ok(/state\.prune\.picked = new Set\(\(r\.certain \|\| \[\]\)\.map\(x => x\.id\)\)/.test(appSrcP),
+      '★★ 打开弹窗时**只预勾**「确定失效」，存疑项必须用户自己动手');
+    ok(/filter\(r => r\.level === 'certain'\)\.forEach\(r => state\.prune\.picked\.add\(r\.id\)\)/.test(appSrcP),
+      '★★ 「全选」也只选确定失效 —— 一键全选不能把存疑项一起带走');
+    ok(/await API\.pruneInvalid\(ids\)/.test(appSrcP), '点「清理」走主进程 IPC（不在渲染层删数据）');
+    ok(/await API\.restoreItems\(last\.map/.test(appSrcP), '清理结果里能一键撤销');
+
+    const indexSrcP = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'index.html'), 'utf8');
+    ok(/id="btnPruneInvalid"/.test(indexSrcP), '设置面板有入口按钮');
+    ok(/id="btnPruneUndo"/.test(indexSrcP) && /id="btnPruneAll"/.test(indexSrcP), '弹窗里有撤销与全选');
   }
 
   section('事件白名单对账');

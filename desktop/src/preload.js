@@ -33,6 +33,12 @@ contextBridge.exposeInMainWorld('ql', {
   healUrls: () => ipcRenderer.invoke('ql:heal:urls'),
   iconPick: () => ipcRenderer.invoke('ql:icon:pick'),
 
+  /* 清理无效项（路径确实不存在）：判断、删除、撤销都在主进程，
+     渲染层只拿清单、传 id —— 判据只能有一份（见 lib/prune.js）。 */
+  scanInvalid: () => ipcRenderer.invoke('ql:invalid:scan'),
+  pruneInvalid: ids => ipcRenderer.invoke('ql:invalid:prune', ids),
+  restoreItems: pairs => ipcRenderer.invoke('ql:items:restore', pairs),
+
   /* 设置 */
   setSettings: patch => ipcRenderer.invoke('ql:settings:set', patch),
 
