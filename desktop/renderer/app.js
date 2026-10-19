@@ -1029,7 +1029,7 @@ async function batchDelete() {
 
 /* ------------------------------------------------------------ 长按拖动排序 */
 
-const HOLD_MS = 1500;         // 普通模式：长按多久进入拖动模式
+const HOLD_MS = 500;          // 普通模式：长按 0.5 秒进入拖动模式
 const HOLD_MS_EDIT = 300;     // 多选模式：点卡片是勾选，想拖动只需按住 0.3 秒
 const MOVE_TOLERANCE = 8;     // 长按期间允许的手抖幅度（px）
 // 拖动时底部会预留一条「死区」放垃圾桶（CSS 里 body.card-dragging .content 的 margin-bottom）。
@@ -1118,9 +1118,9 @@ function cancelHold(reason) {
 
 /** 这张卡片该按住多久才进拖动模式；返回 0 = 这里不启动拖动。
  *
- *  - 普通模式：一律 1.5 秒。★ 即使当前网格**不能排序**（全部/最近/收藏视图），
- *    也要能长按 —— 那时的拖动是「拖到底部垃圾桶删除」或「拖到左侧分组移进去」，
- *    不能因为没有 data-gid 就禁掉。
+ *  - 普通模式：一律 0.5 秒（v1.5.6 从 1.5 秒调短，用户要求）。★ 即使当前网格**不能排序**
+ *    （全部/最近/收藏视图），也要能长按 —— 那时的拖动是「拖到底部垃圾桶删除」或
+ *    「拖到左侧分组移进去」，不能因为没有 data-gid 就禁掉。
  *  - 多选模式：点卡片是「勾选」，所以只要 0.3 秒（用户要求）。
  *    ★ v1.5.3 起，虚拟视图（全部/最近/收藏）里也接管：那里虽然不能排序，
  *      但可以**拖到左侧分组批量移进去** —— 跨分组整理就靠这条路径。
@@ -1344,10 +1344,14 @@ async function endDrag(e) {
   const dry = !!state.dragDryRun;
   resetDraggedCard(d);
 
-  // ★ 多选模式：按住 0.3 秒却**一步都没挪** → 当成一次普通点选。
-  //   否则「手按重了一点」既没排序、也没勾上，用户会觉得卡片点不动。
-  if (state.editMode && !d.moved && !overTrash && !dry && !state.probeMode) {
-    togglePick(d.id);
+  // ★ 按住够久却**一步都没挪** → 这不算拖动，只是"按得慢了一点"。
+  //   - 多选模式：当成一次点选（否则手按重一点既没排序、也没勾上）；
+  //   - 普通模式：当成一次启动。★ v1.5.6 起门槛从 1.5s 缩到 0.5s，慢速点击会变常见，
+  //     不补这一下的话，按超过半秒再松手就变成"点了没反应"。
+  //   真的拖动必然伴随位移（moveDrag 里 >6px），所以不会误伤拖拽。
+  if (!d.moved && !overTrash && !dry && !state.probeMode) {
+    if (state.editMode) togglePick(d.id);
+    else runItem(d.id);
     return;
   }
 
@@ -4306,7 +4310,7 @@ function createMockBridge() {
   });
 
   // 长按拖动自检（仅 --drag-probe 时由主进程触发）：
-  // 合成真实 PointerEvent 走完「长按 1.5s → 进入拖动 → 让位 → 松手」，
+  // 合成真实 PointerEvent 走完「长按 0.5s → 进入拖动 → 让位 → 松手」，
   // 阶段1 验证排序判定，阶段2 验证拖入垃圾桶；dryRun，不写配置。
   API.on('ql:drag-probe', async (opt) => {
     state.probeMode = true;

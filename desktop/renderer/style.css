@@ -869,7 +869,7 @@ body.edit-mode .content { padding-bottom: 108px; }
 .card.holding::before {
   content: ""; position: absolute; left: 0; bottom: 0; z-index: 3;
   height: 3px; width: 0; background: var(--accent); border-radius: 0 0 var(--r-m) var(--r-m);
-  animation: holdFill var(--hold, 1500ms) linear forwards;
+  animation: holdFill var(--hold, 500ms) linear forwards;
 }
 @keyframes holdFill { from { width: 0; } to { width: 100%; } }
 .card.holding .tile { animation: bump .55s var(--ease) infinite alternate; }

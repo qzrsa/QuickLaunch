@@ -1218,18 +1218,23 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
     '退出/进入编辑模式都清空勾选（防上一轮的隐形残留）');
   ok(/state\.picked\.clear\(\)/.test(appSrc), '切换视图时会清空勾选');
 
-  /* ---- v1.5.0：多选模式下也能拖动排序（按住 0.3 秒） ---- */
+  /* ---- v1.5.0：多选模式下也能拖动排序（按住 0.3 秒）；v1.5.6：普通模式 1.5s → 0.5s ---- */
   const cssEdit = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'style.css'), 'utf8');
+  ok(/const HOLD_MS = 500/.test(appSrc), '★ 普通模式长按 0.5 秒进入拖动（v1.5.6 从 1.5 秒调短）');
   ok(/const HOLD_MS_EDIT = 300/.test(appSrc), '多选模式长按 0.3 秒即可拖动');
   ok(/function holdMsFor\(card\)/.test(appSrc), '拖动等待时长统一由 holdMsFor 决定');
   ok(/if \(!state\.editMode\) return HOLD_MS;/.test(appSrc) && /return state\.q \? 0 : HOLD_MS_EDIT;/.test(appSrc),
-    '★ 普通模式 1.5s（"全部"视图也要能拖去垃圾桶）；多选模式只要不在搜索中就 0.3s');
+    '★ 普通模式 0.5s（"全部"视图也要能拖去垃圾桶）；多选模式只要不在搜索中就 0.3s');
+  ok(/animation: holdFill var\(--hold, 500ms\)/.test(cssEdit),
+    '★ 长按进度条的 CSS 兜底时长与 HOLD_MS 一致（否则进度条走完还没起拖）');
   ok(!/function onGridPointerDown[\s\S]{0,220}state\.editMode\) return/.test(appSrc),
     '★ onGridPointerDown 不再一见多选模式就 return（否则永远拖不动）');
   ok(/card-drag-no-trash/.test(appSrc) && /card-drag-no-trash/.test(cssEdit),
     '多选模式拖动不出垃圾桶（只排序，避免"想挪位置"变成"删了一项"）');
-  ok(/state\.editMode && !d\.moved && !overTrash/.test(appSrc) && /togglePick\(d\.id\)/.test(appSrc),
-    '★ 按住够久但一步没挪 → 当成点选（不然按重一点就既没排序也没勾上）');
+  ok(/if \(!d\.moved && !overTrash && !dry && !state\.probeMode\) \{[\s\S]{0,60}togglePick\(d\.id\)/.test(appSrc),
+    '★ 按住够久但一步没挪 → 多选当成点选（不然按重一点就既没排序也没勾上）');
+  ok(/if \(state\.editMode\) togglePick\(d\.id\);[\s\S]{0,40}runItem\(d\.id\);/.test(appSrc),
+    '★ 普通模式「按够但没挪就松手」= 启动一次（0.5s 门槛下慢速点击不能变成"点了没反应"）');
   ok(/card-drag-no-trash \.content \{ margin-bottom: 0/.test(cssEdit),
     '多选拖动时不预留底部 88px 死区');
   ok(/card-drag-no-trash #editBar \{[^}]*pointer-events: none/.test(cssEdit),
