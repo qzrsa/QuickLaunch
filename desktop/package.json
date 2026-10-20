@@ -1,7 +1,7 @@
 {
   "name": "quicklaunch",
   "productName": "QuickLaunch",
-  "version": "1.5.6",
+  "version": "1.5.7",
   "description": "快速启动 · QuickLaunch — 桌面版启动器",
   "main": "src/main.js",
   "author": "QZRS",

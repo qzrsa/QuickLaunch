@@ -556,6 +556,10 @@ function setWinMaxIcon(max) {
 /** 把设置反映到 DOM 上（目前只有「悬停显示卡片快捷按钮」） */
 function applySettingsToDom(settings) {
   document.body.classList.toggle('hover-actions', !!(settings && settings.hoverActions));
+  // 动画开关：默认开；明确关了才挂 data-anim="off"。
+  const on = !settings || settings.animations !== false;
+  if (on) document.documentElement.removeAttribute('data-anim');
+  else document.documentElement.setAttribute('data-anim', 'off');
 }
 
 /* ------------------------------------------------------------ 编辑弹窗 */
@@ -1969,6 +1973,7 @@ async function openSettings() {
   $('#sCloseAction').value = s.closeAction || 'tray';
   $('#sTrayQuick').value = s.trayQuick || 'top';
   $('#sHoverActs').checked = !!s.hoverActions;
+  $('#sAnimations').checked = s.animations !== false;
   $('#sAutoUpdate').checked = s.autoUpdate !== false;
   $('#sUpdateBase').value = s.updateBase || '';
   setUpdateBaseMsg('', '');
@@ -2317,6 +2322,7 @@ async function saveSettings() {
     closeAction: $('#sCloseAction').value,
     trayQuick: $('#sTrayQuick').value,
     hoverActions: $('#sHoverActs').checked,
+    animations: $('#sAnimations').checked,
     autoUpdate: $('#sAutoUpdate').checked,
     updateBase,
     startGroup: $('#sStartGroup').value || 'last',
@@ -2897,6 +2903,12 @@ function bind() {
   });
   $('#btnOpenCfg').addEventListener('click', () => API.openConfigDir());
   $('#btnSetSave').addEventListener('click', saveSettings);
+  // 动画开关：切换时立刻生效，让用户当场看到效果（保存才写盘）
+  $('#sAnimations').addEventListener('change', () => {
+    const on = $('#sAnimations').checked;
+    if (on) document.documentElement.removeAttribute('data-anim');
+    else document.documentElement.setAttribute('data-anim', 'off');
+  });
   // 手动修图标：只补"占位图 / 网址还挂着 emoji"那批，不会冲掉用户自己挑的表情/图片
   $('#btnReextractIcons').addEventListener('click', () => { healAllIcons(); });
   // 恢复默认分组：误删「文件与目录 / 系统工具 / 开发 / 常用网站」的后悔药（只补不删）

@@ -7,6 +7,28 @@
    hidden 属性形同虚设。.empty / .field / .overlay 都踩过这个坑。 */
 [hidden] { display: none !important; }
 
+/* ============================================================
+   界面动画开关（settings.animations = false 时挂在 <html data-anim="off">）
+   只停「装饰性动画」（入场 pop / toast 滑入滑出 / rise / shake / shimmer / float …），
+   transition（颜色/边框/宽度这类即时反馈）保留 —— 关掉会让界面显得卡顿。
+   ★ 例外：holdFill / bump 是「长按拖动」的**功能提示**，不是装饰，不能关；
+     否则长按进度条、拿起来的缩放都没了，用户会以为拖不动。
+   ============================================================ */
+html[data-anim="off"] *,
+html[data-anim="off"] *::before,
+html[data-anim="off"] *::after {
+  animation-duration: 0s !important;
+  animation-delay: 0s !important;
+  animation-iteration-count: 1 !important;
+}
+/* 下面几个动画即使 0s 也要彻底禁用（infinite 的会一直占着） */
+html[data-anim="off"] .card.flash,
+html[data-anim="off"] .card.holding::before,
+html[data-anim="off"] .card.holding .tile,
+html[data-anim="off"] .trash.hot .ti {
+  animation: none !important;
+}
+
 :root {
   --bg: #eef1f8;
   --panel: #ffffff;

@@ -2752,6 +2752,23 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
   ok(/openSettings[\s\S]{0,1400}\$\('#sAutoUpdate'\)\.checked = s\.autoUpdate !== false/.test(appSrc),
     '打开设置面板时把配置回填到开关（默认开：只有显式 false 才算关）');
 
+  /* ---- v1.5.7：界面动画开关 ---- */
+  const appSrcAnim = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'app.js'), 'utf8');
+  const htmlSrcAnim = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'index.html'), 'utf8');
+  const cssAnim = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'style.css'), 'utf8');
+  ok(store.defaultConfig().settings.animations === true, '★ 默认开启动画（animations 默认 true）');
+  ok(/id="sAnimations"/.test(htmlSrcAnim), '设置面板里有「界面动画」开关');
+  ok(/animations: \$\('#sAnimations'\)\.checked/.test(appSrcAnim),
+    '保存设置时把开关读进 animations（不是硬编码）');
+  ok(/\$\('#sAnimations'\)\.checked = s\.animations !== false/.test(appSrcAnim),
+    '打开设置面板时回填动画开关（默认开：只有显式 false 才算关）');
+  ok(/setAttribute\('data-anim', 'off'\)/.test(appSrcAnim),
+    '★ 关动画 = 给 <html> 挂 data-anim="off"（不是逐处 if）');
+  ok(/html\[data-anim="off"\] \*/.test(cssAnim),
+    '★ CSS 用一条规则停掉所有装饰性动画（animation-duration:0）');
+  ok(/html\[data-anim="off"\] \.card\.holding::before/.test(cssAnim) && /animation: none !important/.test(cssAnim),
+    '★ 长按进度条等「功能提示」动画被单独豁免，不被误关');
+
   ok(/\.conn\.upd\s+i\s*\{[^}]*var\(--accent\)/.test(css), '.conn.upd 的蓝点用 accent 色（有新版本一眼可见）');
   ok(/\.upd-state\.hot\s*\{/.test(css) && /\.upd-box\s*\{/.test(css), '更新块的样式齐备（.upd-box / .upd-state.hot）');
   ok(/\.conn\s+span\s*\{[^}]*text-overflow:\s*ellipsis/.test(css),

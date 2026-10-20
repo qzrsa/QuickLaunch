@@ -147,6 +147,9 @@ function defaultConfig() {
       closeAction: 'tray',
       trayQuick: 'top',
       hoverActions: false,
+      // 界面动画开关：卡片入场 pop、toast 滑入滑出、分组 rise 等装饰性动画。
+      // 关闭后这些效果都不播（transition 即时反馈保留），界面更"实"、拖动完不再闪。
+      animations: true,
       // 启动时停在哪个分组：
       //   'last' = 记住上次打开的那个（默认，避免每次都被踢回「全部」）
       //   'all' / 'recent' / 'fav' = 固定虚拟视图
