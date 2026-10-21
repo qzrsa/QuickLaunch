@@ -40,7 +40,23 @@ if (!fs.existsSync(PS_EXE) || cp.spawnSync(PS_EXE, ['-NoProfile', '-Command', 'e
   process.exit(2);
 }
 
-fs.rmSync(ROOT, { recursive: true, force: true });
+/** 删临时目录：**不能**因为删不掉就把整套自检判死。
+ *  ★ CI 上真踩过（2026-10-21，v1.5.8）：⑦ 的「拉不起新版」用例刚"启动"过
+ *    restartfail 里的假程序，Windows 还占着句柄 → 收尾 rmSync 抛 EBUSY →
+ *    53 项全绿、退出码却是 1，Release 直接没发出来。
+ *    两件事一起做：带重试（等它松手）+ 兜住异常（清理失败只告警，不改结论）。
+ *  ★ smoke 那条「删不掉要如实报」说的是**业务删除**，和这里不是一回事。 */
+function rmTolerant(p) {
+  try {
+    fs.rmSync(p, { recursive: true, force: true, maxRetries: 20, retryDelay: 150 });
+    return true;
+  } catch (e) {
+    console.log(`\x1b[33m⚠\x1b[0m 临时目录没删干净（${e.code || e.message}）：${p}`);
+    return false;
+  }
+}
+
+rmTolerant(ROOT);
 fs.mkdirSync(ROOT, { recursive: true });
 
 /* ---------------------------------------------------------- 造场景 */
@@ -296,7 +312,7 @@ console.log('\n--- ⑧ 脚本拼装（静态）---');
   check(applyLib.psQuote("a'b") === "'a''b'", '单引号按 PS 规则转义成两个');
 }
 
-fs.rmSync(ROOT, { recursive: true, force: true });
+rmTolerant(ROOT);
 console.log('');
 console.log(`合计：通过 ${pass}${fail ? ` / \x1b[31m失败 ${fail}\x1b[0m` : ''}`);
 process.exit(fail ? 1 : 0);

@@ -2606,6 +2606,19 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
   }
 
   /* ------------------------------------------------------------------
+     verify-apply 的收尾不许把整套自检判死（v1.5.8 发版真踩过）
+     ⑦ 的「换完文件拉不起新版」用例会"启动" restartfail 里的假程序，Windows 还占着句柄，
+     收尾 rmSync(ROOT) 抛 EBUSY → 53 项全绿、退出码 1 → CI 的 Release 直接没发出来。
+     结论：清理必须"带重试 + 兜异常"，删除失败只告警，不能改结论。
+     ------------------------------------------------------------------ */
+  section('verify-apply 收尾');
+  const vaSrc = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'verify-apply.mjs'), 'utf8');
+  ok(/function rmTolerant\(/.test(vaSrc), '临时目录删除走 rmTolerant（带重试）');
+  ok(/maxRetries:\s*\d+/.test(vaSrc), 'rmTolerant 真的带 maxRetries（不是空壳）');
+  ok(!/^fs\.rmSync\(ROOT/m.test(vaSrc),
+    '★ 不再直接 rmSync(ROOT)：一次 EBUSY 就能把全绿的 53 项判成失败');
+
+  /* ------------------------------------------------------------------
    * asar 补丁：打包后才会踩到的坑
    * ------------------------------------------------------------------
    * Electron 会把**任何以 `.asar` 结尾的路径**当 asar 存档（大小写不敏感）：
