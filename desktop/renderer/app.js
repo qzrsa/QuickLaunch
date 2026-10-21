@@ -70,6 +70,7 @@ const state = {
   // last = 这一轮真的删掉的东西（撤销就用它，不读磁盘上的备份文件）。
   prune: { rows: [], picked: new Set(), last: null, busy: false },
   update: null,           // 自更新快照（主进程推过来的，界面只读）
+  setSnap: null,          // 打开设置时的快照：比对出「有未保存的修改」
 };
 
 /* ------------------------------------------------------------ 基础 */
@@ -1942,6 +1943,86 @@ function accelFromEvent(e) {
   return mods.join('+') + '+' + key;
 }
 
+/* ------------------------------------------------------------ 设置面板分区 */
+/** 分区展开状态单独存 localStorage：用户自己点过一次，那个选择就一直优先，
+ *  不会被代码里的默认值拽回去。存储坏掉（隐私模式 / 配额满）只当没存过，
+ *  **不能**让设置面板因此打不开。 */
+const SET_SEC_KEY = 'ql.settings.secs';
+
+function readSecState() {
+  try {
+    const v = JSON.parse(localStorage.getItem(SET_SEC_KEY) || '{}');
+    return (v && typeof v === 'object') ? v : {};
+  } catch { return {}; }
+}
+
+function writeSecState(id, open) {
+  try {
+    const s = readSecState();
+    s[id] = !!open;
+    localStorage.setItem(SET_SEC_KEY, JSON.stringify(s));
+  } catch { /* 忽略：存不下就退回 HTML 里的默认展开状态 */ }
+}
+
+/** 折叠时标题右侧的状态徽标：不展开也知道「热键是什么 / 动画开没开 / 更新源是哪」。
+ *  展开后 CSS 会把它藏掉（正文里已经有这些信息，别重复）。 */
+function updateSecBadges() {
+  const set = (id, text, on) => {
+    const el = $(`#setSecs [data-badge="${id}"]`);
+    if (!el) return;
+    el.textContent = text || '';
+    el.classList.toggle('on', !!on);
+  };
+  if (!$('#sHotkeyOn').checked) set('launch', '热键已关闭', false);
+  else if (state.capturedHotkey) set('launch', state.capturedHotkey, true);
+  else set('launch', '热键未绑定', false);
+  set('window', $('#sAnimations').checked ? '动画开' : '动画关', false);
+  const src = $('#sUpdateBase').value.trim();
+  set('update', src ? '自定义源' : '官方源', !!src);
+}
+
+/** 把设置面板里「会被保存的那几项」拍成一行字符串，用来判断有没有未保存的改动。
+ *  ★ 必须和 saveSettings 的 patch 一一对应；多一项少一项都会让提示说谎。 */
+function settingsFromDom() {
+  return JSON.stringify({
+    hotkey: state.capturedHotkey || '',
+    hotkeyEnabled: $('#sHotkeyOn').checked,
+    autostart: $('#sAutostart').checked,
+    closeAction: $('#sCloseAction').value,
+    trayQuick: $('#sTrayQuick').value,
+    hoverActions: $('#sHoverActs').checked,
+    animations: $('#sAnimations').checked,
+    autoUpdate: $('#sAutoUpdate').checked,
+    updateBase: $('#sUpdateBase').value.trim(),
+    startGroup: $('#sStartGroup').value || 'last',
+  });
+}
+
+function markSettingsDirty() {
+  const el = $('#setDirty');
+  if (el) el.textContent = (state.setSnap && settingsFromDom() !== state.setSnap) ? '有未保存的修改' : '';
+  updateSecBadges();
+}
+
+/** 分区折叠：点击标题切换，状态写回 localStorage。
+ *  aria-expanded 跟着切 —— 键盘/读屏用户也要知道现在是展开还是收起。 */
+function initSettingsSections() {
+  const saved = readSecState();
+  $$('#setSecs .sec').forEach(sec => {
+    const id = sec.dataset.sec;
+    if (typeof saved[id] === 'boolean') sec.classList.toggle('open', saved[id]);
+    const head = sec.querySelector('.sec-head');
+    if (!head) return;
+    head.setAttribute('aria-expanded', String(sec.classList.contains('open')));
+    head.addEventListener('click', () => {
+      const open = !sec.classList.contains('open');
+      sec.classList.toggle('open', open);
+      head.setAttribute('aria-expanded', String(open));
+      writeSecState(id, open);
+    });
+  });
+}
+
 /** 填充「启动时打开」下拉。真实分组的 option.value 用 viewToCode 那套编码（g: 前缀）。 */
 function renderStartGroupOptions(current) {
   const sel = $('#sStartGroup');
@@ -1991,6 +2072,11 @@ async function openSettings() {
   if (warn) dw.innerHTML = `<b>数据未写在程序目录</b>　${esc(warn)}`;
 
   if (i.hotkeyFail) setHotkeyMsg(`热键注册失败：${i.hotkeyFail}`, 'warn');
+  // 打开时拍一份快照：之后任何一处改动都拿它比对，页脚才知道要不要提示「未保存」。
+  // 徽标也在这里刷一次 —— 折叠的分区要靠它显示当前值。
+  state.setSnap = settingsFromDom();
+  updateSecBadges();
+  $('#setDirty').textContent = '';
   $('#setOverlay').hidden = false;
 }
 
@@ -2347,6 +2433,9 @@ async function saveSettings() {
   } else {
     toast('ok', '设置已保存');
   }
+  // 存下来的就是这一份：快照对齐 + 清掉「未保存」提示，再关窗
+  state.setSnap = settingsFromDom();
+  $('#setDirty').textContent = '';
   $('#setOverlay').hidden = true;
 }
 
@@ -2880,6 +2969,7 @@ function bind() {
       state.capturedHotkey = '';
       hk.value = '（未设置）';
       setHotkeyMsg('热键已清除，保存后生效', '');
+      markSettingsDirty();
       return;
     }
     const accel = accelFromEvent(e);
@@ -2887,6 +2977,7 @@ function bind() {
       state.capturedHotkey = accel;
       hk.value = accel;
       setHotkeyMsg(`将绑定 ${accel}，保存后生效`, '');
+      markSettingsDirty();
     } else {
       setHotkeyMsg('需要包含至少一个修饰键（Ctrl / Alt / Shift / Win）', 'warn');
     }
@@ -2900,9 +2991,15 @@ function bind() {
     state.capturedHotkey = '';
     $('#sHotkey').value = '';
     setHotkeyMsg('热键已清除，保存后生效', '');
+    markSettingsDirty();
   });
   $('#btnOpenCfg').addEventListener('click', () => API.openConfigDir());
   $('#btnSetSave').addEventListener('click', saveSettings);
+  /* 设置面板分区折叠 + 未保存提示。
+     input 覆盖输入框逐字输入，change 覆盖下拉/开关（它们在 change 才定型）。 */
+  initSettingsSections();
+  $('#setOverlay').addEventListener('input', markSettingsDirty);
+  $('#setOverlay').addEventListener('change', markSettingsDirty);
   // 动画开关：切换时立刻生效，让用户当场看到效果（保存才写盘）
   $('#sAnimations').addEventListener('change', () => {
     const on = $('#sAnimations').checked;
@@ -3430,6 +3527,11 @@ function createMockBridge() {
   // 有没有哪个字段是 undefined（主进程少给字段就会露馅）。
   API.on('ql:info-probe', async () => {
     state.probeMode = true;
+    /* ★★ 探针窗口是不可见的，被遮挡的窗口**不推进 CSS 动画时间线**：
+       弹窗的入场动画（overlay fade / modal rise，起始 opacity:0）会永远停在第一帧，
+       于是 DOM、rect、display 全都正常，截图里却什么也没打开 —— 这个坑极易误判成"界面没渲染"。
+       截图前把装饰动画整体关掉（等价于设置里的「界面动画」关），直接取最终状态。 */
+    document.documentElement.setAttribute('data-anim', 'off');
     const sleep = ms => new Promise(r => setTimeout(r, ms));
     const i = await openAbout();
     await sleep(200);
@@ -3472,6 +3574,40 @@ function createMockBridge() {
       '| 警示条显示 =', !$('#setDataWarn').hidden, '(期望', wantWarn + ')',
       '| 状态点 =', dotWarn ? 'warn' : 'ok', '| 与警示条一致 =', dotWarn === wantWarn);
     await sleep(200);
+    // 弹窗除了 hidden 标记，还得真的占满视口 —— markup 结构被改坏（少个闭合标签，
+    // 弹窗被塞进 .app 的裁剪容器里）时 hidden 仍是 false，但用户什么也看不到。
+    const ovBox = $('#setOverlay').getBoundingClientRect();
+    const mdBox = $('#setOverlay').querySelector('.modal').getBoundingClientRect();
+    console.log('[info-probe] 设置面板 rect =', Math.round(ovBox.width) + 'x' + Math.round(ovBox.height),
+      '| 弹窗 =', Math.round(mdBox.width) + 'x' + Math.round(mdBox.height),
+      '| display =', getComputedStyle($('#setOverlay')).display,
+      '| 分区 =', $$('#setSecs .sec').length, '（展开', $$('#setSecs .sec.open').length + '）');
+
+    /* 分区折叠：真的能开能关、aria 跟着走、状态写进 localStorage（下次打开保持）。
+       这三件事任一断了，用户就会看到"点了标题没反应"或"展开状态记不住"。 */
+    const secM = $('#setSecs .sec[data-sec="maint"]');
+    const headM = secM.querySelector('.sec-head');
+    const wasOpen = secM.classList.contains('open');
+    headM.click();
+    const nowOpen = secM.classList.contains('open');
+    let stored = {};
+    try { stored = JSON.parse(localStorage.getItem('ql.settings.secs') || '{}'); } catch { /* noop */ }
+    console.log('[info-probe] 分区折叠 =', nowOpen !== wasOpen,
+      '| aria-expanded =', headM.getAttribute('aria-expanded'),
+      '| localStorage =', stored.maint === nowOpen);
+    headM.click();  // 还原，截图保持默认形态
+    await sleep(350);
+
+    /* 未保存提示：改一项 → 页脚出声；改回去 → 提示消失（不然它会永远挂着）。 */
+    const sw = $('#sAutostart');
+    sw.checked = !sw.checked;
+    sw.dispatchEvent(new Event('change', { bubbles: true }));
+    const dirtyOn = $('#setDirty').textContent;
+    sw.checked = !sw.checked;
+    sw.dispatchEvent(new Event('change', { bubbles: true }));
+    console.log('[info-probe] 未保存提示 =', JSON.stringify(dirtyOn),
+      '| 改回后 =', JSON.stringify($('#setDirty').textContent));
+
     const r2 = await API.probeShot('shot-settings.png');
     console.log('[info-probe] 截图 设置 =', r2 && r2.ok ? 'ok' : ('失败 ' + (r2 && r2.msg)));
     console.log('[info-probe] done');

@@ -1327,6 +1327,47 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
   ok(/\.conn\.warn\s+i\s*\{[^}]*var\(--danger\)/.test(css),
     '.conn.warn 的红点用 danger 色（数据没落在程序目录时一眼可见）');
 
+  /* ------------------------------------------------------------------
+     设置面板分区（对齐 QZRS Scrcpy 的 collapsible sections）
+     原来是十几个字段一路平铺：开关挤成一行换行、维护按钮混在表单里、更新源滚到底才看见。
+     现在四个分区，常用默认展开、维护/更新默认收起。
+     这里只钉"结构不能退回去"：分区成对出现、控件 id 一个不少、收起的 body 真的不占位。
+     ------------------------------------------------------------------ */
+  section('设置面板分区');
+  ok(/id="setSecs"/.test(htmlSrc), '设置面板有分区容器 #setSecs');
+  const secIds = (htmlSrc.match(/data-sec="[a-z]+"/g) || []).map(s => s.slice(10, -1));
+  ok(JSON.stringify(secIds) === JSON.stringify(['launch', 'window', 'maint', 'update']),
+    '四个分区按「多久动一次」排序', secIds.join(','));
+  const nHead = (htmlSrc.match(/class="sec-head"/g) || []).length;
+  const nBody = (htmlSrc.match(/class="sec-body"/g) || []).length;
+  ok(nHead === 4 && nBody === 4, '每个分区都是 head + body 成对', `head=${nHead} body=${nBody}`);
+  ok((htmlSrc.match(/class="sec open"/g) || []).length === 2,
+    '常用的两个分区默认展开，维护/更新默认收起（用户手点过的状态另有 localStorage 记忆）');
+  ok(/\.sec:not\(\.open\) \.sec-body\s*\{\s*display:\s*none/.test(css),
+    '★ 收起的分区必须真的 display:none（只切箭头不藏 body = 面板照样长，实测踩过）');
+  ok(/\.sec\.open \.sec-arrow\s*\{[^}]*rotate\(90deg\)/.test(css),
+    '展开时箭头从「>」转成「v」（状态靠 class 切，不换图标）');
+  ok(/\.sec\.open \.sec-badge\s*\{\s*display:\s*none/.test(css),
+    '展开后标题徽标隐藏（信息已在正文里，不重复）');
+
+  // 控件 id 一个都不能少：渲染层全按 id 取值，漏一个就是无声的 undefined
+  const needIds = ['sHotkey', 'sHotkeyOn', 'sAutostart', 'sStartGroup', 'sCloseAction', 'sTrayQuick',
+    'sHoverActs', 'sAnimations', 'sAutoUpdate', 'sUpdateBase', 'setDirty',
+    'btnReextractIcons', 'btnRestoreDefaults', 'btnPruneInvalid'];
+  const lost = needIds.filter(id => !new RegExp(`id="${id}"`).test(htmlSrc));
+  ok(lost.length === 0, '分区化之后所有控件 id 都还在（界面按 id 取值，不按 DOM 位置）', lost.join(',') || 'ok');
+  ok((htmlSrc.match(/<label class="trow">/g) || []).length === 5,
+    '5 个开关都是整行 <label>（热键/自启/悬停/动画/自动更新，点文字也能切，读屏能拿到名字）');
+
+  // 折叠逻辑只有一份实现：写 localStorage、切 class、同步 aria
+  ok(/const SET_SEC_KEY = ['"]ql\.settings\.secs['"]/.test(appSrc)
+    && /function initSettingsSections\(\)/.test(appSrc)
+    && /localStorage\.setItem\(SET_SEC_KEY/.test(appSrc),
+    '折叠状态写 localStorage（下次打开保持），只有一份实现');
+  ok(/aria-expanded/.test(appSrc), '折叠时同步 aria-expanded（键盘/读屏用户也要知道开没开）');
+  ok(/function markSettingsDirty\(\)/.test(appSrc) && /function settingsFromDom\(\)/.test(appSrc),
+    '页脚「有未保存的修改」由 DOM 快照比对得出，不靠事件记账');
+
   /* ★ 从源码里抠出这几个纯函数真跑，不另写"镜像实现"（镜像实现永远通过 = 没测）。
      它们只依赖 FORM_TXT / PREVIEW，抠出来就能跑。 */
   const fnSrc = n => {

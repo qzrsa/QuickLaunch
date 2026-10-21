@@ -425,11 +425,35 @@ function createWindow() {
     })();
     ipcMain.handle('ql:probe-shot', async (_e, name) => {
       try {
-        const img = await win.webContents.capturePage();
+        /* ★★ 探针窗口平时是 opacity=0 隐身的，而**隐身窗口的 capturePage() 只会返回上一帧缓存**：
+           新打开的弹窗（设置 / 关于）根本不会出现在图里 —— 照样返回 ok，看着像"界面没渲染"。
+           所以拍之前必须先真亮出来，等入场动画（.26s rise）走完，拍完立刻藏回去。
+           这个坑让「设置面板截图"看起来没打开"」查了半天，别删。 */
+        let wasHidden = false;
+        try {
+          wasHidden = win.getOpacity() === 0;
+          if (wasHidden) win.setOpacity(1);
+        } catch { /* noop */ }
+        /* ★ 不管窗口原本是隐身还是可见，都要先 invalidate() 再等一拍：
+           capturePage() 取的是"已提交的帧"，DOM 刚改完（弹窗刚打开）时直接拍会拿到**上一帧**，
+           第一张图里就看不见弹窗，第二张（几百毫秒后拍的）又正常 —— 极易误判成"没渲染"。 */
+        try { win.webContents.invalidate(); } catch { /* noop */ }
+        await new Promise(r => setTimeout(r, wasHidden ? 450 : 260));
+
+        /* ★★ 隐身窗口的合成是懒的：刚改完 DOM 就拍，常常拿到"改之前"那一帧
+           （刚打开的分区、刚切走的弹窗都可能在图里慢一拍）。这里连拍三张、隔 200ms，
+           用最后一张 —— 前两张等于在逼它把积攒的帧吐出来。别嫌浪费，稳定比省 400ms 重要。 */
+        let img = null;
+        for (let k = 0; k < 3; k++) {
+          img = await win.webContents.capturePage();
+          if (k < 2) await new Promise(r => setTimeout(r, 200));
+        }
         const out = path.join(shotBase, name);
         fs.mkdirSync(path.dirname(out), { recursive: true });
         fs.writeFileSync(out, img.toPNG());
         console.log(`[probe] 截图 -> ${out}`);
+
+        if (wasHidden) { try { win.setOpacity(0); } catch { /* noop */ } }
         return { ok: true, out };
       } catch (e) {
         console.error('[probe] 截图失败:', e.message);

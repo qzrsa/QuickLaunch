@@ -277,7 +277,7 @@
 
 <!-- ===================== 设置 ===================== -->
 <div class="overlay" id="setOverlay" hidden>
-  <div class="modal">
+  <div class="modal set">
     <div class="modal-head">
       <div class="mh-ic">⚙️</div>
       <div>
@@ -289,89 +289,141 @@
     </div>
 
     <div class="modal-body">
-      <div class="form">
-        <!-- 只在数据没能落在程序目录（回落 %APPDATA%）时出现。
-             这是设置面板里唯一需要用户知道并可能采取行动的环境信息 ——
-             其余运行环境细节一律搬去「关于」，别把只读诊断块塞进可改的表单里。 -->
-        <div class="warn-box" id="setDataWarn" hidden></div>
+      <!-- 只在数据没能落在程序目录（回落 %APPDATA%）时出现。
+           这是设置面板里唯一需要用户知道并可能采取行动的环境信息 ——
+           其余运行环境细节一律搬去「关于」，别把只读诊断块塞进可改的表单里。 -->
+      <div class="warn-box" id="setDataWarn" hidden></div>
 
-        <div class="field">
-          <label>全局热键 <span class="hint">点击输入框后直接按下组合键</span></label>
-          <div class="path-row">
-            <input type="text" id="sHotkey" readonly placeholder="按下组合键…" style="cursor:pointer">
-            <button class="btn sm" id="btnHotkeyClear">清除</button>
+      <!-- ===== 分区顺序按「多久动一次」排，不按字段在代码里的顺序 =====
+           启动与热键 / 窗口与外观 —— 常用，默认展开；
+           启动项维护 / 软件更新 —— 偶尔来一次，默认收起（标题上带状态徽标，不展开也知道现状）。
+           展开状态存在 localStorage（key 见 SET_SEC_KEY），下次打开保持。 -->
+      <div class="secs" id="setSecs">
+        <section class="sec open" data-sec="launch">
+          <button type="button" class="sec-head" aria-expanded="true">
+            <svg class="sec-arrow" viewBox="0 0 12 12" aria-hidden="true"><path d="M4.5 2.5 8 6l-3.5 3.5"/></svg>
+            <span class="sec-title">启动与热键</span>
+            <span class="sec-badge" data-badge="launch"></span>
+          </button>
+          <div class="sec-body">
+            <div class="field">
+              <label>全局热键 <span class="hint">点击输入框后直接按下组合键</span></label>
+              <div class="path-row">
+                <input type="text" id="sHotkey" readonly placeholder="按下组合键…" style="cursor:pointer">
+                <button class="btn sm" id="btnHotkeyClear">清除</button>
+              </div>
+              <p class="hint-line" id="hotkeyMsg"></p>
+            </div>
+
+            <label class="trow">
+              <span class="trow-txt"><span class="trow-t">启用全局热键</span><span class="trow-d">任何时候按组合键都能唤出窗口</span></span>
+              <input type="checkbox" id="sHotkeyOn"><span class="track"></span>
+            </label>
+            <label class="trow">
+              <span class="trow-txt"><span class="trow-t">开机自动启动</span><span class="trow-d">登录后静默驻留托盘，不弹窗打扰</span></span>
+              <input type="checkbox" id="sAutostart"><span class="track"></span>
+            </label>
+
+            <div class="field">
+              <label>启动时打开 <span class="hint">每次打开程序停在这个分组，不必固定是「全部」</span></label>
+              <select id="sStartGroup"></select>
+            </div>
           </div>
-          <p class="hint-line" id="hotkeyMsg"></p>
-        </div>
+        </section>
 
-        <div class="switch-row">
-          <label class="switch">
-            <input type="checkbox" id="sHotkeyOn"><span class="track"></span>启用全局热键
-          </label>
-          <label class="switch">
-            <input type="checkbox" id="sAutostart"><span class="track"></span>开机自动启动（静默到托盘）
-          </label>
-          <label class="switch">
-            <input type="checkbox" id="sHoverActs"><span class="track"></span>鼠标悬停显示卡片快捷按钮
-          </label>
-          <label class="switch">
-            <input type="checkbox" id="sAnimations"><span class="track"></span>界面动画
-          </label>
-          <label class="switch">
-            <input type="checkbox" id="sAutoUpdate"><span class="track"></span>启动时自动检查更新
-          </label>
-        </div>
+        <section class="sec open" data-sec="window">
+          <button type="button" class="sec-head" aria-expanded="true">
+            <svg class="sec-arrow" viewBox="0 0 12 12" aria-hidden="true"><path d="M4.5 2.5 8 6l-3.5 3.5"/></svg>
+            <span class="sec-title">窗口与外观</span>
+            <span class="sec-badge" data-badge="window"></span>
+          </button>
+          <div class="sec-body">
+            <div class="row2">
+              <div class="field">
+                <label>点击关闭按钮时</label>
+                <select id="sCloseAction">
+                  <option value="tray">最小化到托盘（推荐）</option>
+                  <option value="quit">直接退出程序</option>
+                </select>
+              </div>
+              <div class="field">
+                <label>托盘的「快速启动」菜单</label>
+                <select id="sTrayQuick">
+                  <option value="top">显示使用最多的 10 项</option>
+                  <option value="favorites">只显示收藏项</option>
+                  <option value="none">不显示</option>
+                </select>
+              </div>
+            </div>
 
-        <div class="field">
-          <label>图标 <span class="hint">已安装软件的图标空白/都一样时，点这里重新提取（只补有问题的，不碰自定义图标）</span></label>
-          <button class="btn sm" id="btnReextractIcons">重新提取图标</button>
-        </div>
-
-        <div class="field">
-          <label>恢复默认 <span class="hint">误删了「文件与目录 / 系统工具 / 开发 / 常用网站」时，把缺的分组和默认项补回来</span></label>
-          <button class="btn sm" id="btnRestoreDefaults">恢复默认分组</button>
-        </div>
-
-        <div class="field">
-          <label>清理无效项 <span class="hint">路径确实不存在才会列出（U 盘没插、网络盘、只写命令名都算"存疑"，默认不动）；删前自动备份，可撤销</span></label>
-          <button class="btn sm" id="btnPruneInvalid">检查无效项…</button>
-        </div>
-
-        <div class="field">
-          <label>启动时打开 <span class="hint">每次打开程序停在这个分组，不必固定是「全部」</span></label>
-          <select id="sStartGroup"></select>
-        </div>
-
-        <div class="row2">
-          <div class="field">
-            <label>点击关闭按钮时</label>
-            <select id="sCloseAction">
-              <option value="tray">最小化到托盘（推荐）</option>
-              <option value="quit">直接退出程序</option>
-            </select>
+            <label class="trow">
+              <span class="trow-txt"><span class="trow-t">鼠标悬停显示卡片快捷按钮</span><span class="trow-d">移到卡片上才出现编辑 / 删除，平时更清爽</span></span>
+              <input type="checkbox" id="sHoverActs"><span class="track"></span>
+            </label>
+            <label class="trow">
+              <span class="trow-txt"><span class="trow-t">界面动画</span><span class="trow-d">入场、弹窗等装饰动画；关掉更省资源（切换立即生效）</span></span>
+              <input type="checkbox" id="sAnimations"><span class="track"></span>
+            </label>
           </div>
-          <div class="field">
-            <label>托盘的「快速启动」菜单</label>
-            <select id="sTrayQuick">
-              <option value="top">显示使用最多的 10 项</option>
-              <option value="favorites">只显示收藏项</option>
-              <option value="none">不显示</option>
-            </select>
-          </div>
-        </div>
+        </section>
 
-        <div class="field">
-          <label>更新源 <span class="hint">留空 = 官方 GitHub；国内直连不稳时可填镜像或代理地址</span></label>
-          <div class="path-row">
-            <input type="text" id="sUpdateBase" placeholder="https://github.com/qzrsa/QuickLaunch/releases/latest/download">
+        <section class="sec" data-sec="maint">
+          <button type="button" class="sec-head" aria-expanded="false">
+            <svg class="sec-arrow" viewBox="0 0 12 12" aria-hidden="true"><path d="M4.5 2.5 8 6l-3.5 3.5"/></svg>
+            <span class="sec-title">启动项维护</span>
+            <span class="sec-badge" data-badge="maint">修复 / 找回 / 清理</span>
+          </button>
+          <div class="sec-body">
+            <div class="act-row">
+              <div class="act-txt">
+                <div class="act-t">重新提取图标</div>
+                <div class="act-d">已安装软件的图标空白或都一样时点这里；只补有问题的，不碰自定义图标</div>
+              </div>
+              <button class="btn sm" id="btnReextractIcons">重新提取</button>
+            </div>
+            <div class="act-row">
+              <div class="act-txt">
+                <div class="act-t">恢复默认分组</div>
+                <div class="act-d">误删了「文件与目录 / 系统工具 / 开发 / 常用网站」时，把缺的分组和默认项补回来</div>
+              </div>
+              <button class="btn sm" id="btnRestoreDefaults">补回默认</button>
+            </div>
+            <div class="act-row">
+              <div class="act-txt">
+                <div class="act-t">清理无效项</div>
+                <div class="act-d">只列路径确实不存在的项；U 盘没插、网络盘、只写命令名都算“存疑”，默认不动。删前自动备份，可撤销</div>
+              </div>
+              <button class="btn sm" id="btnPruneInvalid">检查…</button>
+            </div>
           </div>
-          <p class="hint-line" id="updateBaseMsg"></p>
-        </div>
+        </section>
+
+        <section class="sec" data-sec="update">
+          <button type="button" class="sec-head" aria-expanded="false">
+            <svg class="sec-arrow" viewBox="0 0 12 12" aria-hidden="true"><path d="M4.5 2.5 8 6l-3.5 3.5"/></svg>
+            <span class="sec-title">软件更新</span>
+            <span class="sec-badge" data-badge="update"></span>
+          </button>
+          <div class="sec-body">
+            <label class="trow">
+              <span class="trow-txt"><span class="trow-t">启动时自动检查更新</span><span class="trow-d">只检查一次，不轮询；下载与安装永远等你点</span></span>
+              <input type="checkbox" id="sAutoUpdate"><span class="track"></span>
+            </label>
+            <div class="field">
+              <label>更新源 <span class="hint">留空 = 官方 GitHub；国内直连不稳时可填镜像或代理地址</span></label>
+              <div class="path-row">
+                <input type="text" id="sUpdateBase" placeholder="https://github.com/qzrsa/QuickLaunch/releases/latest/download">
+              </div>
+              <p class="hint-line" id="updateBaseMsg"></p>
+            </div>
+          </div>
+        </section>
       </div>
     </div>
 
     <div class="modal-foot">
       <button class="btn sm" id="btnAbout">关于</button>
+      <span class="set-dirty" id="setDirty"></span>
       <div class="spacer"></div>
       <button class="btn sm" data-close>关闭</button>
       <button class="btn primary sm" id="btnSetSave">保存设置</button>
