@@ -223,15 +223,29 @@ async function healAllIcons(opts = {}) {
   return total;
 }
 
-function toast(kind, title, text = '') {
+/** 右下角提示。
+ *  opts.action = { label, run } → 在右侧多一个按钮（目前只有「导入后分配到分组」用）；
+ *  opts.ttl 覆写停留时长 —— 带按钮的提示要给人反应时间，默认 2.4 秒根本来不及点。 */
+function toast(kind, title, text = '', opts = {}) {
   const icons = { ok: '✓', bad: '!', info: 'i' };
   const el = document.createElement('div');
   el.className = 'toast ' + kind;
   el.innerHTML = `<div class="t-ic">${icons[kind] || 'i'}</div>
     <div class="t-txt"><b>${esc(title)}</b>${text ? `<span>${esc(text)}</span>` : ''}</div>`;
+  if (opts.action && opts.action.label) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 't-act';
+    btn.textContent = opts.action.label;
+    btn.addEventListener('click', () => {
+      el.remove();                       // 先收提示，别让按钮挡住后续的多选操作栏
+      try { opts.action.run(); } catch (e) { console.error('[toast] 动作失败:', e && e.message); }
+    });
+    el.appendChild(btn);
+  }
   $('#toasts').appendChild(el);
-  setTimeout(() => { el.classList.add('out'); setTimeout(() => el.remove(), 260); },
-    kind === 'bad' ? 4200 : 2400);
+  const ttl = opts.ttl || (kind === 'bad' ? 4200 : 2400);
+  setTimeout(() => { el.classList.add('out'); setTimeout(() => el.remove(), 260); }, ttl);
 }
 
 /** 最近一条提示的纯文本（探针断言用）。提成顶层函数，别让每个探针各拷一份。 */
@@ -883,10 +897,20 @@ async function deleteItem(id) {
 /** 进入 / 退出多选编辑。
  *  退出时一定清空勾选 —— 不然下次进来会带着上一次看不见的残留选中，
  *  用户以为只删了自己刚点的那几个，实际连上次的一起删了。 */
-function setEditMode(on, preselectId) {
+function setEditMode(on, preselect) {
   state.editMode = !!on;
   state.picked = new Set();
-  if (state.editMode && preselectId && findItem(preselectId)) state.picked.add(preselectId);
+  if (state.editMode && preselect) {
+    // 单个 id 或一组 id 都认（导入后「分配…」会把整批预先勾上）。
+    const ids = Array.isArray(preselect) ? preselect : [preselect];
+    // 搜索词会把勾上的卡片过滤掉 → 出现「已选 12 项」却一张都看不见。
+    // 只在真的要预勾选时清（普通进多选不该动用户的搜索词）。
+    if (ids.length && state.q) {
+      state.q = '';
+      if ($('#q')) $('#q').value = '';
+    }
+    ids.forEach(id => { if (findItem(id)) state.picked.add(id); });
+  }
 
   document.body.classList.toggle('edit-mode', state.editMode);
   $('#btnSelect').classList.toggle('on', state.editMode);
@@ -1476,12 +1500,33 @@ function extractDrop(e) {
   return { paths, urls };
 }
 
+/** 拖入的落点判定（纯函数：不碰 state / DOM，smoke 直接抠出来跑）。
+ *
+ *  优先级：**松手所在的侧栏分组 > 当前正在看的真实分组 > null（主进程兜底的「拖入的快捷方式」）**。
+ *
+ *  ★ 为什么要第二级：站在某个分组里把文件拖进来，用户的心智是"放进我正在看的这组"。
+ *    以前一律落到「拖入的快捷方式」，接着就得逐张搬走 —— 一次拖几十个时得点几十遍。
+ *  ★ 虚拟视图（全部 / 最近 / 收藏）不是"组"，没有归属，仍然走兜底 —— 宁可进桶，也不猜。
+ *  ★ 侧栏 id 可能已经失效（分组刚被删）→ 退回当前分组，而不是直接掉进桶里。
+ */
+function dropGroupFor({ sidebarId = null, active = 'all', groups = [] } = {}) {
+  const isGroup = id => !!id && groups.some(g => g.id === id);
+  if (isGroup(sidebarId)) return sidebarId;
+  if (isGroup(active)) return active;
+  return null;
+}
+
 function dropTargetInfo(e) {
   const nav = e.target && e.target.closest ? e.target.closest('[data-nav]') : null;
-  const g = nav && state.config
-    ? state.config.groups.find(x => x.id === nav.dataset.nav)
-    : null;
-  return g ? { id: g.id, name: g.name, icon: g.icon || '📦', el: nav } : null;
+  const groups = (state.config && state.config.groups) || [];
+  const gid = dropGroupFor({ sidebarId: nav ? nav.dataset.nav : null, active: state.active, groups });
+  const g = gid ? groups.find(x => x.id === gid) : null;
+  if (!g) return null;
+  // 松手在侧栏那一行上就用它自己；"当前分组"则去侧栏找对应那行，好让高亮落在该落的地方
+  const el = (nav && nav.dataset.nav === g.id)
+    ? nav
+    : $$('.nav-item').find(x => x.dataset.nav === g.id) || null;
+  return { id: g.id, name: g.name, icon: g.icon || '📦', el };
 }
 
 function showDropVeil() { const el = $('#dropVeil'); if (el) el.hidden = false; }
@@ -1544,7 +1589,8 @@ function markDropTarget(target) {
     if (ic) ic.textContent = target.icon;
   } else {
     t.textContent = '松开即可导入';
-    s.textContent = '或用鼠标拖到左侧分组上，指定放入哪个分组';
+    // 把后果写明：以前只说"松开即可导入"，用户不知道东西会跑到「拖入的快捷方式」里。
+    s.textContent = '将放入「拖入的快捷方式」，导完可一键分配到别的分组';
     if (ic) ic.textContent = '📥';
   }
 }
@@ -1603,17 +1649,41 @@ async function handleDrop(e) {
   if (r.groupId) state.active = r.groupId;
   await refresh();
 
-  const ids = new Set((r.ids || []).map(x => x.id));
+  const flashIds = new Set((r.ids || []).map(x => x.id));
   $$('.card', $('#gridHost')).forEach(c => {
-    if (ids.has(c.dataset.id)) c.classList.add('flash');
+    if (flashIds.has(c.dataset.id)) c.classList.add('flash');
   });
 
   const tail = [];
   if (r.skipped && r.skipped.length) tail.push(`跳过重复 ${r.skipped.length} 项`);
   if (r.failed && r.failed.length) tail.push(`无法识别 ${r.failed.length} 项`);
   if (r.truncated) tail.push(`超出上限 ${r.truncated} 项未导入`);
-  toast('ok', `已导入 ${r.added} 个启动项`,
-    `分组：${r.groupName || '拖入的快捷方式'}${tail.length ? ' · ' + tail.join(' · ') : ''}`);
+  const ids = (r.ids || []).map(x => x.id);
+  const inBucket = !target || r.groupId === 'dropped';
+  if (inBucket && ids.length) {
+    // 落到兜底的「拖入的快捷方式」才给「分配…」（已经进了目标分组的就别再多一步）
+    toast('ok', `已导入 ${r.added} 个启动项`,
+      `放在「${r.groupName || '拖入的快捷方式'}」${tail.length ? ' · ' + tail.join(' · ') : ''}`, {
+        ttl: 9000,                                  // 带按钮的提示要留够反应时间
+        action: { label: '分配到分组…', run: () => assignImported(ids) },
+      });
+  } else {
+    toast('ok', `已导入 ${r.added} 个启动项`,
+      `分组：${r.groupName || '拖入的快捷方式'}${tail.length ? ' · ' + tail.join(' · ') : ''}`);
+  }
+}
+
+/** 「分配…」：进多选并把这批预先勾上，用户选一次「移动到分组…」就整批搬完。
+ *  要拆到多个组也能用 —— 先取消不相关的勾选，再移一次，两次覆盖。
+ *  ★ 进多选前先把视图切到这批所在的组：否则用户可能在别处点了按钮，
+ *    勾上了却一张卡片都看不见（"已选 12 项"配一个空网格）。 */
+function assignImported(ids) {
+  const alive = (ids || []).filter(id => findItem(id));
+  if (!alive.length) return toast('info', '这批启动项已经不在列表里了');
+  const hit = findItem(alive[0]);
+  if (hit && state.active !== hit.g.id) state.active = hit.g.id;
+  setEditMode(true, alive);
+  toast('info', `已勾选 ${state.picked.size} 项`, '选「移动到分组…」，或直接整批拖到左侧分组');
 }
 
 /* ------------------------------------------------------------ 扫描 */
@@ -3519,6 +3589,77 @@ function createMockBridge() {
     } else {
       console.log('[import-probe] 阶段B 跳过：侧栏没有分组');
     }
+
+    await new Promise(r => setTimeout(r, 700));   // 等上一次 dryRun 的 handleDrop 收尾
+
+    /* 阶段 C：站在某个真实分组里，把文件拖到网格空白处 → 必须进"当前分组"。
+       这是 v1.5.9 的核心改动：以前一律落到「拖入的快捷方式」，接着要逐张搬走。 */
+    const curG = state.config.groups[0];
+    if (curG) {
+      const prev = state.active;
+      state.active = curG.id;
+      state.dropDryRun = true;
+      fire('dragenter');
+      fire('dragover');
+      console.log('[import-probe] 阶段C 当前分组=', curG.name,
+        '| dropGroupId=', state.dropGroupId, '| 期望=', curG.id,
+        '| 通过=', state.dropGroupId === curG.id,
+        '| 侧栏高亮=', document.querySelectorAll('.nav-item.drop-on').length > 0,
+        '| 提示=', ($('#dropTitle') || {}).textContent);
+      fire('drop');
+      state.active = prev;
+    } else {
+      console.log('[import-probe] 阶段C 跳过：没有任何分组');
+    }
+
+    await new Promise(r => setTimeout(r, 700));
+
+    /* 阶段 D：虚拟视图（全部 / 最近 / 收藏）里拖进来 → 不猜分组，仍走兜底。
+       否则用户只是想丢进桶里，却被悄悄塞进了上次看过的某个组。 */
+    for (const view of ['all', 'recent', 'fav']) {
+      const prev = state.active;
+      state.active = view;
+      state.dropDryRun = true;
+      fire('dragenter');
+      fire('dragover');
+      console.log('[import-probe] 阶段D', view, '视图 dropGroupId =', state.dropGroupId,
+        '| 期望 null | 通过 =', state.dropGroupId === null);
+      state.active = prev;
+      await new Promise(r => setTimeout(r, 120));
+    }
+    state.dropDryRun = false;
+    resetDrag();
+
+    /* 阶段 E：「分配…」预勾选链路（不导入任何东西，直接拿现有项验）。
+       验三件事：进多选、这批全勾上、搜索词被清掉（否则"已选 N 项"配空网格）。 */
+    const sample = allItems().slice(0, 3).map(x => x.i.id);
+    if (sample.length) {
+      state.q = 'zzz';
+      if ($('#q')) $('#q').value = 'zzz';
+      assignImported(sample);
+      console.log('[import-probe] 阶段E 预勾选 =', state.picked.size, '/', sample.length,
+        '| editMode =', state.editMode,
+        '| 操作栏可见 =', !$('#editBar').hidden,
+        '| 搜索词已清 =', state.q === '',
+        '| 通过 =', state.picked.size === sample.length && state.editMode && !$('#editBar').hidden && state.q === '');
+      setEditMode(false);
+      if ($('#q')) $('#q').value = '';
+    } else {
+      console.log('[import-probe] 阶段E 跳过：列表里没有任何项');
+    }
+
+    /* 阶段 F：带动作按钮的提示长什么样（截图肉眼看，样式错位只有看图才发现） */
+    toast('ok', '已导入 12 个启动项', '放在「拖入的快捷方式」', {
+      ttl: 20000, action: { label: '分配到分组…', run: () => console.log('[import-probe] 按钮被点到') },
+    });
+    await new Promise(r => setTimeout(r, 500));
+    try {
+      const shot = await API.probeShot('shot-toast.png');
+      console.log('[import-probe] 阶段F 提示截图 =', shot && shot.ok ? 'ok' : ('失败 ' + (shot && shot.msg)));
+    } catch (e) {
+      console.log('[import-probe] 阶段F 截图不可用:', e && e.message);
+    }
+    console.log('[import-probe] done');
   });
 
   // 运行环境面板自检（仅 --info-probe 时由主进程触发）：

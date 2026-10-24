@@ -589,6 +589,55 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
     ok(/restoreDefaults: async/.test(appSrc2), '预览模式 mock 也实现了 restoreDefaults');
   }
 
+  /* --------------------------------------------- 拖入落点 + 导入后分配（v1.5.9）
+     问题：以前不管从哪儿拖进来，一律落到「拖入的快捷方式」；一次拖几十个，
+     就得逐张长按 0.5 秒搬走 —— 整理 20 项要 20 次手势。
+     现在两级：站在某个分组里拖进来 = 进那个组；落在桶里则给一次「分配到分组…」。
+     ------------------------------------------------------------------ */
+  section('拖入落点与导入后分配');
+  {
+    const appSrcD = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'app.js'), 'utf8');
+    const cssSrcD = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'style.css'), 'utf8');
+
+    // ★ 纯函数直接抠出来跑，不写"镜像实现"（镜像实现永远通过 = 没测）
+    const dropFnSrc = (appSrcD.match(/function dropGroupFor\s*\([\s\S]*?\n\}/) || [''])[0];
+    ok(!!dropFnSrc, 'dropGroupFor 能抠出来');
+    const dropGroupFor = new Function('return (' + dropFnSrc + ')')();
+    const groups = [{ id: 'g1', name: '一' }, { id: 'g2', name: '二' }];
+
+    ok(dropGroupFor({ sidebarId: 'g2', active: 'g1', groups }) === 'g2',
+      '松手在侧栏分组上 → 用侧栏那个（优先级最高）');
+    ok(dropGroupFor({ sidebarId: null, active: 'g1', groups }) === 'g1',
+      '★ 站在分组里拖到空白 → 进当前分组（本次改动的核心）');
+    ok(dropGroupFor({ sidebarId: null, active: 'all', groups }) === null,
+      '「全部」视图不猜分组 → 走兜底的「拖入的快捷方式」');
+    ok(dropGroupFor({ sidebarId: 'recent', active: 'all', groups }) === null
+      && dropGroupFor({ sidebarId: 'fav', active: 'g1', groups }) === 'g1',
+      '虚拟视图既不算侧栏分组，也不改当前分组的判定');
+    ok(dropGroupFor({ sidebarId: 'deleted', active: 'g2', groups }) === 'g2',
+      '侧栏分组刚被删（id 失效）→ 退回当前分组，而不是掉进桶里');
+    ok(dropGroupFor({}) === null, '没参数 / 空配置也不炸');
+
+    // 落点提示必须把后果说清楚（以前只说"松开即可导入"，用户不知道会进桶）
+    ok(/将放入「拖入的快捷方式」/.test(appSrcD), '遮罩文案写明兜底落点');
+
+    // toast 动作按钮
+    ok(/opts\.action/.test(appSrcD) && /className = 't-act'/.test(appSrcD),
+      'toast 支持可选动作按钮（opts.action）');
+    ok(/opts\.ttl \|\|/.test(appSrcD), '带按钮的提示能自定义停留时长');
+    ok(/\.toast \.t-act\s*\{[^}]*pointer-events:\s*auto/.test(cssSrcD),
+      '★ .toasts 是 pointer-events:none，按钮必须自己把事件收回来，否则点不动');
+
+    // 分配入口：只在落桶时出现；进多选时把这批预先勾上
+    ok(/r\.groupId === 'dropped'/.test(appSrcD), '只有落到「拖入的快捷方式」才给「分配…」');
+    ok(/function assignImported/.test(appSrcD) && /setEditMode\(true, alive\)/.test(appSrcD),
+      '「分配…」= 进多选 + 整批预勾选（复用现成的批量移动）');
+    ok(/Array\.isArray\(preselect\)/.test(appSrcD),
+      'setEditMode 接受 id 数组（原来只收单个）');
+    ok(/if \(ids\.length && state\.q\)/.test(appSrcD),
+      '预勾选时清空搜索词（否则"已选 12 项"配一个空网格）');
+  }
+
   /* -------------------------------- 常用网站：前两项固定（v1.5.1） */
   section('常用网站：第一项 Google、第二项百度');
   {

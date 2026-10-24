@@ -1064,6 +1064,15 @@ body.card-dragging.card-drag-no-trash #editBar { opacity: .3; pointer-events: no
 .toast .t-txt { min-width: 0; }
 .toast .t-txt b { display: block; font-size: 12.5px; font-weight: 650; }
 .toast .t-txt span { display: block; font-size: 11.5px; color: var(--text-3); word-break: break-all; }
+/* 提示里的动作按钮（目前只有导入后的「分配到分组…」用）。
+   ★ .toasts 容器是 pointer-events:none，按钮自己必须把事件收回来，否则点不动。 */
+.toast .t-act {
+  flex: none; margin-left: 12px; padding: 5px 11px; border-radius: 8px;
+  background: var(--accent); color: #fff; font-size: 12px; font-weight: 650;
+  pointer-events: auto; transition: filter .15s var(--ease);
+}
+.toast .t-act:hover { filter: brightness(1.08); }
+.toast .t-act:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 @keyframes slideIn { from { opacity: 0; transform: translateX(24px) scale(.96); } to { opacity: 1; transform: none; } }
 @keyframes slideOut { to { opacity: 0; transform: translateX(24px) scale(.96); } }
 

@@ -393,7 +393,9 @@ function createWindow() {
         } catch (e) { console.error('[import-probe] 截图失败:', e.message); }
         try { win.setOpacity(1); } catch { /* noop */ }
       }, 2600);
-      setTimeout(() => quitApp(), 9000);
+      // 渲染层要跑四个阶段（空白 / 侧栏分组 / 当前分组 / 虚拟视图），每个阶段之间留了
+      // 700ms 给上一次 dryRun 的 handleDrop 收尾，9 秒不够 —— 给到 14 秒。
+      setTimeout(() => quitApp(), 14000);
     });
   }
 
@@ -413,7 +415,7 @@ function createWindow() {
   // 由渲染层在准确时刻主动触发（主进程自己掐 setTimeout 会被节流/漂移）。
   // ★ 加新探针时**必须把它的名字加进这个条件**，否则 ql:probe-shot 根本没注册，
   //   渲染层会报 "No handler registered for 'ql:probe-shot'"，探针等于白跑。
-  if (DRAG_PROBE || GROUP_PROBE || INFO_PROBE || RAIL_PROBE || SELECT_PROBE || SECOND_PROBE || UPDATE_PROBE || PERF_PROBE) {
+  if (DRAG_PROBE || GROUP_PROBE || INFO_PROBE || RAIL_PROBE || SELECT_PROBE || SECOND_PROBE || UPDATE_PROBE || PERF_PROBE || IMPORT_PROBE) {
     // 打包态下 ROOT 在 asar 内部，写不进去 —— 逐级找一个能写的目录，
     // 免得探针"静默失败"让人以为没问题。
     const shotBase = (() => {
