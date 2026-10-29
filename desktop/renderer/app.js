@@ -1641,8 +1641,10 @@ async function importAndShow({ paths, urls, groupId, flash = false }) {
     return toast('info', '没有新增启动项', why);
   }
 
-  // 跳到落点分组，保证新卡片一定在视野里
-  if (r.groupId) state.active = r.groupId;
+  // 智能分类散到多组 → 跳「全部」看全貌；单组则跳落点分组
+  const multi = Array.isArray(r.classified) && r.classified.length > 1;
+  if (multi) state.active = 'all';
+  else if (r.groupId) state.active = r.groupId;
   await refresh();
 
   if (flash) {
@@ -1656,18 +1658,33 @@ async function importAndShow({ paths, urls, groupId, flash = false }) {
   if (r.skipped && r.skipped.length) tail.push(`跳过重复 ${r.skipped.length} 项`);
   if (r.failed && r.failed.length) tail.push(`无法识别 ${r.failed.length} 项`);
   if (r.truncated) tail.push(`超出上限 ${r.truncated} 项未导入`);
+  const tailTxt = tail.length ? ' · ' + tail.join(' · ') : '';
   const ids = (r.ids || []).map(x => x.id);
-  // 落到兜底的「拖入的快捷方式」才给「分配…」（已经进了目标分组的就别再多一步）
+
+  if (multi) {
+    // 智能分类到多个组：汇总各组数量；落「拖入的快捷方式」的还能一键再分配
+    const parts = r.classified.map(c => `${c.groupName} ${c.count} 项`).join('、');
+    const bucketIds = (r.ids || []).filter(x => x.groupId === 'dropped').map(x => x.id);
+    toast('ok', `已导入 ${r.added} 个启动项`,
+      `智能分类：${parts}${tailTxt}`,
+      bucketIds.length ? {
+        ttl: 9000,
+        action: { label: '分配未归类项…', run: () => assignImported(bucketIds) },
+      } : undefined);
+    return;
+  }
+
+  // 单组：落到兜底的「拖入的快捷方式」才给「分配…」（已经进了目标分组的就别再多一步）
   const inBucket = r.groupId === 'dropped';
   if (inBucket && ids.length) {
     toast('ok', `已导入 ${r.added} 个启动项`,
-      `放在「${r.groupName || '拖入的快捷方式'}」${tail.length ? ' · ' + tail.join(' · ') : ''}`, {
+      `放在「${r.groupName || '拖入的快捷方式'}」${tailTxt}`, {
         ttl: 9000,                                  // 带按钮的提示要留够反应时间
         action: { label: '分配到分组…', run: () => assignImported(ids) },
       });
   } else {
     toast('ok', `已导入 ${r.added} 个启动项`,
-      `分组：${r.groupName || '拖入的快捷方式'}${tail.length ? ' · ' + tail.join(' · ') : ''}`);
+      `分组：${r.groupName || '拖入的快捷方式'}${tailTxt}`);
   }
 }
 
@@ -1718,6 +1735,43 @@ function assignImported(ids) {
   if (hit && state.active !== hit.g.id) state.active = hit.g.id;
   setEditMode(true, alive);
   toast('info', `已勾选 ${state.picked.size} 项`, '选「移动到分组…」，或直接整批拖到左侧分组');
+}
+
+/** 一键智能分类整理：先 dryRun 预览 → 确认 → 执行 → 带「撤销」。 */
+async function runClassifyAll() {
+  let preview;
+  try { preview = await API.classifyAll({ dryRun: true }); }
+  catch (err) { return toast('bad', '整理失败', (err && err.message) || ''); }
+  if (!preview.ok) return toast('bad', '整理失败', preview.msg || '');
+
+  if (!preview.moved) {
+    return toast('info', '没有可整理的项', '能自动归类的项都已经在正确分组里了');
+  }
+
+  const parts = (preview.byGroup || []).map(g => `${g.groupName} ${g.count} 项`).join('、');
+  const go = confirm(`将把 ${preview.moved} 个启动项重新归类：\n${parts}\n\n先备份、可撤销；只动「确定能归类的」项，拿不准的和你自定义分组里的都不动。\n\n继续？`);
+  if (!go) return;
+
+  let r;
+  try { r = await API.classifyAll({}); }
+  catch (err) { return toast('bad', '整理失败', (err && err.message) || ''); }
+  if (!r.ok) return toast('bad', '整理失败', r.msg || '');
+
+  toast('ok', `已整理 ${r.moved} 个启动项`,
+    (r.byGroup || []).map(g => `${g.groupName} ${g.count} 项`).join('、') || '分组已归位', {
+      ttl: 9000,
+      action: r.backupFile ? { label: '撤销', run: () => undoClassify(r.backupFile) } : undefined,
+    });
+}
+
+async function undoClassify(backupFile) {
+  try {
+    const r = await API.classifyUndo(backupFile);
+    if (!r.ok) return toast('bad', '撤销失败', r.msg || '');
+    toast('ok', '已撤销整理');
+  } catch (err) {
+    toast('bad', '撤销失败', (err && err.message) || '');
+  }
 }
 
 /* ------------------------------------------------------------ 扫描 */
@@ -2093,6 +2147,7 @@ function settingsFromDom() {
     hotkeyEnabled: $('#sHotkeyOn').checked,
     autostart: $('#sAutostart').checked,
     sendTo: $('#sSendTo').checked,
+    smartClassify: $('#sSmartClassify').checked,
     closeAction: $('#sCloseAction').value,
     trayQuick: $('#sTrayQuick').value,
     hoverActions: $('#sHoverActs').checked,
@@ -2157,6 +2212,7 @@ async function openSettings() {
   $('#sHotkeyOn').checked = !!s.hotkeyEnabled;
   $('#sAutostart').checked = !!s.autostart;
   $('#sSendTo').checked = !!s.sendTo;
+  $('#sSmartClassify').checked = s.smartClassify !== false;
   $('#sCloseAction').value = s.closeAction || 'tray';
   $('#sTrayQuick').value = s.trayQuick || 'top';
   $('#sHoverActs').checked = !!s.hoverActions;
@@ -2512,6 +2568,7 @@ async function saveSettings() {
     hotkeyEnabled: $('#sHotkeyOn').checked,
     autostart: $('#sAutostart').checked,
     sendTo: $('#sSendTo').checked,
+    smartClassify: $('#sSmartClassify').checked,
     closeAction: $('#sCloseAction').value,
     trayQuick: $('#sTrayQuick').value,
     hoverActions: $('#sHoverActs').checked,
@@ -3120,6 +3177,8 @@ function bind() {
   $('#btnReextractIcons').addEventListener('click', () => { healAllIcons(); });
   // 恢复默认分组：误删「文件与目录 / 系统工具 / 开发 / 常用网站」的后悔药（只补不删）
   $('#btnRestoreDefaults').addEventListener('click', () => { restoreDefaultGroups(); });
+  // 智能分类整理：先预览、确认后执行；执行前主进程先整份备份，可一键撤销
+  $('#btnClassifyAll').addEventListener('click', runClassifyAll);
 
   /* 「关于」的两个入口：设置页脚的按钮，和侧栏底部那条状态行。
      状态行只在桌面版可点 —— 预览模式没有主进程，点开也拿不到真信息。 */

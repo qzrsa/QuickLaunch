@@ -15,6 +15,8 @@ const scanner = require('./lib/scan');
 const prune = require('./lib/prune');
 const menus = require('./lib/menus');
 const importer = require('./lib/importer');
+const classify = require('./lib/classify');
+const updater = require('./lib/updater');
 const { imageFileToDataUrl, fileDefaultIconToDataUrl, urlIconFileToDataUrl, isImageIcon } = require('./lib/icon');
 const urlsc = require('./lib/urlshortcut');
 const { createUpdateService } = require('./lib/update-service');
@@ -398,6 +400,66 @@ async function applySendTo(enabled) {
 /** 发送到触发的命令行参数里，哪些是文件路径、哪些是我们自己的开关。 */
 function sendToPathsFromArgs(argv) {
   return (argv || []).slice(1).filter(a => !!a && !a.startsWith('--'));
+}
+
+/* ---------------------------------------------------- 智能分类 */
+
+/** 云端分类表：放仓库 main 分支的 classify.json，改表 push 即生效，不用发版。
+ *  ★ 走 raw.githubusercontent.com（不是 release 资产），因为分类规则更新频繁、不该绑版本。 */
+const CLASSIFY_URL = 'https://raw.githubusercontent.com/qzrsa/QuickLaunch/main/classify.json';
+const CLASSIFY_MAX_BYTES = 256 * 1024;
+
+// 内存里的规则表：先内置兜底，读到缓存/云端再替换。
+let classifyRules = classify.builtinRules();
+
+function classifyCachePath() {
+  return path.join(dataLocation.dir, 'classify.json');
+}
+
+/** 读缓存分类表（同步，启动时用）。读不到/不合法就退回内置表。 */
+function loadClassifyRules() {
+  try {
+    const r = classify.parseRules(fs.readFileSync(classifyCachePath(), 'utf8'));
+    if (r) classifyRules = r;
+  } catch { /* 没缓存 / 读不到 → 用内置 */ }
+  return classifyRules;
+}
+
+/** 后台拉云端分类表并缓存。失败静默（保持当前规则表，离线照样能用内置/缓存）。 */
+function refreshClassifyRules() {
+  try {
+    updater.httpGetBuffer(CLASSIFY_URL, {
+      maxBytes: CLASSIFY_MAX_BYTES, timeout: 8000, ua: 'QuickLaunch-Classify',
+    }).then(buf => {
+      const r = classify.parseRules(buf.toString('utf8'));
+      if (!r) return;                       // 拉到了但结构不对 → 当没拉到，别把缓存冲掉
+      classifyRules = r;
+      try {
+        fs.writeFileSync(classifyCachePath(),
+          JSON.stringify({ schema: 1, version: r.version, rules: r.rules }, null, 2), 'utf8');
+      } catch { /* 缓存写不进就算了，本次运行仍用新表 */ }
+    }).catch(() => { /* 无网 / 404 → 静默用内置/缓存 */ });
+  } catch { /* noop */ }
+}
+
+/** 一键整理前落一份**完整配置**备份，撤销就是把它写回去。写不出调用方整批放弃。 */
+function writeClassifyBackup(cfg) {
+  const d = new Date();
+  const p2 = n => String(n).padStart(2, '0');
+  const stamp = `${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}`
+    + `-${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}`;
+  const dir = path.join(dataLocation.dir, 'backup');
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, `classify-${stamp}.json`);
+  fs.writeFileSync(file, JSON.stringify(cfg, null, 2), 'utf8');
+  return file;
+}
+
+/** 把 moves 汇总成 [{groupName,count}]（按目标组名聚合，供提示与预览用）。 */
+function groupCounts(moves) {
+  const m = new Map();
+  for (const mv of moves) m.set(mv.toName, (m.get(mv.toName) || 0) + 1);
+  return [...m.entries()].map(([groupName, count]) => ({ groupName, count }));
 }
 
 /* ---------------------------------------------------- 窗口 */
@@ -1131,13 +1193,11 @@ function registerIpc() {
       return { ok: true, added: 0, skipped: r.skipped, failed: r.failed, truncated: r.truncated || 0 };
     }
 
-    // 指定了分组就用它；否则落到「拖入的快捷方式」（没有则创建）
-    let g = groupId ? cfg.groups.find(x => x.id === groupId) : null;
-    if (groupId && !g) {
-      // 拖到了虚拟视图（全部/最近/收藏）或已删除的分组 → 走默认分组
-      groupId = null;
-    }
-    if (!g) g = store.ensureGroup(cfg, 'dropped', '拖入的快捷方式', '📥');
+    // 落点：groupId 失效（拖到虚拟视图 / 分组刚被删）→ 视为未指定
+    if (groupId && !cfg.groups.some(x => x.id === groupId)) groupId = null;
+    // 智能分类：没指定落点时，能确定的项自动归类，拿不准的落「拖入的快捷方式」。
+    // ★ 用户显式拖到侧栏 / 当前分组（groupId 非空）时不智能分类 —— 那是有明确意图的。
+    const smart = cfg.settings.smartClassify !== false && !groupId;
 
     const total = r.items.length;
     emit({ phase: 'icons', done: 0, total });
@@ -1170,15 +1230,100 @@ function registerIpc() {
     };
     await Promise.all(Array.from({ length: Math.min(6, total) }, worker));
 
+    // 落组：智能分类时按项分散到多个组；否则整批进一个组。
+    const ids = [];
+    const classified = [];   // [{ groupId, groupName, count }]
+    if (smart) {
+      const bucket = store.ensureGroup(cfg, 'dropped', '拖入的快捷方式', '📥');
+      const byGroup = new Map();   // groupId -> { g, items[] }
+      for (const created of slots) {
+        const c = classify.classifyItem(created, classifyRules);
+        const g = c ? store.ensureGroupByName(cfg, c.name, c.icon) : bucket;
+        let entry = byGroup.get(g.id);
+        if (!entry) { entry = { g, items: [] }; byGroup.set(g.id, entry); }
+        entry.items.push(created);
+      }
+      for (const { g, items } of byGroup.values()) {
+        g.items.unshift(...items);   // 每组内部仍按原顺序插到最前，拖完立刻能看见
+        for (const it of items) ids.push({ id: it.id, groupId: g.id });
+        classified.push({ groupId: g.id, groupName: g.name, count: items.length });
+      }
+      store.save(cfg);
+      emit({ phase: 'done', done: total, total });
+      return {
+        ok: true, added: ids.length, ids, classified,
+        groupId: classified.length === 1 ? classified[0].groupId : null,
+        groupName: classified.length === 1 ? classified[0].groupName : '',
+        skipped: r.skipped, failed: r.failed, truncated: r.truncated || 0,
+      };
+    }
+
+    // 单组：整批进指定组或兜底组
+    const g = groupId ? cfg.groups.find(x => x.id === groupId) : null
+      || store.ensureGroup(cfg, 'dropped', '拖入的快捷方式', '📥');
     // unshift(...slots) 按原顺序插到最前，拖完立刻能看见
     g.items.unshift(...slots);
-    const ids = slots.map(created => ({ id: created.id, groupId: g.id }));
+    const singleIds = slots.map(created => ({ id: created.id, groupId: g.id }));
     store.save(cfg);
     emit({ phase: 'done', done: total, total });
     return {
-      ok: true, added: ids.length, ids, groupId: g.id, groupName: g.name,
+      ok: true, added: singleIds.length, ids: singleIds, groupId: g.id, groupName: g.name,
       skipped: r.skipped, failed: r.failed, truncated: r.truncated || 0,
     };
+  });
+
+  /* 一键智能分类整理（设置 → 启动项维护）。
+     ★ dryRun 只算不写盘，给「预览」用；真执行先备份整份配置，可撤销。 */
+  ipcMain.handle('ql:classify:all', (_e, opts) => {
+    const { dryRun = false } = opts || {};
+    const cfg = store.load();
+    const moves = classify.computeMoves(cfg.groups, classifyRules);
+
+    if (dryRun) return { ok: true, dryRun: true, moved: moves.length, byGroup: groupCounts(moves) };
+    if (!moves.length) return { ok: true, moved: 0, byGroup: [] };
+
+    // 先备份，写不出就整批放弃（绝不"整理到一半丢了原位置"）
+    let backupFile;
+    try {
+      backupFile = writeClassifyBackup(cfg);
+    } catch (e) {
+      return { ok: false, msg: '备份失败，已放弃整理：' + e.message };
+    }
+
+    // 落地：目标组按名字找/建
+    for (const mv of moves) {
+      const from = cfg.groups.find(g => g.id === mv.fromGid);
+      if (!from) continue;
+      const to = store.ensureGroupByName(cfg, mv.toName, mv.toIcon);
+      const idx = (from.items || []).findIndex(i => i.id === mv.itemId);
+      if (idx < 0) continue;
+      const [it] = from.items.splice(idx, 1);
+      to.items.push(it);
+    }
+    store.save(cfg);
+    buildTray();
+    try { win?.webContents.send('ql:config-changed'); } catch { /* 窗口没了就算了 */ }
+
+    return { ok: true, moved: moves.length, byGroup: groupCounts(moves), backupFile };
+  });
+
+  /* 撤销一键整理：把备份的整份配置写回去。只认 data/backup 下的 classify-* 文件。 */
+  ipcMain.handle('ql:classify:undo', (_e, backupFile) => {
+    const dir = path.join(dataLocation.dir, 'backup');
+    const p = String(backupFile || '');
+    if (!p.startsWith(dir) || !path.basename(p).startsWith('classify-')) {
+      return { ok: false, msg: '备份文件不合法' };
+    }
+    try {
+      const cfg = JSON.parse(fs.readFileSync(p, 'utf8'));
+      if (!cfg || !Array.isArray(cfg.groups)) return { ok: false, msg: '备份内容不完整' };
+      store.save(cfg);
+      buildTray();
+      try { win?.webContents.send('ql:config-changed'); } catch { /* noop */ }
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, msg: e.message };
+    }
   });
 
   ipcMain.handle('ql:settings:set', async (_e, patch) => {
@@ -1327,6 +1472,7 @@ if (!app.requestSingleInstanceLock()) {
 
   app.whenReady().then(() => {
     store.init();
+    loadClassifyRules();   // 读缓存分类表（同步），读不到就用内置兜底
     // 一次性修正「常用网站」前两项（Google / 百度）。必须排在 createWindow / createTray 之前，
     // 否则首屏与托盘菜单先按旧顺序铺出来，用户会看到顺序"闪一下才变"。
     try {
@@ -1363,6 +1509,10 @@ if (!app.requestSingleInstanceLock()) {
 
     // 上次更新的收尾（更新成功/失败/已下好没重启）—— 纯本地读盘，不发请求
     svc.boot();
+
+    // 后台拉云端分类表（延后跑，不抢启动）。失败静默，智能分类永远有内置/缓存兜底。
+    // ★ 不跟 autoUpdate 开关绑：分类表是纯只读数据、不上传任何东西，且离线完全可用。
+    if (!ANY_PROBE) setTimeout(() => refreshClassifyRules(), 4000);
 
     /* 启动时静默检查一次更新：**默认开**，但只在启动时查这一次 —— 不轮询、不常驻。
        ★ 三处必须同时成立才会跑：设置里开着、不是探针、形态支持自更新。

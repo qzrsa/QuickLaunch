@@ -378,6 +378,17 @@
             <span class="sec-badge" data-badge="maint">修复 / 找回 / 清理</span>
           </button>
           <div class="sec-body">
+            <label class="trow">
+              <span class="trow-txt"><span class="trow-t">导入时智能分类</span><span class="trow-d">拖入 / 发送到的项按类型与路径自动归类，拿不准的仍进「拖入的快捷方式」</span></span>
+              <input type="checkbox" id="sSmartClassify"><span class="track"></span>
+            </label>
+            <div class="act-row">
+              <div class="act-txt">
+                <div class="act-t">智能分类整理</div>
+                <div class="act-d">把现有的项按同样规则重新归类：只动「确定能归类的」，已在正确组、拿不准、你自定义分组里的都不动。先备份，可撤销</div>
+              </div>
+              <button class="btn sm" id="btnClassifyAll">整理…</button>
+            </div>
             <div class="act-row">
               <div class="act-txt">
                 <div class="act-t">重新提取图标</div>

@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "version": 1,
+  "rules": [
+    { "group": "游戏", "icon": "🎮", "match": ["\\steam\\", "steamapps", "epic games", "wegame", "ubisoft", "riot games", "battlenet", "gog galaxy", "origin games", "\\games\\", "\\game\\"] },
+    { "group": "设计", "icon": "🎨", "match": ["adobe", "autodesk", "corel", "affinity", "blender foundation", "figma", "sketchup"] },
+    { "group": "办公", "icon": "📝", "match": ["microsoft office", "wps office", "libreoffice", "kingsoft", "onenote", "notion", "typora"] },
+    { "group": "开发", "icon": "💻", "match": ["nodejs", "\\python", "python3", "\\git\\", "visual studio", "vs code", "jetbrains", "android studio", "goland", "pycharm", "intellij", "eclipse", "\\mingw", "\\go\\", "\\rust\\", "\\java\\", "sublime text", "\\vim\\", "neovim", "\\npm\\"] },
+    { "group": "媒体", "icon": "🎬", "match": ["potplayer", "vlc", "obs studio", "spotify", "foobar2000", "mpc-hc", "k-lite", "\\mpv\\", "\\obs\\"] },
+    { "group": "社交", "icon": "💬", "match": ["wechat", "\\qq\\", "tencent", "telegram", "discord", "dingtalk", "feishu", "lark", "\\wecom\\"] }
+  ]
+}

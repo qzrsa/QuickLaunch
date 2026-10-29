@@ -1443,8 +1443,8 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
     'btnReextractIcons', 'btnRestoreDefaults', 'btnPruneInvalid'];
   const lost = needIds.filter(id => !new RegExp(`id="${id}"`).test(htmlSrc));
   ok(lost.length === 0, '分区化之后所有控件 id 都还在（界面按 id 取值，不按 DOM 位置）', lost.join(',') || 'ok');
-  ok((htmlSrc.match(/<label class="trow">/g) || []).length === 6,
-    '6 个开关都是整行 <label>（热键/自启/发送到/悬停/动画/自动更新，点文字也能切，读屏能拿到名字）');
+  ok((htmlSrc.match(/<label class="trow">/g) || []).length === 7,
+    '7 个开关都是整行 <label>（热键/自启/发送到/悬停/动画/智能分类/自动更新，点文字也能切，读屏能拿到名字）');
 
   // 折叠逻辑只有一份实现：写 localStorage、切 class、同步 aria
   ok(/const SET_SEC_KEY = ['"]ql\.settings\.secs['"]/.test(appSrc)
@@ -3379,6 +3379,119 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
   const svcStates = Object.values(sU.svc.STATE);
   ok(svcStates.every(s => typeof sU.svc.STATE_TXT[s] === 'string' && sU.svc.STATE_TXT[s].length > 0),
     `${svcStates.length} 个状态每个都有人话文案（界面与诊断信息直接用 statusText）`);
+
+  /* -------------------------------- 智能分类（v1.7.0） */
+  section('智能分类：引擎 / 云端表 / 一键整理');
+  {
+    const cls = require('../src/lib/classify');
+
+    // —— 内置表与云端表同构，parseRules 归一化 ——
+    const builtin = cls.builtinRules();
+    ok(!!builtin && Array.isArray(builtin.rules) && builtin.rules.length >= 6,
+      `内置兜底表非空（${builtin.rules.length} 类），离线永远可用`);
+    ok(builtin.rules.every(r => r.group && Array.isArray(r.match) && r.match.length > 0),
+      '内置表结构合法（每组有 group + 非空 match）');
+    const cloud = cls.parseRules(JSON.stringify({ schema: 1, version: 3, rules: [{ group: '游戏', icon: '🎮', match: ['steam'] }] }));
+    ok(!!cloud && cloud.version === 3 && cloud.rules[0].match[0] === 'steam', '云端表解析成功');
+    ok(cls.parseRules('not json') === null, '坏 JSON → null');
+    ok(cls.parseRules('{}') === null, '缺 rules → null');
+    ok(cls.parseRules('{"rules":[]}') === null, '空 rules → null');
+    ok(cls.parseRules('{"rules":[{"group":" ","match":["x"]}]}') === null, '空 group → null');
+
+    // —— 类型规则：与路径无关，最确定 ——
+    ok(cls.classifyItem({ type: 'url', path: 'https://a.b/' }, builtin).name === '常用网站', '网址 → 常用网站');
+    ok(cls.classifyItem({ type: 'folder', path: 'D:\\x' }, builtin).name === '文件与目录', '文件夹 → 文件与目录');
+    ok(cls.classifyItem({ type: 'script', path: 'a.bat' }, builtin).name === '开发', '脚本 → 开发');
+
+    // —— 系统目录 / 管理单元 ——
+    ok(cls.classifyItem({ type: 'app', path: 'C:\\Windows\\System32\\mstsc.exe' }, builtin).name === '系统工具', 'System32 → 系统工具');
+    ok(cls.classifyItem({ type: 'app', path: 'D:\\x\\devmgmt.msc' }, builtin).name === '系统工具', '.msc → 系统工具');
+
+    // —— 关键词表：按路径子串，顺序即优先级 ——
+    ok(cls.classifyItem({ type: 'app', path: 'C:\\Program Files (x86)\\Steam\\steamapps\\common\\x.exe' }, builtin).name === '游戏', 'steamapps → 游戏');
+    ok(cls.classifyItem({ type: 'app', path: 'D:\\Microsoft VS Code\\Code.exe' }, builtin).name === '开发', 'vs code → 开发');
+    ok(cls.classifyItem({ type: 'app', path: 'D:\\Adobe\\Photoshop.exe' }, builtin).name === '设计', 'adobe → 设计');
+
+    // —— 拿不准一律不猜（落桶） ——
+    ok(cls.classifyItem(null, builtin) === null, 'null 项 → 不猜');
+    ok(cls.classifyItem({ type: 'app', path: '' }, builtin) === null, '空路径 → 不猜');
+    ok(cls.classifyItem({ type: 'app', path: 'C:\\Users\\me\\%APPDATA%\\x.exe' }, builtin) === null, '残留 %VAR% → 不猜');
+    ok(cls.classifyItem({ type: 'app', path: 'C:\\Windows\\write.exe' }, builtin) === null, '普通应用命中不了任何关键词 → 不猜');
+
+    // —— matchPath 容忍 / 与 \ 混写 ——
+    ok(cls.matchPath('C:\\Steam\\x.exe', '\\steam\\') === true, '反斜杠关键词匹配');
+    ok(cls.matchPath('c:/steam/x.exe', '\\steam\\') === true, '正斜杠路径 vs 反斜杠关键词');
+
+    // —— computeMoves：只挪「确定的、且不在正确组的」；自定义组一律不碰 ——
+    const groups = [
+      { id: 'files', name: '文件与目录', items: [{ id: 'a1', name: '一个目录', type: 'folder', path: 'D:\\x' }] },
+      { id: 'tools', name: '系统工具', items: [{ id: 'a2', name: '磁盘管理', type: 'app', path: 'C:\\Windows\\System32\\diskmgmt.msc' }] },
+      { id: 'dev', name: '开发', items: [{ id: 'a3', name: 'VSCode', type: 'app', path: 'D:\\Microsoft VS Code\\Code.exe' }] },
+      { id: 'dropped', name: '拖入的快捷方式', items: [
+        { id: 'a4', name: '某游戏', type: 'app', path: 'C:\\Steam\\steamapps\\g.exe' },
+        { id: 'a5', name: '没名字', type: 'app', path: 'C:\\Windows\\write.exe' },
+      ] },
+      { id: 'custom1', name: '我的收藏', items: [{ id: 'a6', name: '另一个游戏', type: 'app', path: 'C:\\Steam\\steamapps\\h.exe' }] },
+    ];
+    const moves = cls.computeMoves(groups, builtin);
+    ok(moves.length === 1 && moves[0].itemId === 'a4' && moves[0].toName === '游戏',
+      `只挪「落桶里的游戏」1 项（实际 ${moves.length}），别的一律不动`);
+    ok(!moves.some(m => m.itemId === 'a2' || m.itemId === 'a3'),
+      '已在正确组（系统工具/开发）的不动');
+    ok(!moves.some(m => m.itemId === 'a6'), '自定义组里的项不碰');
+    ok(!moves.some(m => m.itemId === 'a5'), '拿不准的项不碰');
+
+    // —— 自动生成的组（auto 标记）算分类体系组，可被整理 ——
+    const autoG = [{ id: 'g_auto', name: '游戏', auto: true, items: [{ id: 'b1', name: 'x', type: 'app', path: 'C:\\Steam\\x.exe' }] }];
+    ok(cls.computeMoves(autoG, builtin).length === 0, 'auto 组里已在正确组 → 不动（auto 组不是自定义组）');
+
+    // —— 主进程接线 ——
+    const mainSrcC = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+    ok(/raw\.githubusercontent\.com\/qzrsa\/QuickLaunch\/main\/classify\.json/.test(mainSrcC),
+      '★ 云端分类表挂在仓库 main 分支（改表 push 即生效，不绑版本）');
+    ok(/function loadClassifyRules/.test(mainSrcC) && /function refreshClassifyRules/.test(mainSrcC),
+      '读缓存 + 后台拉取 各有一份实现');
+    ok(/function writeClassifyBackup/.test(mainSrcC) && /classify-\$\{stamp\}\.json/.test(mainSrcC),
+      '一键整理前先备份整份配置到 data/backup/classify-*');
+    ok(/smartClassify !== false && !groupId/.test(mainSrcC),
+      '★ 只在「没指定落点」时才智能分类（显式拖到分组/侧栏 = 有明确意图，不猜）');
+    ok(/classify\.classifyItem\(created, classifyRules\)/.test(mainSrcC)
+      && /store\.ensureGroupByName\(cfg, c\.name, c\.icon\)/.test(mainSrcC),
+      '导入时逐项分类，目标组按名字找/建（默认组复用，不另起同名）');
+    ok(/ipcMain\.handle\('ql:classify:all'/.test(mainSrcC)
+      && /computeMoves\(cfg\.groups, classifyRules\)/.test(mainSrcC),
+      '一键整理：computeMoves 纯函数规划，主进程只落地');
+    ok(/if \(dryRun\) return \{ ok: true, dryRun: true/.test(mainSrcC),
+      '★ dryRun 只算不写盘（预览用）');
+    ok(/ipcMain\.handle\('ql:classify:undo'/.test(mainSrcC)
+      && /startsWith\('classify-'\)/.test(mainSrcC),
+      '撤销只认 data/backup 下的 classify-* 文件，别的不放行');
+
+    // —— 设置默认值 + 分组落成 ——
+    ok(store.defaultConfig().settings.smartClassify === true, '★ 智能分类默认开（拿不准仍落桶）');
+    const tmpCfg = store.defaultConfig();
+    const byName = store.ensureGroupByName(tmpCfg, '游戏', '🎮');
+    ok(!!byName && byName.auto === true, '按名字新建的组带 auto 标记（一键整理认得它是分类体系组）');
+    const again = store.ensureGroupByName(tmpCfg, '游戏', '🎮');
+    ok(again === byName, '★ 按名字找组幂等（同名不重复建）');
+    const devReuse = store.ensureGroupByName(tmpCfg, '开发', '💻');
+    ok(devReuse.id === 'dev', '默认组「开发」被名字命中而复用，不另起同名组');
+
+    // —— 渲染层 / 预加载接线 ——
+    const htmlC = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'index.html'), 'utf8');
+    ok(htmlC.includes('sSmartClassify') && htmlC.includes('btnClassifyAll'),
+      '设置面板有智能分类开关 + 一键整理按钮');
+    const appSrcC = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'app.js'), 'utf8');
+    ok((appSrcC.match(/smartClassify:\s*\$\('#sSmartClassify'\)\.checked/g) || []).length >= 2,
+      'smartClassify 字段贯通 settingsFromDom 与 saveSettings');
+    ok(/function runClassifyAll/.test(appSrcC) && /function undoClassify/.test(appSrcC),
+      '渲染层有一键整理（先预览后确认）与撤销');
+    ok(/\$\('#btnClassifyAll'\)\.addEventListener\('click', runClassifyAll\)/.test(appSrcC),
+      '一键整理按钮已接线');
+    const preloadC = fs.readFileSync(path.join(__dirname, '..', 'src', 'preload.js'), 'utf8');
+    ok(/classifyAll/.test(preloadC) && /classifyUndo/.test(preloadC),
+      '预加载暴露 classifyAll / classifyUndo');
+  }
 
   section('结果');
   console.log(`  \x1b[32m通过 ${pass}\x1b[0m${fail ? ` / \x1b[31m失败 ${fail}\x1b[0m` : ''}`);

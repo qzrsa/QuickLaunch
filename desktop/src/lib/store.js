@@ -146,6 +146,9 @@ function defaultConfig() {
       autostart: false,
       // 右键「发送到」→ 快捷启动。默认关：要主动开，程序才会往 SendTo 目录写快捷方式。
       sendTo: false,
+      // 智能分类：没指定落点时，导入的快捷方式按确定性信号自动归类。
+      // 默认开；关掉后导入一律落「拖入的快捷方式」。一键整理所有项仍是手动动作。
+      smartClassify: true,
       closeAction: 'tray',
       trayQuick: 'top',
       hoverActions: false,
@@ -260,6 +263,26 @@ function ensureGroup(cfg, id, name, icon, colorIdx = 4) {
   let g = (cfg.groups || []).find(x => x.id === id);
   if (!g) {
     g = { id, name, icon, color: PALETTE[colorIdx % PALETTE.length], items: [] };
+    cfg.groups.push(g);
+  }
+  if (!Array.isArray(g.items)) g.items = [];
+  return g;
+}
+
+/**
+ * 按**名字**找分组，没有就新建（用于智能分类：把「游戏/设计/办公」这类类别名落成组）。
+ * 默认组「系统工具 / 开发」等也会被名字命中而复用，不会另起一个同名的组。
+ * ★ 名字命中是幂等的：组一旦建了，下次分类再按名字找就找到它，不会重复建。
+ */
+function ensureGroupByName(cfg, name, icon) {
+  let g = (cfg.groups || []).find(x => x && x.name === name);
+  if (!g) {
+    g = {
+      id: uid(), name, icon: icon || '📦',
+      color: PALETTE[(cfg.groups || []).length % PALETTE.length],
+      items: [],
+      auto: true,   // 智能分类生成的组：一键整理把它当「分类体系组」，不当作用户自定义组
+    };
     cfg.groups.push(g);
   }
   if (!Array.isArray(g.items)) g.items = [];
@@ -395,7 +418,7 @@ function ensureWebOrder(cfg) {
 }
 
 module.exports = {
-  init, load, save, annotate, defaultConfig, buildGroups, ensureGroup, restoreDefaults,
+  init, load, save, annotate, defaultConfig, buildGroups, ensureGroup, ensureGroupByName, restoreDefaults,
   ensureWebOrder, WEB_TOP, hostOf, WEB_ORDER_REV,
   expandEnv, pathExists, itemOk, uid, newItem,
   configDir, configFile, PALETTE,

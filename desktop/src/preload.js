@@ -50,6 +50,10 @@ contextBridge.exposeInMainWorld('ql', {
   importDropped: payload => ipcRenderer.invoke('ql:import', payload),
   canResolvePath: !!webUtils,
 
+  /* 智能分类 */
+  classifyAll: opts => ipcRenderer.invoke('ql:classify:all', opts),
+  classifyUndo: backupFile => ipcRenderer.invoke('ql:classify:undo', backupFile),
+
   /* dev 自检：由渲染层在"准确的时刻"触发截图（主进程定时器会被节流/漂移，不可靠） */
   probeShot: name => ipcRenderer.invoke('ql:probe-shot', name),
 
