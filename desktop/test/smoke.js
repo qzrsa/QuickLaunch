@@ -3455,6 +3455,18 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
     ok(cls.classifyItem({ type: 'app', path: 'D:\\233\\Github\\mpv-lazy\\mpv.exe' }, builtin).name === '媒体', '★ mpv-lazy → 媒体（\\mpv\\ 边界漏了 mpv-lazy）');
     ok(cls.classifyItem({ type: 'app', path: 'C:\\Program Files\\BiliDown\\BiliDown.exe' }, builtin).name === '下载', 'bilidown → 下载');
 
+    // —— 泛化特征词（v1.8.0）：一个词覆盖一类，不再逐个精确项目名 ——
+    ok(builtin.rules.some(r => r.group === 'AI'), '★ 内置表新增「AI」分组（llama/gpt/whisper…）');
+    ok(builtin.rules.some(r => r.group === '系统工具'), '★ 内置表有「系统工具」关键词组（cleaner/monitor/scrcpy）');
+    ok(cls.classifyItem({ type: 'app', path: 'D:\\233\\Github\\ffmpeg\\ffmpeg.exe' }, builtin).name === '媒体', 'ffmpeg → 媒体（泛化词）');
+    ok(cls.classifyItem({ type: 'app', path: 'D:\\233\\Github\\HandBrake\\HandBrake.exe' }, builtin).name === '媒体', 'handbrake → 媒体（泛化词）');
+    ok(cls.classifyItem({ type: 'app', path: 'D:\\233\\Github\\KS-Downloader\\KS-Downloader.exe' }, builtin).name === '下载', '★ downloader → 下载（任何 *downloader 都归下载）');
+    ok(cls.classifyItem({ type: 'app', path: 'D:\\233\\Github\\llama\\llama-server.exe' }, builtin).name === 'AI', 'llama → AI');
+    ok(cls.classifyItem({ type: 'app', path: 'D:\\233\\Github\\Umi-OCR\\Umi-OCR.exe' }, builtin).name === '办公', '★ ocr → 办公（Umi-OCR 这类自编译 OCR 也能命中）');
+    ok(cls.classifyItem({ type: 'app', path: 'D:\\233\\Github\\QtScrcpy\\QtScrcpy.exe' }, builtin).name === '系统工具', 'scrcpy → 系统工具');
+    ok(cls.classifyItem({ type: 'app', path: 'D:\\Blender\\blender.exe' }, builtin).name === '设计', '★ blender（不再要求 "blender foundation" 全名）');
+    ok(cls.classifyItem({ type: 'app', path: 'D:\\Microsoft Office\\WINWORD.EXE' }, builtin).name === '办公', '★ office → 办公（不再要求 "microsoft office" 全名）');
+
     // —— 拿不准一律不猜（落桶） ——
     ok(cls.classifyItem(null, builtin) === null, 'null 项 → 不猜');
     ok(cls.classifyItem({ type: 'app', path: '' }, builtin) === null, '空路径 → 不猜');

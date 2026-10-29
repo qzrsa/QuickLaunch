@@ -18,14 +18,18 @@
 const path = require('path');
 
 /* 内置兜底表：打包进程序，离线永远可用。云端 classify.json 是它的超集/更新版。
-   关键词一律小写、按**路径子串**匹配（不是文件名），写目录级特征最稳。 */
+   关键词一律小写、按**路径子串**匹配（不是文件名），写目录级特征最稳。
+   ★ 泛化特征词（v1.8.0）：一个词覆盖一类，而不是逐个精确项目名 ——
+     downloader→下载、ocr→办公、office→办公套件、mpc/mpv/ffmpeg→媒体、blender→设计 等。 */
 const BUILTIN_RULES = [
   { group: '游戏', icon: '🎮', match: ['\\steam\\', 'steamapps', 'epic games', 'wegame', 'ubisoft', 'riot games', 'battlenet', 'gog galaxy', 'origin games', '\\games\\', '\\game\\'] },
-  { group: '设计', icon: '🎨', match: ['adobe', 'autodesk', 'corel', 'affinity', 'blender foundation', 'figma', 'sketchup'] },
-  { group: '办公', icon: '📝', match: ['microsoft office', 'wps office', 'libreoffice', 'kingsoft', 'onenote', 'notion', 'typora'] },
-  { group: '开发', icon: '💻', match: ['nodejs', '\\python', 'python3', '\\git\\', 'visual studio', 'vs code', 'jetbrains', 'android studio', 'goland', 'pycharm', 'intellij', 'eclipse', '\\mingw', '\\go\\', '\\rust\\', '\\java\\', 'sublime text', '\\vim\\', 'neovim', '\\npm\\'] },
-  { group: '媒体', icon: '🎬', match: ['potplayer', 'vlc', 'obs studio', 'spotify', 'foobar2000', 'mpc-hc', 'mpc-be', 'k-lite', '\\mpv\\', 'mpv-lazy', '\\obs\\'] },
-  { group: '下载', icon: '⬇️', match: ['\\thunder\\', 'thunder network', 'internet download manager', '\\idm\\', 'qbittorrent', 'bitcomet', '\\utorrent\\', 'motrix', 'free download manager', 'aria2', 'transmission', 'deluge', 'bilidown', 'baidunetdisk', 'aliyundrive', '\\quark\\', 'quarkcloud', 'nutstore', '\\onedrive\\', '\\weiyun\\', '\\ecloud\\', 'dropbox', 'google drive', 'googledrive', '\\mega\\'] },
+  { group: '设计', icon: '🎨', match: ['adobe', 'autodesk', 'corel', 'affinity', 'blender', 'figma', 'sketchup'] },
+  { group: '办公', icon: '📝', match: ['office', 'wps', 'libreoffice', 'kingsoft', 'onenote', 'notion', 'typora', 'ocr'] },
+  { group: '开发', icon: '💻', match: ['nodejs', '\\python', 'python3', '\\git\\', 'visual studio', 'vs code', 'jetbrains', 'android studio', 'goland', 'pycharm', 'intellij', 'eclipse', '\\mingw', '\\go\\', '\\rust\\', '\\java\\', 'sublime text', '\\vim\\', 'neovim', '\\npm\\', 'poetry', 'hexo', 'rustscan'] },
+  { group: '媒体', icon: '🎬', match: ['potplayer', 'vlc', 'obs studio', 'spotify', 'foobar2000', 'mpc', 'k-lite', 'mpv', 'ffmpeg', 'handbrake', 'video2x', '\\obs\\'] },
+  { group: '下载', icon: '⬇️', match: ['\\thunder\\', 'thunder network', 'download manager', '\\idm\\', 'qbittorrent', 'bitcomet', '\\utorrent\\', 'motrix', 'aria2', 'transmission', 'deluge', 'bilidown', 'downloader', 'baidunetdisk', 'aliyundrive', '\\quark\\', 'quarkcloud', 'nutstore', '\\onedrive\\', '\\weiyun\\', '\\ecloud\\', 'dropbox', 'google drive', 'googledrive', '\\mega\\'] },
+  { group: 'AI', icon: '🤖', match: ['llama', 'gpt', 'chatgpt', 'openai', 'claude', 'ollama', 'whisper', 'rvc', 'stable diffusion', 'sd-webui', 'comfyui', 'gemini'] },
+  { group: '系统工具', icon: '🛠️', match: ['cleaner', 'monitor', 'scrcpy'] },
   { group: '社交', icon: '💬', match: ['wechat', '\\qq\\', 'tencent', 'telegram', 'discord', 'dingtalk', 'feishu', 'lark', '\\wecom\\'] },
 ];
 
