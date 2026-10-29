@@ -144,6 +144,8 @@ function defaultConfig() {
       hotkey: 'Ctrl+Alt+Space',
       hotkeyEnabled: true,
       autostart: false,
+      // 右键「发送到」→ 快捷启动。默认关：要主动开，程序才会往 SendTo 目录写快捷方式。
+      sendTo: false,
       closeAction: 'tray',
       trayQuick: 'top',
       hoverActions: false,

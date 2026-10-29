@@ -7,6 +7,7 @@
 const { app, BrowserWindow, Tray, Menu, ipcMain, shell, globalShortcut, nativeImage, clipboard, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const { spawn } = require('child_process');
 
 const store = require('./lib/store');
 const actions = require('./lib/actions');
@@ -318,6 +319,85 @@ function autostartState() {
   } catch {
     return false;
   }
+}
+
+/* ---------------------------------------------------- 右键「发送到」 */
+
+/** 发送到菜单里那条快捷方式的名字（不含 .lnk）。用户原话「发送到快捷启动」。 */
+const SENDTO_NAME = '快捷启动';
+
+function sendToLinkPath() {
+  // 用户级 SendTo，不需要管理员权限；系统级在 ProgramData 下要提权，不用。
+  return path.join(app.getPath('appData'), 'Microsoft', 'Windows', 'SendTo', SENDTO_NAME + '.lnk');
+}
+
+/**
+ * 创建「发送到」快捷方式。走 PowerShell WScript.Shell COM，参数 base64 内联，
+ * 避免目标路径里的中文 / 空格 / 引号被代码页或转义搞坏（与 importer 读 .lnk 同思路）。
+ * @returns {Promise<{ok:boolean, msg?:string, path:string, target?:string}>}
+ */
+function createSendToLink(lnkPath, target) {
+  return new Promise(resolve => {
+    const payload = JSON.stringify({ lnk: lnkPath, target });
+    const b64 = Buffer.from(payload, 'utf8').toString('base64');
+    const script = [
+      "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8",
+      "$ErrorActionPreference = 'Stop'",
+      "$p = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('" + b64 + "'))",
+      "$o = $p | ConvertFrom-Json",
+      "$sh = New-Object -ComObject WScript.Shell",
+      "$s = $sh.CreateShortcut($o.lnk)",
+      "$s.TargetPath = $o.target",
+      "$s.WorkingDirectory = Split-Path -Parent $o.target",
+      "$s.IconLocation = ($o.target + ',0')",
+      "$s.Description = '发送到快捷启动'",
+      "$s.Save()",
+    ].join('\n');
+    const enc = Buffer.from(script, 'utf16le').toString('base64');
+    let child;
+    try {
+      child = spawn('powershell.exe',
+        ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', enc],
+        { windowsHide: true });
+    } catch (e) {
+      return resolve({ ok: false, msg: e.message, path: lnkPath, target });
+    }
+    let err = '';
+    const timer = setTimeout(() => { try { child.kill(); } catch { /* noop */ } }, 10000);
+    child.stderr.on('data', d => { err += d.toString('utf8'); });
+    child.on('error', e => { clearTimeout(timer); resolve({ ok: false, msg: e.message, path: lnkPath, target }); });
+    child.on('close', code => {
+      clearTimeout(timer);
+      resolve(code === 0
+        ? { ok: true, path: lnkPath, target }
+        : { ok: false, msg: (err || `PowerShell 退出码 ${code}`).trim(), path: lnkPath, target });
+    });
+  });
+}
+
+/**
+ * 开 / 关「右键发送到快捷启动」。开 = 在 SendTo 目录里写一条指向当前 exe 的快捷方式，
+ * 关 = 删掉。★ 绿色版搬目录后 exe 路径会变，所以开启状态下每次启动都会重写指向（见 whenReady）。
+ */
+async function applySendTo(enabled) {
+  const lnkPath = sendToLinkPath();
+  try {
+    if (!enabled) {
+      try { fs.unlinkSync(lnkPath); } catch { /* 本来就没有 */ }
+      return { ok: true, path: lnkPath, installed: false };
+    }
+    try { fs.mkdirSync(path.dirname(lnkPath), { recursive: true }); } catch { /* 目录一般都在 */ }
+    const r = await createSendToLink(lnkPath, launcherExePath());
+    if (!r.ok) return r;
+    return { ok: true, path: lnkPath, installed: true, target: r.target };
+  } catch (e) {
+    return { ok: false, msg: e.message, path: lnkPath };
+  }
+}
+
+/** 发送到触发的命令行参数里，哪些是文件路径、哪些是我们自己的开关。 */
+function sendToPathsFromArgs(argv) {
+  return (argv || []).slice(1).filter(a => !!a && !a.startsWith('--'));
 }
 
 /* ---------------------------------------------------- 窗口 */
@@ -1101,7 +1181,7 @@ function registerIpc() {
     };
   });
 
-  ipcMain.handle('ql:settings:set', (_e, patch) => {
+  ipcMain.handle('ql:settings:set', async (_e, patch) => {
     const cfg = store.load();
     Object.assign(cfg.settings, patch || {});
     store.save(cfg);
@@ -1113,6 +1193,11 @@ function registerIpc() {
     }
     if ('autostart' in patch) {
       const r = applyAutostart(cfg.settings.autostart);
+      if (!r.ok) out.ok = false, out.msg = r.msg;
+    }
+    if ('sendTo' in patch) {
+      const r = await applySendTo(cfg.settings.sendTo);
+      out.sendTo = r;
       if (!r.ok) out.ok = false, out.msg = r.msg;
     }
     // 更新源/自动检查改了 → 立刻推一份新快照，免得界面上还留着按旧设置算出来的状态
@@ -1224,10 +1309,16 @@ if (!app.requestSingleInstanceLock()) {
      用户双击新版 exe 时，新进程拿不到锁直接退出，前台浮起来的是**旧版窗口**，
      看起来就像"新功能没做"（真踩过：用户报「关于加了吗？」）。
      这里把「你看到的是已在运行的那个版本」明确说出来，并告诉他怎么跑新的。 */
-  app.on('second-instance', () => {
+  app.on('second-instance', (_e, argv) => {
     showWindow();
+    // ★ 右键「发送到」→ 快捷启动：系统会把被选中的文件路径当参数再起一个实例，
+    //   这个实例拿不到锁、在这里交接。把文件路径挑出来交给渲染层走导入链路，
+    //   和拖进来是同一套（落「拖入的快捷方式」+ 一键分配）。
+    const paths = sendToPathsFromArgs(argv);
     try {
-      win?.webContents.send('ql:second-instance', { version: app.getVersion(), form: appForm() });
+      win?.webContents.send('ql:second-instance', {
+        version: app.getVersion(), form: appForm(), paths: paths.length ? paths : [],
+      });
     } catch { /* 窗口还没建好就算了，showWindow 已经起到作用 */ }
     if (SECOND_PROBE) {
       setTimeout(() => { try { win?.webContents.send('ql:second-probe'); } catch { /* noop */ } }, 800);
@@ -1261,6 +1352,14 @@ if (!app.requestSingleInstanceLock()) {
     }
     // 便携版首次运行：如配置里标记了自启，确保注册项指向当前 exe
     if (cfg.settings.autostart) applyAutostart(true);
+
+    // 「右键发送到」开着就重写一次快捷方式指向当前 exe：
+    // 绿色版解压到新目录后旧快捷方式会失效，每次启动刷新一次保证点得动。
+    if (cfg.settings.sendTo) {
+      applySendTo(true).then(r => {
+        if (!r.ok) console.warn('[sendto] 刷新快捷方式失败：', r.msg);
+      });
+    }
 
     // 上次更新的收尾（更新成功/失败/已下好没重启）—— 纯本地读盘，不发请求
     svc.boot();

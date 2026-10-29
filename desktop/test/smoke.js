@@ -638,6 +638,44 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
       '预勾选时清空搜索词（否则"已选 12 项"配一个空网格）');
   }
 
+  /* --------------------------------------------- 右键「发送到」→ 快捷启动（v1.6.0）
+     用户：文件右键 → 发送到 → 多一项「快捷启动」，一键把文件/快捷方式加进来。
+     实现：SendTo 目录放一条指向本 exe 的 .lnk；系统把文件路径当参数再起一个实例，
+     second-instance 里挑出路径走导入链路（与拖入同一套）。
+     ------------------------------------------------------------------ */
+  section('右键「发送到」快捷启动');
+  {
+    const mainSrcS = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+    const appSrcS = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'app.js'), 'utf8');
+
+    // 默认关：往系统 SendTo 目录写东西必须是用户主动开
+    ok(store.defaultConfig().settings.sendTo === false, '★ 默认关闭（要主动开才往 SendTo 写快捷方式）');
+
+    // 主进程：创建 / 删除 + 参数解析只有一份实现
+    ok(/function applySendTo/.test(mainSrcS) && /function createSendToLink/.test(mainSrcS),
+      '创建 / 删除 SendTo 快捷方式只有一份实现');
+    ok(/appData'\), 'Microsoft', 'Windows', 'SendTo'/.test(mainSrcS),
+      '落点在用户级 %APPDATA%\\Microsoft\\Windows\\SendTo（不用管理员权限）');
+    ok(/WScript\.Shell/.test(mainSrcS) && /IconLocation/.test(mainSrcS),
+      '用 WScript.Shell 建 .lnk（带图标，指向当前 exe）');
+    ok(/function sendToPathsFromArgs/.test(mainSrcS) && /!a\.startsWith\('--'\)/.test(mainSrcS),
+      '从 argv 挑文件路径时过滤掉自己的 -- 开关');
+    ok(/sendToPathsFromArgs\(argv\)/.test(mainSrcS) && /paths: paths\.length \? paths : \[\]/.test(mainSrcS),
+      'second-instance 挑出文件路径透传给渲染层');
+
+    // 渲染层：带 paths 就是一次导入请求
+    ok(/function handleSendTo/.test(appSrcS)
+      && /importAndShow\(\{ paths: \(paths \|\| \[\]\)\.filter\(Boolean\)/.test(appSrcS),
+      '「发送到」走导入链路（与拖入同一套，落桶 + 一键分配）');
+    ok(/function importAndShow/.test(appSrcS),
+      '导入结果处理只有一份实现（拖入与发送到共用，防漂移）');
+    ok(/info\.paths/.test(appSrcS), 'second-instance 订阅里识别带文件的请求');
+
+    // 设置项：字段贯通 DOM → patch → 主进程
+    ok((appSrcS.match(/sendTo:\s*\$\('#sSendTo'\)\.checked/g) || []).length >= 2,
+      'sendTo 字段贯通 settingsFromDom 与 saveSettings（未保存提示不会漏）');
+  }
+
   /* -------------------------------- 常用网站：前两项固定（v1.5.1） */
   section('常用网站：第一项 Google、第二项百度');
   {
@@ -1400,13 +1438,13 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
     '展开后标题徽标隐藏（信息已在正文里，不重复）');
 
   // 控件 id 一个都不能少：渲染层全按 id 取值，漏一个就是无声的 undefined
-  const needIds = ['sHotkey', 'sHotkeyOn', 'sAutostart', 'sStartGroup', 'sCloseAction', 'sTrayQuick',
+  const needIds = ['sHotkey', 'sHotkeyOn', 'sAutostart', 'sSendTo', 'sStartGroup', 'sCloseAction', 'sTrayQuick',
     'sHoverActs', 'sAnimations', 'sAutoUpdate', 'sUpdateBase', 'setDirty',
     'btnReextractIcons', 'btnRestoreDefaults', 'btnPruneInvalid'];
   const lost = needIds.filter(id => !new RegExp(`id="${id}"`).test(htmlSrc));
   ok(lost.length === 0, '分区化之后所有控件 id 都还在（界面按 id 取值，不按 DOM 位置）', lost.join(',') || 'ok');
-  ok((htmlSrc.match(/<label class="trow">/g) || []).length === 5,
-    '5 个开关都是整行 <label>（热键/自启/悬停/动画/自动更新，点文字也能切，读屏能拿到名字）');
+  ok((htmlSrc.match(/<label class="trow">/g) || []).length === 6,
+    '6 个开关都是整行 <label>（热键/自启/发送到/悬停/动画/自动更新，点文字也能切，读屏能拿到名字）');
 
   // 折叠逻辑只有一份实现：写 localStorage、切 class、同步 aria
   ok(/const SET_SEC_KEY = ['"]ql\.settings\.secs['"]/.test(appSrc)

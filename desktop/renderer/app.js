@@ -1602,28 +1602,28 @@ function resetDrag() {
   $$('.nav-item.drop-on').forEach(el => el.classList.remove('drop-on'));
 }
 
-async function handleDrop(e) {
-  const target = dropTargetInfo(e);
-  const { paths, urls } = extractDrop(e);
-  const dry = !!state.dropDryRun;
-  state.dropDryRun = false;
-  resetDrag();
-
+/**
+ * 导入并展示结果的公共链路：拖入（handleDrop）与右键「发送到」（handleSendTo）共用。
+ * groupId=null 表示落「拖入的快捷方式」；flash 决定是否给新卡片高亮。
+ * ★ 只有一条实现 —— 拖入和发送到的结果处理（切组 / 高亮 / toast / 一键分配）必须一致，
+ *   写两份迟早漂移（重复项提示、超出上限、分配按钮漏一边）。
+ */
+async function importAndShow({ paths, urls, groupId, flash = false }) {
   if (!paths.length && !urls.length) {
     toast('bad', '没有识别到可导入的内容', '支持快捷方式、程序、文件夹与网址');
     return;
   }
-  // 导入中又拖进来一批：直接忽略（否则两批同时写配置，还会互相抢进度条）
+  // 导入中又来一批：直接忽略（否则两批同时写配置，还会互相抢进度条）
   if (state.importingDrop) return;
 
-  console.log('[drop] 识别到', paths.length, '个路径 /', urls.length, '个网址');
+  console.log('[import] 识别到', paths.length, '个路径 /', urls.length, '个网址');
 
   state.importingDrop = true;
-  if (!dry) showDropProgress();
+  showDropProgress();
 
   let r;
   try {
-    r = await API.importDropped({ paths, urls, groupId: target ? target.id : null, dryRun: dry });
+    r = await API.importDropped({ paths, urls, groupId, dryRun: false });
   } catch (err) {
     state.importingDrop = false;
     hideDropProgress();
@@ -1633,10 +1633,6 @@ async function handleDrop(e) {
   hideDropProgress();
 
   if (!r.ok) return toast('bad', '导入失败', r.msg || '');
-  if (r.dryRun) {
-    console.log('[drop] 探针模式：已送达主进程，未写入配置');
-    return;
-  }
 
   if (!r.added) {
     const why = (r.skipped && r.skipped.length)
@@ -1649,19 +1645,21 @@ async function handleDrop(e) {
   if (r.groupId) state.active = r.groupId;
   await refresh();
 
-  const flashIds = new Set((r.ids || []).map(x => x.id));
-  $$('.card', $('#gridHost')).forEach(c => {
-    if (flashIds.has(c.dataset.id)) c.classList.add('flash');
-  });
+  if (flash) {
+    const flashIds = new Set((r.ids || []).map(x => x.id));
+    $$('.card', $('#gridHost')).forEach(c => {
+      if (flashIds.has(c.dataset.id)) c.classList.add('flash');
+    });
+  }
 
   const tail = [];
   if (r.skipped && r.skipped.length) tail.push(`跳过重复 ${r.skipped.length} 项`);
   if (r.failed && r.failed.length) tail.push(`无法识别 ${r.failed.length} 项`);
   if (r.truncated) tail.push(`超出上限 ${r.truncated} 项未导入`);
   const ids = (r.ids || []).map(x => x.id);
-  const inBucket = !target || r.groupId === 'dropped';
+  // 落到兜底的「拖入的快捷方式」才给「分配…」（已经进了目标分组的就别再多一步）
+  const inBucket = r.groupId === 'dropped';
   if (inBucket && ids.length) {
-    // 落到兜底的「拖入的快捷方式」才给「分配…」（已经进了目标分组的就别再多一步）
     toast('ok', `已导入 ${r.added} 个启动项`,
       `放在「${r.groupName || '拖入的快捷方式'}」${tail.length ? ' · ' + tail.join(' · ') : ''}`, {
         ttl: 9000,                                  // 带按钮的提示要留够反应时间
@@ -1671,6 +1669,42 @@ async function handleDrop(e) {
     toast('ok', `已导入 ${r.added} 个启动项`,
       `分组：${r.groupName || '拖入的快捷方式'}${tail.length ? ' · ' + tail.join(' · ') : ''}`);
   }
+}
+
+async function handleDrop(e) {
+  const target = dropTargetInfo(e);
+  const { paths, urls } = extractDrop(e);
+  const dry = !!state.dropDryRun;
+  state.dropDryRun = false;
+  resetDrag();
+
+  if (!paths.length && !urls.length) {
+    toast('bad', '没有识别到可导入的内容', '支持快捷方式、程序、文件夹与网址');
+    return;
+  }
+  if (state.importingDrop) return;
+
+  // 探针模式：dryRun 只把候选送达主进程、验证分类链路，不写入配置
+  if (dry) {
+    state.importingDrop = true;
+    try {
+      const r = await API.importDropped({ paths, urls, groupId: target ? target.id : null, dryRun: true });
+      console.log('[drop] 探针模式：已送达主进程，未写入配置');
+      console.log('[drop] 目标分组 =', target ? target.id : '(未指定)');
+      console.log('[drop] 待导入 =', r && r.added, '项');
+    } catch (err) {
+      console.log('[drop] 探针送达失败：', err && err.message);
+    }
+    state.importingDrop = false;
+    return;
+  }
+
+  await importAndShow({ paths, urls, groupId: target ? target.id : null, flash: true });
+}
+
+/** 右键「发送到」→ 快捷启动：把系统传进来的文件路径导入。落「拖入的快捷方式」，可一键分配。 */
+function handleSendTo(paths) {
+  importAndShow({ paths: (paths || []).filter(Boolean), urls: [], groupId: null, flash: true });
 }
 
 /** 「分配…」：进多选并把这批预先勾上，用户选一次「移动到分组…」就整批搬完。
@@ -2058,6 +2092,7 @@ function settingsFromDom() {
     hotkey: state.capturedHotkey || '',
     hotkeyEnabled: $('#sHotkeyOn').checked,
     autostart: $('#sAutostart').checked,
+    sendTo: $('#sSendTo').checked,
     closeAction: $('#sCloseAction').value,
     trayQuick: $('#sTrayQuick').value,
     hoverActions: $('#sHoverActs').checked,
@@ -2121,6 +2156,7 @@ async function openSettings() {
   $('#sHotkey').value = s.hotkey || '';
   $('#sHotkeyOn').checked = !!s.hotkeyEnabled;
   $('#sAutostart').checked = !!s.autostart;
+  $('#sSendTo').checked = !!s.sendTo;
   $('#sCloseAction').value = s.closeAction || 'tray';
   $('#sTrayQuick').value = s.trayQuick || 'top';
   $('#sHoverActs').checked = !!s.hoverActions;
@@ -2475,6 +2511,7 @@ async function saveSettings() {
     hotkey: state.capturedHotkey || '',
     hotkeyEnabled: $('#sHotkeyOn').checked,
     autostart: $('#sAutostart').checked,
+    sendTo: $('#sSendTo').checked,
     closeAction: $('#sCloseAction').value,
     trayQuick: $('#sTrayQuick').value,
     hoverActions: $('#sHoverActs').checked,
@@ -2501,7 +2538,10 @@ async function saveSettings() {
       toast('ok', '设置已保存');
     }
   } else {
-    toast('ok', '设置已保存');
+    const sendToNote = r.sendTo
+      ? (r.sendTo.installed ? ' · 已加入右键「发送到」' : ' · 已从右键「发送到」移除')
+      : '';
+    toast('ok', '设置已保存' + sendToNote);
   }
   // 存下来的就是这一份：快照对齐 + 清掉「未保存」提示，再关窗
   state.setSnap = settingsFromDom();
@@ -3197,6 +3237,9 @@ function bind() {
      所以它比侧栏状态行多带一个 formText()。 */
   API.on('ql:second-instance', info => {
     if (!info) return;
+    // 右键「发送到」→ 快捷启动：带了文件路径就是一次导入请求
+    const paths = (info.paths || []).filter(Boolean);
+    if (paths.length) return handleSendTo(paths);
     toast('info', '已有一个实例在运行',
       `v${info.version || '?'} · ${formText(info)}　·　刚才那次启动已交给它。`
       + '若你启动的是另一个版本，请先在托盘图标上右键退出，再打开新的。');
