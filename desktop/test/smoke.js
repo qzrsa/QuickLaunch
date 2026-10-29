@@ -3462,15 +3462,22 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
 
     // —— 泛化特征词（v1.8.0）：一个词覆盖一类，不再逐个精确项目名 ——
     ok(builtin.rules.some(r => r.group === 'AI'), '★ 内置表新增「AI」分组（llama/gpt/whisper…）');
-    ok(builtin.rules.some(r => r.group === '系统工具'), '★ 内置表有「系统工具」关键词组（cleaner/monitor/scrcpy）');
     ok(cls.classifyItem({ type: 'app', path: 'D:\\233\\Github\\ffmpeg\\ffmpeg.exe' }, builtin).name === '媒体', 'ffmpeg → 媒体（泛化词）');
     ok(cls.classifyItem({ type: 'app', path: 'D:\\233\\Github\\HandBrake\\HandBrake.exe' }, builtin).name === '媒体', 'handbrake → 媒体（泛化词）');
     ok(cls.classifyItem({ type: 'app', path: 'D:\\233\\Github\\KS-Downloader\\KS-Downloader.exe' }, builtin).name === '下载', '★ downloader → 下载（任何 *downloader 都归下载）');
     ok(cls.classifyItem({ type: 'app', path: 'D:\\233\\Github\\llama\\llama-server.exe' }, builtin).name === 'AI', 'llama → AI');
     ok(cls.classifyItem({ type: 'app', path: 'D:\\233\\Github\\Umi-OCR\\Umi-OCR.exe' }, builtin).name === '办公', '★ ocr → 办公（Umi-OCR 这类自编译 OCR 也能命中）');
-    ok(cls.classifyItem({ type: 'app', path: 'D:\\233\\Github\\QtScrcpy\\QtScrcpy.exe' }, builtin).name === '系统工具', 'scrcpy → 系统工具');
     ok(cls.classifyItem({ type: 'app', path: 'D:\\Blender\\blender.exe' }, builtin).name === '设计', '★ blender（不再要求 "blender foundation" 全名）');
     ok(cls.classifyItem({ type: 'app', path: 'D:\\Microsoft Office\\WINWORD.EXE' }, builtin).name === '办公', '★ office → 办公（不再要求 "microsoft office" 全名）');
+
+    // —— 系统工具只靠路径，不靠关键词（v2.0.1）：第三方监控/清理/投屏工具是「软件」 ——
+    ok(!builtin.rules.some(r => r.group === '系统工具'), '★ 内置表不再有「系统工具」关键词组（cleaner/monitor/scrcpy 已删）');
+    ok(cls.classifyItem({ type: 'app', path: 'C:\\Users\\QZRS\\Desktop\\Process Monitor 4.0.exe' }, builtin).name === '软件', 'Process Monitor → 软件（不是系统工具）');
+    ok(cls.classifyItem({ type: 'app', path: 'D:\\233\\GitHub\\LiteMonitor_v1.3.0-win-x64\\LiteMonitor.exe' }, builtin).name === '软件', 'LiteMonitor → 软件（不是系统工具）');
+    ok(cls.classifyItem({ type: 'app', path: 'D:\\233\\GitHub\\QtScrcpy-win-x64\\QtScrcpy.exe' }, builtin).name === '软件', 'QtScrcpy → 软件（不是系统工具）');
+    ok(cls.classifyItem({ type: 'app', path: 'D:\\Program Files\\TrafficMonitor\\TrafficMonitor.exe' }, builtin).name === '软件', 'TrafficMonitor → 软件（不是系统工具）');
+    ok(cls.classifyItem({ type: 'app', path: 'C:\\Windows\\System32\\taskmgr.exe' }, builtin).name === '系统工具', '★ taskmgr（System32）仍是系统工具');
+    ok(cls.classifyItem({ type: 'app', path: 'C:\\Windows\\System32\\regedit.exe' }, builtin).name === '系统工具', '★ regedit（System32）仍是系统工具');
 
     // —— 拿不准一律不猜（落桶） ——
     ok(cls.classifyItem(null, builtin) === null, 'null 项 → 不猜');

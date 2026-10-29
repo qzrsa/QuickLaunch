@@ -32,8 +32,10 @@ const BUILTIN_RULES = [
   { group: '媒体', icon: '🎬', match: ['potplayer', 'vlc', 'obs studio', 'spotify', 'foobar2000', 'mpc', 'k-lite', 'mpv', 'ffmpeg', 'handbrake', 'video2x', '\\obs\\'] },
   { group: '下载', icon: '⬇️', match: ['\\thunder\\', 'thunder network', 'download manager', '\\idm\\', 'qbittorrent', 'bitcomet', '\\utorrent\\', 'motrix', 'aria2', 'transmission', 'deluge', 'bilidown', 'downloader', 'baidunetdisk', 'aliyundrive', '\\quark\\', 'quarkcloud', 'nutstore', '\\onedrive\\', '\\weiyun\\', '\\ecloud\\', 'dropbox', 'google drive', 'googledrive', '\\mega\\'] },
   { group: 'AI', icon: '🤖', match: ['llama', 'gpt', 'chatgpt', 'openai', 'claude', 'ollama', 'whisper', 'rvc', 'stable diffusion', 'sd-webui', 'comfyui', 'gemini'] },
-  { group: '系统工具', icon: '🛠️', match: ['cleaner', 'monitor', 'scrcpy'] },
   { group: '社交', icon: '💬', match: ['wechat', '\\qq\\', 'tencent', 'telegram', 'discord', 'dingtalk', 'feishu', 'lark', '\\wecom\\'] },
+  /* ★ v2.0.1：「系统工具」不再设关键词。它只认**路径**（System32 / SystemApps / .msc / .cpl），
+     也就是 Windows 自带的系统工具。第三方监控/清理/投屏工具（Process Monitor、TrafficMonitor、
+     QtScrcpy、CCleaner…）是「软件」，落 SOFTWARE_GROUP 兜底，不能靠 cleaner/monitor/scrcpy 拉进来。 */
 ];
 
 /* 类型规则命中的目标组名（必须与 store.buildGroups 的默认组名一字不差） */

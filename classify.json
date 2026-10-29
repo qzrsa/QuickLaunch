@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "version": 4,
+  "version": 5,
   "rules": [
     { "group": "游戏", "icon": "🎮", "match": ["\\steam\\", "steamapps", "epic games", "wegame", "ubisoft", "riot games", "battlenet", "gog galaxy", "origin games", "\\games\\", "\\game\\"] },
     { "group": "设计", "icon": "🎨", "match": ["adobe", "autodesk", "corel", "affinity", "blender", "figma", "sketchup"] },
@@ -9,7 +9,6 @@
     { "group": "媒体", "icon": "🎬", "match": ["potplayer", "vlc", "obs studio", "spotify", "foobar2000", "mpc", "k-lite", "mpv", "ffmpeg", "handbrake", "video2x", "\\obs\\"] },
     { "group": "下载", "icon": "⬇️", "match": ["\\thunder\\", "thunder network", "download manager", "\\idm\\", "qbittorrent", "bitcomet", "\\utorrent\\", "motrix", "aria2", "transmission", "deluge", "bilidown", "downloader", "baidunetdisk", "aliyundrive", "\\quark\\", "quarkcloud", "nutstore", "\\onedrive\\", "\\weiyun\\", "\\ecloud\\", "dropbox", "google drive", "googledrive", "\\mega\\"] },
     { "group": "AI", "icon": "🤖", "match": ["llama", "gpt", "chatgpt", "openai", "claude", "ollama", "whisper", "rvc", "stable diffusion", "sd-webui", "comfyui", "gemini"] },
-    { "group": "系统工具", "icon": "🛠️", "match": ["cleaner", "monitor", "scrcpy"] },
     { "group": "社交", "icon": "💬", "match": ["wechat", "\\qq\\", "tencent", "telegram", "discord", "dingtalk", "feishu", "lark", "\\wecom\\"] }
   ]
 }
