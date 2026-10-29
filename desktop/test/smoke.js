@@ -3450,6 +3450,11 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
     ok(cls.classifyItem({ type: 'app', path: 'C:\\Program Files (x86)\\Tencent\\QQ\\QQ.exe' }, builtin).name === '社交', '★ QQ 仍归社交（tencent 未被下载抢占）');
     ok(cls.classifyItem({ type: 'app', path: 'C:\\Program Files\\Mozilla Thunderbird\\thunderbird.exe' }, builtin) === null, '★ Thunderbird 不被「迅雷」误判（\\thunder\\ 目录边界）');
 
+    // —— 影音播放器 + 视频下载器补漏（v1.7.5）——
+    ok(cls.classifyItem({ type: 'app', path: 'C:\\Program Files\\MPC-BE x64\\mpc-be64.exe' }, builtin).name === '媒体', 'MPC-BE → 媒体（影音）');
+    ok(cls.classifyItem({ type: 'app', path: 'D:\\233\\Github\\mpv-lazy\\mpv.exe' }, builtin).name === '媒体', '★ mpv-lazy → 媒体（\\mpv\\ 边界漏了 mpv-lazy）');
+    ok(cls.classifyItem({ type: 'app', path: 'C:\\Program Files\\BiliDown\\BiliDown.exe' }, builtin).name === '下载', 'bilidown → 下载');
+
     // —— 拿不准一律不猜（落桶） ——
     ok(cls.classifyItem(null, builtin) === null, 'null 项 → 不猜');
     ok(cls.classifyItem({ type: 'app', path: '' }, builtin) === null, '空路径 → 不猜');
