@@ -4,7 +4,7 @@
  * 负责：无边框窗口、托盘常驻、全局热键、开机自启、IPC 路由
  */
 
-const { app, BrowserWindow, Tray, Menu, ipcMain, shell, globalShortcut, nativeImage, clipboard, dialog } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, shell, globalShortcut, nativeImage, clipboard, dialog, net } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
@@ -17,7 +17,7 @@ const menus = require('./lib/menus');
 const importer = require('./lib/importer');
 const classify = require('./lib/classify');
 const updater = require('./lib/updater');
-const { imageFileToDataUrl, fileDefaultIconToDataUrl, urlIconFileToDataUrl, isImageIcon } = require('./lib/icon');
+const { imageFileToDataUrl, fileDefaultIconToDataUrl, urlIconFileToDataUrl, isImageIcon, bufferToIconDataUrl } = require('./lib/icon');
 const urlsc = require('./lib/urlshortcut');
 const { createUpdateService } = require('./lib/update-service');
 
@@ -64,6 +64,75 @@ function urlIconPathFor(url) {
 function iconForUrl(url, size = 128) {
   const f = urlIconPathFor(url);
   return f ? urlIconFileToDataUrl(f, size) : '';
+}
+
+/** 从网址里抠域名（小写、去端口）。不是 http(s) 开头返回 ''。 */
+function urlHost(url) {
+  const m = String(url || '').trim().match(/^[a-z]+:\/\/([^/?#]+)/i);
+  return m ? m[1].toLowerCase().replace(/:\d+$/, '') : '';
+}
+
+/**
+ * 抓网站真实 favicon → dataURL。抓不到返回 ''（上层保持 emoji 回退）。
+ *
+ * ★ 只在导入网址 / 补图标时走一次，**不常驻、不轮询**（符合"本机优先、就查一次"的调性）。
+ * ★ 源按顺序试：`https://<host>/favicon.ico`（最通用）→ Google s2（64px，能统一兜底，国内可能不通）。
+ * ★ 每个源设超时，失败换下一个；全失败就返回 ''。net.fetch 走 Chromium 网络栈，比裸 https 稳。
+ */
+async function fetchFaviconDataUrl(url, size = 64) {
+  const host = urlHost(url);
+  if (!host) return '';
+  const sources = [
+    `https://${host}/favicon.ico`,
+    `https://www.google.com/s2/favicons?domain=${host}&sz=${size}`,
+  ];
+  for (const src of sources) {
+    try {
+      const res = await net.fetch(src, { timeout: 4000 });
+      if (!res || !res.ok) continue;
+      const buf = Buffer.from(await res.arrayBuffer());
+      if (!buf.length) continue;
+      const d = bufferToIconDataUrl(buf, size);
+      if (d) return d;
+    } catch { /* 换下一个源 */ }
+  }
+  return '';
+}
+
+/** 存量网站项一次性补真实 favicon（rev 1，只跑一次）。
+ *  抓得到就内嵌进 item.icon，抓不到保持 emoji；之后不再自动重试，避免每次启动联网。 */
+const FAVICON_REV = 1;
+async function migrateFavicons() {
+  const cfg = store.load();
+  if (!cfg || !Array.isArray(cfg.groups)) return;
+  if (Number(cfg.settings.faviconRev || 0) >= FAVICON_REV) return;
+  cfg.settings.faviconRev = FAVICON_REV;
+  store.save(cfg);   // 先置 rev，避免重复跑（这次抓不到也不再重试）
+
+  const targets = [];
+  for (const g of cfg.groups) {
+    for (const it of (g.items || [])) {
+      if (it && it.type === 'url' && it.path && !isImageIcon(it.icon)) targets.push(it);
+    }
+  }
+  if (!targets.length) return;
+
+  let cursor = 0;
+  let done = 0;
+  const worker = async () => {
+    for (;;) {
+      const idx = cursor++;
+      if (idx >= targets.length) return;
+      const d = await fetchFaviconDataUrl(targets[idx].path, 64);
+      if (d) { targets[idx].icon = d; done++; }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(4, targets.length) }, worker));
+  if (done) {
+    store.save(cfg);
+    try { win?.webContents.send('ql:config-changed'); } catch { /* 窗口没了就算了 */ }
+    console.log(`[favicon] 已补 ${done}/${targets.length} 个网站真实图标`);
+  }
 }
 
 const START_HIDDEN = process.argv.includes('--hidden');
@@ -1219,7 +1288,10 @@ function registerIpc() {
         // 全都失败才保持 emoji 回退（🌐 就是"没找到真图标"的兜底，不是错误）。
         if (!isImageIcon(created.icon)) {
           let d = it._iconFile ? urlIconFileToDataUrl(it._iconFile, 128) : '';
-          if (!d && created.type === 'url') d = iconForUrl(created.path, 128);
+          if (!d && created.type === 'url') {
+            d = iconForUrl(created.path, 128);
+            if (!d) d = await fetchFaviconDataUrl(created.path, 64);
+          }
           if (!d && created.type === 'app' && created.path) d = await fileDefaultIconToDataUrl(created.path, 128);
           if (d) created.icon = d;
         }
@@ -1473,18 +1545,20 @@ if (!app.requestSingleInstanceLock()) {
   app.whenReady().then(() => {
     store.init();
     loadClassifyRules();   // 读缓存分类表（同步），读不到就用内置兜底
-    // 一次性修正「常用网站」前两项（Google / 百度）。必须排在 createWindow / createTray 之前，
-    // 否则首屏与托盘菜单先按旧顺序铺出来，用户会看到顺序"闪一下才变"。
+    // 一次性修正，都排在 createWindow / createTray 之前（否则首屏先按旧名字/旧顺序铺出来闪一下）：
+    //   ①「网站」前两项（Google / 百度） ②分组改名迁移（常用网站→网站、易语言→开发）
     try {
       const c = store.load();
       const r = store.ensureWebOrder(c);
-      if (r.changed) {
+      const m = store.migrateGroups(c);
+      if (r.changed || m.changed) {
         store.save(c);
-        if (r.added || r.moved) console.log('[migrate] 常用网站顺序已修正：' + r.note);
+        if (r.added || r.moved) console.log('[migrate] 网站顺序已修正：' + r.note);
         else if (r.note) console.log('[migrate] ' + r.note);
+        if (m.note) console.log('[migrate] 分组迁移：' + m.note);
       }
     } catch (e) {
-      console.warn('[migrate] 常用网站顺序修正失败：', e.message);
+      console.warn('[migrate] 迁移失败：', e.message);
     }
     createUpdateSvc();
     registerIpc();
@@ -1513,6 +1587,9 @@ if (!app.requestSingleInstanceLock()) {
     // 后台拉云端分类表（延后跑，不抢启动）。失败静默，智能分类永远有内置/缓存兜底。
     // ★ 不跟 autoUpdate 开关绑：分类表是纯只读数据、不上传任何东西，且离线完全可用。
     if (!ANY_PROBE) setTimeout(() => refreshClassifyRules(), 4000);
+
+    // 后台给存量网站项补真实 favicon（延后跑、只跑一次、失败静默，抓不到就保持 emoji）。
+    if (!ANY_PROBE) setTimeout(() => { migrateFavicons().catch(() => {}); }, 10000);
 
     /* 启动时静默检查一次更新：**默认开**，但只在启动时查这一次 —— 不轮询、不常驻。
        ★ 三处必须同时成立才会跑：设置里开着、不是探针、形态支持自更新。

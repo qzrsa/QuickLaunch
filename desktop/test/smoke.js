@@ -131,13 +131,14 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
       store.newItem('自制项', '🚀', 'app', 'notepad.exe'),
     ] }];
     const r1 = store.restoreDefaults(broken);
-    ok(r1.groupsAdded === 4, `缺失的 4 个默认分组被整组补回（实际 ${r1.groupsAdded}）`);
+    ok(r1.groupsAdded === 5, `缺失的 5 个默认分组被整组补回（实际 ${r1.groupsAdded}）`);
     ok(r1.itemsAdded > 0, `补回默认启动项 ${r1.itemsAdded} 个`);
     ok(broken.groups[0].id === 'mine' && broken.groups[0].items.length === 1,
       '★ 用户自建分组与自加项原样保留（恢复是加法，不是重置）');
     ok(broken.groups.some(g => g.id === 'files') && broken.groups.some(g => g.id === 'tools')
-      && broken.groups.some(g => g.id === 'dev') && broken.groups.some(g => g.id === 'web'),
-      '四个默认分组都回来了');
+      && broken.groups.some(g => g.id === 'dev') && broken.groups.some(g => g.id === 'web')
+      && broken.groups.some(g => g.id === 'apps'),
+      '五个默认分组都回来了');
 
     // 幂等：再点一次不该重复添加
     const before = broken.groups.reduce((n, g) => n + g.items.length, 0);
@@ -676,14 +677,14 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
       'sendTo 字段贯通 settingsFromDom 与 saveSettings（未保存提示不会漏）');
   }
 
-  /* -------------------------------- 常用网站：前两项固定（v1.5.1） */
-  section('常用网站：第一项 Google、第二项百度');
+  /* -------------------------------- 网站：前两项固定（v1.5.1） */
+  section('网站：第一项 Google、第二项百度');
   {
     const w = store.buildGroups().find(g => g.id === 'web');
-    ok(!!w && w.items.length >= 2, '「常用网站」分组存在');
+    ok(!!w && w.items.length >= 2, '「网站」分组存在');
     ok(store.hostOf(w.items[0].path) === 'google.com', `默认第一项是 Google（实际 ${w.items[0].name}）`);
     ok(store.hostOf(w.items[1].path) === 'baidu.com', `默认第二项是百度（实际 ${w.items[1].name}）`);
-    ok(w.items.every(i => i.type === 'url'), '常用网站都是网址类型');
+    ok(w.items.every(i => i.type === 'url'), '网站都是网址类型');
     ok(w.items.length >= 6, `原有站点一个没丢（共 ${w.items.length} 项）`);
 
     // hostOf 是「按域名认项」的地基：改名/换图标都不影响识别
@@ -751,7 +752,7 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
     noWeb.groups = noWeb.groups.filter(g => g.id !== 'web');
     const r5w = store.ensureWebOrder(noWeb);
     ok(r5w.changed === true && r5w.added === 0, '没有该分组时不报错、不凭空建组');
-    ok(noWeb.groups.length === 3, '分组数没变');
+    ok(noWeb.groups.length === 4, '分组数没变');
 
     // 接线：必须跑在 whenReady 里，且排在 createWindow() 之前
     const mainSrcW = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
@@ -3407,7 +3408,7 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
     ok(cls.parseRules('{"rules":[{"group":" ","match":["x"]}]}') === null, '空 group → null');
 
     // —— 类型规则：与路径无关，最确定 ——
-    ok(cls.classifyItem({ type: 'url', path: 'https://a.b/' }, builtin).name === '常用网站', '网址 → 常用网站');
+    ok(cls.classifyItem({ type: 'url', path: 'https://a.b/' }, builtin).name === '网站', '网址 → 网站');
     ok(cls.classifyItem({ type: 'folder', path: 'D:\\x' }, builtin).name === '文件与目录', '文件夹 → 文件与目录');
     ok(cls.classifyItem({ type: 'script', path: 'a.bat' }, builtin).name === '开发', '脚本 → 开发');
 
@@ -3429,10 +3430,10 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
     ok(cls.classifyItem({ type: 'file', path: 'D:\\doc\\报表.xls' }, builtin).name === '文本文档', '.xls → 文本文档');
     ok(cls.classifyItem({ type: 'file', path: 'D:\\doc\\演示.pptx' }, builtin).name === '文本文档', '.pptx → 文本文档');
 
-    // —— 易语言源文件（v1.7.2）：.e / .ec 单独成组 ——
-    ok(cls.classifyItem({ type: 'file', path: 'D:\\易语言\\主程序.e' }, builtin).name === '易语言', '.e → 易语言');
-    ok(cls.classifyItem({ type: 'file', path: 'D:\\易语言\\模块.ec' }, builtin).name === '易语言', '.ec → 易语言');
-    ok(cls.classifyItem({ type: 'app', path: 'D:\\易语言\\主程序.e' }, builtin).name === '易语言', '★ .lnk 解析出的 .e 也归易语言（不限定 type）');
+    // —— 易语言源文件（v2.0.0 起归「开发」，不再单独成组）——
+    ok(cls.classifyItem({ type: 'file', path: 'D:\\易语言\\主程序.e' }, builtin).name === '开发', '.e → 开发');
+    ok(cls.classifyItem({ type: 'file', path: 'D:\\易语言\\模块.ec' }, builtin).name === '开发', '.ec → 开发');
+    ok(cls.classifyItem({ type: 'app', path: 'D:\\易语言\\主程序.e' }, builtin).name === '开发', '★ .lnk 解析出的 .e 也归开发（不限定 type）');
     ok(cls.classifyItem({ type: 'file', path: 'D:\\doc\\readme.epub' }, builtin).name === '文本文档', '★ .epub 不被 .e 误判（endsWith 精确到扩展名）');
 
     // —— 系统目录 / 管理单元 ——
@@ -3452,7 +3453,7 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
     ok(cls.classifyItem({ type: 'app', path: 'C:\\Program Files\\AliyunDrive\\AliyunDrive.exe' }, builtin).name === '下载', '阿里云盘 → 下载');
     ok(cls.classifyItem({ type: 'app', path: 'C:\\Program Files (x86)\\Tencent\\Weiyun\\Weiyun.exe' }, builtin).name === '下载', '★ 腾讯微云 → 下载（不被「社交」的 tencent 抢）');
     ok(cls.classifyItem({ type: 'app', path: 'C:\\Program Files (x86)\\Tencent\\QQ\\QQ.exe' }, builtin).name === '社交', '★ QQ 仍归社交（tencent 未被下载抢占）');
-    ok(cls.classifyItem({ type: 'app', path: 'C:\\Program Files\\Mozilla Thunderbird\\thunderbird.exe' }, builtin) === null, '★ Thunderbird 不被「迅雷」误判（\\thunder\\ 目录边界）');
+    ok(cls.classifyItem({ type: 'app', path: 'C:\\Program Files\\Mozilla Thunderbird\\thunderbird.exe' }, builtin).name === '软件', '★ Thunderbird 不被「迅雷」误判（\\thunder\\ 目录边界）→ 拿不准落软件');
 
     // —— 影音播放器 + 视频下载器补漏（v1.7.5）——
     ok(cls.classifyItem({ type: 'app', path: 'C:\\Program Files\\MPC-BE x64\\mpc-be64.exe' }, builtin).name === '媒体', 'MPC-BE → 媒体（影音）');
@@ -3475,7 +3476,7 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
     ok(cls.classifyItem(null, builtin) === null, 'null 项 → 不猜');
     ok(cls.classifyItem({ type: 'app', path: '' }, builtin) === null, '空路径 → 不猜');
     ok(cls.classifyItem({ type: 'app', path: 'C:\\Users\\me\\%APPDATA%\\x.exe' }, builtin) === null, '残留 %VAR% → 不猜');
-    ok(cls.classifyItem({ type: 'app', path: 'C:\\Windows\\write.exe' }, builtin) === null, '普通应用命中不了任何关键词 → 不猜');
+    ok(cls.classifyItem({ type: 'app', path: 'C:\\Windows\\write.exe' }, builtin).name === '软件', '★ 普通 .exe 拿不准 → 落「软件」（v2.0.0 兜底）');
 
     // —— matchPath 容忍 / 与 \ 混写 ——
     ok(cls.matchPath('C:\\Steam\\x.exe', '\\steam\\') === true, '反斜杠关键词匹配');
@@ -3493,12 +3494,13 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
       { id: 'custom1', name: '我的收藏', items: [{ id: 'a6', name: '另一个游戏', type: 'app', path: 'C:\\Steam\\steamapps\\h.exe' }] },
     ];
     const moves = cls.computeMoves(groups, builtin);
-    ok(moves.length === 1 && moves[0].itemId === 'a4' && moves[0].toName === '游戏',
-      `只挪「落桶里的游戏」1 项（实际 ${moves.length}），别的一律不动`);
+    ok(moves.length === 2
+      && moves.some(m => m.itemId === 'a4' && m.toName === '游戏')
+      && moves.some(m => m.itemId === 'a5' && m.toName === '软件'),
+      `挪「游戏」和「软件」各 1 项（实际 ${moves.length}），别的一律不动`);
     ok(!moves.some(m => m.itemId === 'a2' || m.itemId === 'a3'),
       '已在正确组（系统工具/开发）的不动');
     ok(!moves.some(m => m.itemId === 'a6'), '自定义组里的项不碰');
-    ok(!moves.some(m => m.itemId === 'a5'), '拿不准的项不碰');
 
     // —— 自动生成的组（auto 标记）算分类体系组，可被整理 ——
     const autoG = [{ id: 'g_auto', name: '游戏', auto: true, items: [{ id: 'b1', name: 'x', type: 'app', path: 'C:\\Steam\\x.exe' }] }];
@@ -3535,6 +3537,33 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
     ok(again === byName, '★ 按名字找组幂等（同名不重复建）');
     const devReuse = store.ensureGroupByName(tmpCfg, '开发', '💻');
     ok(devReuse.id === 'dev', '默认组「开发」被名字命中而复用，不另起同名组');
+
+    // —— v2.0.0：网站改名 / 新增软件组 / 易语言合并 ——
+    ok(store.buildGroups().find(g => g.id === 'web').name === '网站',
+      '★ 默认分组「常用网站」已改名「网站」');
+    ok(store.buildGroups().find(g => g.id === 'apps').name === '软件',
+      '★ 新增空「软件」默认分组（app 拿不准的落点）');
+    {
+      const legacy = store.defaultConfig();
+      legacy.groups = legacy.groups.map(g => Object.assign({}, g));
+      legacy.groups.find(g => g.id === 'web').name = '常用网站';   // 造老配置：还叫旧名
+      legacy.groups.push({ id: 'g_e', name: '易语言', icon: '🅴', items: [{ id: 'e1', name: '主程序', type: 'file', path: 'D:\\易语言\\主程序.e' }] });
+      const mr = store.migrateGroups(legacy);
+      ok(mr.changed === true && mr.renamed >= 1 && mr.merged === 1, '★ 迁移：常用网站改名 + 易语言并入开发');
+      ok(legacy.groups.find(g => g.id === 'web').name === '网站', '迁移后 web 组叫「网站」');
+      ok(!legacy.groups.some(g => g.name === '易语言'), '迁移后没有「易语言」组');
+      ok(legacy.groups.find(g => g.id === 'dev').items.some(i => i.id === 'e1'), '易语言的项进了「开发」组');
+      ok(store.migrateGroups(legacy).changed === false, '★ 迁移只跑一次（rev 开关，幂等）');
+    }
+
+    // —— v2.0.0：网站真实 favicon ——
+    ok(/bufferToIconDataUrl/.test(fs.readFileSync(path.join(__dirname, '..', 'src', 'lib', 'icon.js'), 'utf8'))
+      && /bufferToIconDataUrl/.test(mainSrcC),
+      '★ 图标字节 → dataURL 有统一入口（favicon 抓取用）');
+    ok(/function fetchFaviconDataUrl/.test(mainSrcC) && /net\.fetch\(src/.test(mainSrcC),
+      '★ 主进程抓 favicon（net.fetch 逐个源试）');
+    ok(/function migrateFavicons/.test(mainSrcC) && /faviconRev/.test(mainSrcC),
+      '★ 存量网站项一次性补 favicon（rev 开关，只跑一次）');
 
     // —— 渲染层 / 预加载接线 ——
     const htmlC = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'index.html'), 'utf8');

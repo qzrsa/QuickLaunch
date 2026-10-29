@@ -2535,7 +2535,7 @@ function bindUpdate() {
 }
 
 /**
- * 「恢复默认分组」：误删「文件与目录 / 系统工具 / 开发 / 常用网站」之后的后悔药。
+ * 「恢复默认分组」：误删「文件与目录 / 系统工具 / 开发 / 网站 / 软件」之后的后悔药。
  * ★ 只补不删（主进程 store.restoreDefaults）：用户自建的分组、改过的名字、
  *   收藏与使用次数都不动 —— 恢复是加法，不是重置。
  */
@@ -3179,7 +3179,7 @@ function bind() {
   });
   // 手动修图标：只补"占位图 / 网址还挂着 emoji"那批，不会冲掉用户自己挑的表情/图片
   $('#btnReextractIcons').addEventListener('click', () => { healAllIcons(); });
-  // 恢复默认分组：误删「文件与目录 / 系统工具 / 开发 / 常用网站」的后悔药（只补不删）
+  // 恢复默认分组：误删「文件与目录 / 系统工具 / 开发 / 网站 / 软件」的后悔药（只补不删）
   $('#btnRestoreDefaults').addEventListener('click', () => { restoreDefaultGroups(); });
   // 智能分类整理：先预览、确认后执行；执行前主进程先整份备份，可一键撤销
   $('#btnClassifyAll').addEventListener('click', runClassifyAll);
@@ -3419,7 +3419,7 @@ function createMockBridge() {
           ],
         },
         {
-          id: 'web', name: '常用网站', icon: '🌐', color: PALETTE[5],
+          id: 'web', name: '网站', icon: '🌐', color: PALETTE[5],
           items: [
             { id: 'c0a', name: 'Google', icon: '🔍', type: 'url', path: 'https://www.google.com/', args: '', cwd: '', desc: 'google.com', favorite: false, useCount: 34, lastUsed: 1792170000, elevate: false, console: false },
             { id: 'c0b', name: '百度', icon: '🐾', type: 'url', path: 'https://www.baidu.com/', args: '', cwd: '', desc: 'baidu.com', favorite: false, useCount: 28, lastUsed: 1792168000, elevate: false, console: false },

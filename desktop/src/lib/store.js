@@ -116,7 +116,7 @@ function buildGroups() {
     {
       // 顺序有讲究：Google 第一、百度第二（用户明确要求）。
       // 已有配置不会因为改了这里就自动重排 —— 见下面的 WEB_TOP / ensureWebOrder()。
-      id: 'web', name: '常用网站', icon: '🌐', color: PALETTE[5],
+      id: 'web', name: '网站', icon: '🌐', color: PALETTE[5],
       items: [
         newItem('Google', '🔍', 'url', 'https://www.google.com/', { desc: 'google.com' }),
         newItem('百度', '🐾', 'url', 'https://www.baidu.com/', { desc: 'baidu.com' }),
@@ -126,10 +126,16 @@ function buildGroups() {
         newItem('WorkBuddy 文档', '📘', 'url', 'https://www.workbuddy.cn/docs/workbuddy/Overview', { desc: 'workbuddy.cn/docs' }),
       ],
     },
+    {
+      // 普通软件的兜底落点：智能分类拿不准的 .exe 都归这里（classifyItem 的 SOFTWARE_GROUP）。
+      // 初始为空 —— 靠导入时按名字复用；空组也要保留（filter 单独放行 apps）。
+      id: 'apps', name: '软件', icon: '🚀', color: PALETTE[6],
+      items: [],
+    },
   ];
 
   groups = groups.map(g => Object.assign({}, g, { items: dedupeName(g.items) }))
-    .filter(g => g.items.length);
+    .filter(g => g.items.length || g.id === 'apps');
   return groups;
 }
 
@@ -300,7 +306,7 @@ function itemKey(i) {
 /**
  * 恢复默认分组 / 默认启动项 —— **只补不删**，幂等。
  *
- * 用途：用户「全选 → 删除」把「文件与目录 / 系统工具 / 开发 / 常用网站」误删之后，
+ * 用途：用户「全选 → 删除」把「文件与目录 / 系统工具 / 开发 / 网站 / 软件」误删之后，
  * 一键把它们找回来。刻意不做"清空重来"：那会把用户自己建的分组、改过的名字、
  * 挑过的图标、收藏与使用次数一起冲掉 —— 恢复应该是加法，不是重置。
  *
@@ -347,10 +353,10 @@ function restoreDefaults(cfg) {
   return out;
 }
 
-/* ---------------------------------------------- 常用网站：前两项固定 */
+/* ---------------------------------------------- 网站：前两项固定 */
 
 /**
- * 「常用网站」第一项 = Google、第二项 = 百度。
+ * 「网站」第一项 = Google、第二项 = 百度。
  *
  * ★ 光改 `buildGroups()` 只对新装生效 —— 配置一旦落盘就再也不看默认值了，
  *   老用户永远是当初那套顺序（GitHub / 阿里云在最前）。所以这里补一次
@@ -395,7 +401,7 @@ function ensureWebOrder(cfg) {
   const g = Array.isArray(cfg.groups) ? cfg.groups.find(x => x && x.id === 'web') : null;
   if (!g || !Array.isArray(g.items)) {
     // 分组被删掉 / 还没建：只打标记。恢复默认时会按新顺序整组补回来
-    out.note = '没有「常用网站」分组，只记标记';
+    out.note = '没有「网站」分组，只记标记';
     return out;
   }
 
@@ -417,9 +423,62 @@ function ensureWebOrder(cfg) {
   return out;
 }
 
+/* ---------------------------------------------- 分组改名迁移（v2.0.0） */
+
+/**
+ * 一次性分组迁移：把老配置里的旧组名 / 旧分类改成新体系。
+ *
+ * 做的事：
+ *   1. 「常用网站」组 → 改名「网站」（id 仍是 web）
+ *   2. 「易语言」组 → 整组并入「开发」（.e/.ec 不再单独成组）
+ *
+ * 开关 `settings.groupRev`（rev 1）—— 只跑一次。光改 buildGroups 只对新装生效，
+ * 老配置落盘后再也不看默认值，所以这里补一次修正。
+ */
+const GROUP_REV = 1;
+
+function migrateGroups(cfg) {
+  const out = { changed: false, renamed: 0, merged: 0, note: '' };
+  if (!cfg || typeof cfg !== 'object') return out;
+  if (!cfg.settings || typeof cfg.settings !== 'object') cfg.settings = {};
+  if (Number(cfg.settings.groupRev || 0) >= GROUP_REV) return out;
+
+  cfg.settings.groupRev = GROUP_REV;
+  out.changed = true;
+
+  const groups = Array.isArray(cfg.groups) ? cfg.groups : null;
+  if (!groups) return out;
+
+  // ①「常用网站」→「网站」
+  for (const g of groups) {
+    if (g && g.name === '常用网站') { g.name = '网站'; out.renamed++; }
+  }
+
+  // ②「易语言」组整组并入「开发」，删掉易语言组
+  const eIdx = groups.findIndex(g => g && g.name === '易语言');
+  if (eIdx >= 0) {
+    const e = groups[eIdx];
+    const items = Array.isArray(e.items) ? e.items : [];
+    const dev = groups.find(g => g && (g.id === 'dev' || g.name === '开发'));
+    if (dev) {
+      if (!Array.isArray(dev.items)) dev.items = [];
+      dev.items.push(...items);
+      out.merged += items.length;
+    }
+    groups.splice(eIdx, 1);
+    out.changed = true;
+  }
+
+  const notes = [];
+  if (out.renamed) notes.push(`常用网站→网站 ${out.renamed} 组`);
+  if (out.merged) notes.push(`易语言→开发 ${out.merged} 项`);
+  out.note = notes.join('；');
+  return out;
+}
+
 module.exports = {
   init, load, save, annotate, defaultConfig, buildGroups, ensureGroup, ensureGroupByName, restoreDefaults,
-  ensureWebOrder, WEB_TOP, hostOf, WEB_ORDER_REV,
+  ensureWebOrder, migrateGroups, WEB_TOP, hostOf, WEB_ORDER_REV, GROUP_REV,
   expandEnv, pathExists, itemOk, uid, newItem,
   configDir, configFile, PALETTE,
 };

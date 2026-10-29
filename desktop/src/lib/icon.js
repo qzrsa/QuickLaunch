@@ -231,6 +231,18 @@ function urlIconFileToDataUrl(filePath, size = 128, iconIndex = 0) {
   return imageFileToDataUrl(p, size);
 }
 
+/** 任意图片字节（PNG / ICO / …）→ dataURL。'' 表示失败。
+ *  用于联网抓回来的 favicon：先试 createFromBuffer（认 PNG），再退 ICO 处理（落临时文件）。 */
+function bufferToIconDataUrl(buf, size = 64) {
+  try {
+    if (!buf || !buf.length) return '';
+    const { nativeImage } = require('electron');
+    const img = nativeImage.createFromBuffer(buf);
+    if (img && !img.isEmpty()) return imageToDataUrl(img, size);
+    return icoToDataUrl(buf, size);
+  } catch { return ''; }
+}
+
 /** 判断一个 icon 值是否为「图片型」dataURL（渲染层据此决定渲染 <img>） */
 function isImageIcon(icon) {
   return typeof icon === 'string' && /^data:image\//i.test(icon);
@@ -238,6 +250,6 @@ function isImageIcon(icon) {
 
 module.exports = {
   imageToDataUrl, imageFileToDataUrl, fileDefaultIconToDataUrl, urlIconFileToDataUrl,
-  icoToDataUrl, exeFileIconToDataUrl,
+  icoToDataUrl, exeFileIconToDataUrl, bufferToIconDataUrl,
   isImageIcon, shortcutSource, shortcutTarget, expandEnv, MAX_NATIVE,
 };
