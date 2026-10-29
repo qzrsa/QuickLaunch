@@ -3436,6 +3436,16 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
     ok(cls.classifyItem({ type: 'app', path: 'D:\\Microsoft VS Code\\Code.exe' }, builtin).name === '开发', 'vs code → 开发');
     ok(cls.classifyItem({ type: 'app', path: 'D:\\Adobe\\Photoshop.exe' }, builtin).name === '设计', 'adobe → 设计');
 
+    // —— 下载分组：下载器 + 云盘（v1.7.3），排在「社交」之前防止被 tencent 抢 ——
+    ok(cls.classifyItem({ type: 'app', path: 'C:\\Program Files (x86)\\Thunder Network\\Thunder\\Thunder.exe' }, builtin).name === '下载', '迅雷 → 下载');
+    ok(cls.classifyItem({ type: 'app', path: 'C:\\Program Files\\Internet Download Manager\\IDMan.exe' }, builtin).name === '下载', 'IDM → 下载');
+    ok(cls.classifyItem({ type: 'app', path: 'C:\\Program Files\\qBittorrent\\qbittorrent.exe' }, builtin).name === '下载', 'qBittorrent → 下载');
+    ok(cls.classifyItem({ type: 'app', path: 'C:\\Program Files\\BaiduNetdisk\\BaiduNetdisk.exe' }, builtin).name === '下载', '百度网盘 → 下载');
+    ok(cls.classifyItem({ type: 'app', path: 'C:\\Program Files\\AliyunDrive\\AliyunDrive.exe' }, builtin).name === '下载', '阿里云盘 → 下载');
+    ok(cls.classifyItem({ type: 'app', path: 'C:\\Program Files (x86)\\Tencent\\Weiyun\\Weiyun.exe' }, builtin).name === '下载', '★ 腾讯微云 → 下载（不被「社交」的 tencent 抢）');
+    ok(cls.classifyItem({ type: 'app', path: 'C:\\Program Files (x86)\\Tencent\\QQ\\QQ.exe' }, builtin).name === '社交', '★ QQ 仍归社交（tencent 未被下载抢占）');
+    ok(cls.classifyItem({ type: 'app', path: 'C:\\Program Files\\Mozilla Thunderbird\\thunderbird.exe' }, builtin) === null, '★ Thunderbird 不被「迅雷」误判（\\thunder\\ 目录边界）');
+
     // —— 拿不准一律不猜（落桶） ——
     ok(cls.classifyItem(null, builtin) === null, 'null 项 → 不猜');
     ok(cls.classifyItem({ type: 'app', path: '' }, builtin) === null, '空路径 → 不猜');
