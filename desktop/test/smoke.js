@@ -3413,6 +3413,20 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
     ok(cls.classifyItem({ type: 'app', path: 'C:\\Steam\\steamapps\\x.exe' }, builtin).name === '游戏', '★ .exe 不被文档扩展名误判');
     ok(cls.classifyItem({ type: 'file', path: 'C:\\Tools\\random.exe' }, builtin) === null, '★ 无扩展名/未知扩展名不猜（random.exe 不在文档表也不在关键词表）');
 
+    // —— 办公/数据/标记格式也归「文本文档」（v1.7.2）——
+    ok(cls.classifyItem({ type: 'file', path: 'D:\\doc\\config.xml' }, builtin).name === '文本文档', '.xml → 文本文档');
+    ok(cls.classifyItem({ type: 'file', path: 'D:\\doc\\data.json' }, builtin).name === '文本文档', '.json → 文本文档');
+    ok(cls.classifyItem({ type: 'file', path: 'D:\\code\\script.lua' }, builtin).name === '文本文档', '.lua → 文本文档');
+    ok(cls.classifyItem({ type: 'file', path: 'D:\\doc\\报表.xlsx' }, builtin).name === '文本文档', '.xlsx → 文本文档');
+    ok(cls.classifyItem({ type: 'file', path: 'D:\\doc\\报表.xls' }, builtin).name === '文本文档', '.xls → 文本文档');
+    ok(cls.classifyItem({ type: 'file', path: 'D:\\doc\\演示.pptx' }, builtin).name === '文本文档', '.pptx → 文本文档');
+
+    // —— 易语言源文件（v1.7.2）：.e / .ec 单独成组 ——
+    ok(cls.classifyItem({ type: 'file', path: 'D:\\易语言\\主程序.e' }, builtin).name === '易语言', '.e → 易语言');
+    ok(cls.classifyItem({ type: 'file', path: 'D:\\易语言\\模块.ec' }, builtin).name === '易语言', '.ec → 易语言');
+    ok(cls.classifyItem({ type: 'app', path: 'D:\\易语言\\主程序.e' }, builtin).name === '易语言', '★ .lnk 解析出的 .e 也归易语言（不限定 type）');
+    ok(cls.classifyItem({ type: 'file', path: 'D:\\doc\\readme.epub' }, builtin).name === '文本文档', '★ .epub 不被 .e 误判（endsWith 精确到扩展名）');
+
     // —— 系统目录 / 管理单元 ——
     ok(cls.classifyItem({ type: 'app', path: 'C:\\Windows\\System32\\mstsc.exe' }, builtin).name === '系统工具', 'System32 → 系统工具');
     ok(cls.classifyItem({ type: 'app', path: 'D:\\x\\devmgmt.msc' }, builtin).name === '系统工具', '.msc → 系统工具');

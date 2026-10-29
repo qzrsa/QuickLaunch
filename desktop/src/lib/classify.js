@@ -37,14 +37,27 @@ const TYPE_GROUP = {
 
 const SYS_GROUP = { name: '系统工具', icon: '🛠️' };
 
-/* 文档类文件：扩展名是确定性信号（和路径无关），txt/ini/word/markdown/pdf 等归「文本文档」。
+/* 文档类文件：扩展名是确定性信号（和路径无关），txt/ini/word/markdown/pdf/办公表格 等归「文本文档」。
    与「系统工具」同级，都是不用猜的硬规则。 */
 const DOC_GROUP = { name: '文本文档', icon: '📄' };
 const DOC_EXT = [
+  // 纯文本 / 标记 / 配置
   '.txt', '.ini', '.md', '.markdown', '.log',
+  '.xml', '.json', '.yaml', '.yml', '.toml',
+  // Word / 排版 / 电子书
   '.doc', '.docx', '.pdf', '.rtf', '.odt', '.wps', '.pages',
-  '.csv', '.tsv', '.tex', '.epub', '.mobi',
+  '.tex', '.epub', '.mobi',
+  // 表格 / 数据
+  '.csv', '.tsv', '.xls', '.xlsx', '.xlsm', '.xlsb', '.ods', '.et',
+  // 演示
+  '.ppt', '.pptx', '.pps', '.ppsx', '.dps',
+  // 脚本（用户归入文档类）
+  '.lua',
 ];
+
+/* 易语言源文件：.e 源文件 / .ec 模块。扩展名极短但高度专属，单独成组（用户点名要）。 */
+const E_GROUP = { name: '易语言', icon: '🅴' };
+const E_EXT = ['.e', '.ec'];
 
 /** 校验并解析云端分类表。结构不对返回 null（调用方退回缓存/内置表）。 */
 function parseRules(jsonText) {
@@ -94,15 +107,18 @@ function classifyItem(item, rules) {
   // 归一化分隔符 + 小写，后续匹配统一用 /
   const p = raw.replace(/\\/g, '/').toLowerCase();
 
-  // 2) 文档扩展名（确定性信号，和路径无关）
+  // 2) 易语言源文件（.e / .ec，扩展名高度专属，优先于通用文档）
+  if (E_EXT.some(ext => p.endsWith(ext))) return E_GROUP;
+
+  // 3) 文档扩展名（确定性信号，和路径无关）
   if (DOC_EXT.some(ext => p.endsWith(ext))) return DOC_GROUP;
 
-  // 3) 系统目录 / 管理单元
+  // 4) 系统目录 / 管理单元
   if (/\.(msc|cpl)$/.test(p) || p.includes('/system32/') || p.includes('/windows/systemapps/')) {
     return SYS_GROUP;
   }
 
-  // 4) 关键词表（顺序即优先级，命中第一个就停）
+  // 5) 关键词表（顺序即优先级，命中第一个就停）
   const list = (rules && Array.isArray(rules.rules)) ? rules.rules : [];
   for (const r of list) {
     if (!r || !Array.isArray(r.match)) continue;
@@ -147,6 +163,6 @@ function computeMoves(groups, rules, defaultIds) {
 }
 
 module.exports = {
-  BUILTIN_RULES, TYPE_GROUP, SYS_GROUP, DOC_GROUP, DOC_EXT,
+  BUILTIN_RULES, TYPE_GROUP, SYS_GROUP, DOC_GROUP, DOC_EXT, E_GROUP, E_EXT,
   parseRules, builtinRules, classifyItem, matchPath, computeMoves,
 };
