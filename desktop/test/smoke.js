@@ -887,6 +887,10 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
   ok(/\.drop-before/.test(navCss) && /\.drop-after/.test(navCss), '★ CSS 有 drop-before / drop-after 两条插入线');
   ok(/\.nav-item\[draggable="true"\]\s*\{\s*cursor:\s*grab/.test(navCss), '可拖分组鼠标悬停是抓手 cursor:grab');
   ok(/\.nav-item\.dragging\s*\{\s*opacity:\s*\.45/.test(navCss), '拖拽中源行半透明（opacity .45）');
+  // 侧栏点击切视图必须同步刷新高亮（v1.7.4 修）：只 render() 会导致卡片区换了、
+  // 红点还停在旧分组（实测：选中「社交」但高亮仍在「拖入的快捷方式」）
+  ok(/rememberGroup\(state\.active\);\s*\n\s*renderNav\(\);/.test(searchJs),
+    '★ 点侧栏分组：renderNav + render 成对（高亮跟内容一起切，不停在旧分组）');
 
   /* ---------------------------------------------------------- 图标提取 */
   /* ---- 从 PE 资源里抠图标（v1.4.5 的核心：不再信 app.getFileIcon）---- */

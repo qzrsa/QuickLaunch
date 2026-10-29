@@ -2821,6 +2821,7 @@ function bind() {
     // 换了视图就把勾选清掉：不然不可见的选中项会被一起批量删/移，属于数据事故
     if (state.editMode && state.picked.size) { state.picked.clear(); }
     rememberGroup(state.active);
+    renderNav();   // ★ 侧栏高亮必须跟着切 —— 只 render() 的话卡片区换了、红点还停在旧分组（v1.7.4 修）
     render();
   });
 
