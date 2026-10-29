@@ -431,6 +431,23 @@
               </div>
               <p class="hint-line" id="updateBaseMsg"></p>
             </div>
+
+            <!-- 更新交互块：检查 / 下载 / 重启并更新（v1.9.0 从「关于」移到这里，和「更新源/自动检查」凑成一处） -->
+            <div class="upd-box" id="updBox">
+              <div class="upd-head">
+                <h3>检查与安装</h3>
+                <span class="upd-state" id="updState">—</span>
+              </div>
+              <div class="upd-bar" id="updBar" hidden><i id="updBarIn"></i></div>
+              <p class="upd-msg" id="updMsg"></p>
+              <div class="upd-acts">
+                <button class="btn sm" id="updCheck">检查更新</button>
+                <button class="btn sm primary" id="updDown" hidden>下载</button>
+                <button class="btn sm primary" id="updApply" hidden>重启并更新</button>
+                <div class="spacer"></div>
+                <button class="btn sm" id="updLog" hidden>打开更新目录</button>
+              </div>
+            </div>
           </div>
         </section>
       </div>
@@ -463,25 +480,6 @@
 
     <div class="modal-body">
       <div id="abGrid"></div>
-
-      <!-- 软件更新。★ 放「关于」而不是设置面板：它是"看一眼 + 按一下"，
-           不是"配一配"——和版本号、运行形态同属一类信息。
-           「更新源 / 是否自动检查」那两项才是设置，在设置面板里。 -->
-      <section class="upd-box" id="abUpd">
-        <div class="upd-head">
-          <h3>软件更新</h3>
-          <span class="upd-state" id="abUpdState">—</span>
-        </div>
-        <div class="upd-bar" id="abUpdBar" hidden><i id="abUpdBarIn"></i></div>
-        <p class="upd-msg" id="abUpdMsg"></p>
-        <div class="upd-acts">
-          <button class="btn sm" id="abUpdCheck">检查更新</button>
-          <button class="btn sm primary" id="abUpdDown" hidden>下载</button>
-          <button class="btn sm primary" id="abUpdApply" hidden>重启并更新</button>
-          <div class="spacer"></div>
-          <button class="btn sm" id="abUpdLog" hidden>打开更新目录</button>
-        </div>
-      </section>
 
       <div class="warn-box" id="abWarn" hidden></div>
     </div>

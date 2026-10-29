@@ -764,8 +764,8 @@ body.edit-mode .content { padding-bottom: 108px; }
   word-break: break-all; user-select: text;
 }
 
-/* 「关于」里的软件更新块。放在诊断表格下面，因为它不只是"看一眼" ——
-   还有三个按钮，是用户**唯一**动手更新程序的地方（下载与安装都不自动）。 */
+/* 设置面板「软件更新」分区里的更新交互块（v1.9.0 从「关于」移过来）。
+   它不只是"看一眼"——还有三个按钮，是用户**唯一**动手更新程序的地方（下载与安装都不自动）。 */
 .upd-box {
   margin-top: 4px; padding: 13px 14px; border-radius: var(--r-s);
   background: var(--panel-2); border: 1px solid var(--line);

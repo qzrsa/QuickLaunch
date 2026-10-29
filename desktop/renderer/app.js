@@ -2238,6 +2238,9 @@ async function openSettings() {
   // 徽标也在这里刷一次 —— 折叠的分区要靠它显示当前值。
   state.setSnap = settingsFromDom();
   updateSecBadges();
+  // 更新块现在住在这里：打开设置面板时把主进程随 ql:info 带回的快照画上（事件可能先到也可能后到）。
+  if (i.update && !state.update) state.update = i.update;
+  renderUpdate();
   $('#setDirty').textContent = '';
   $('#setOverlay').hidden = false;
 }
@@ -2329,7 +2332,6 @@ async function openAbout() {
       ${g.rows.map(r => `<div class="about-row"><span class="k">${esc(r.k)}</span>`
         + `<span class="v">${esc(r.v)}</span></div>`).join('')}
     </section>`).join('');
-  renderUpdate();
   const warn = dataWarnText(i);
   const wb = $('#abWarn');
   wb.hidden = !warn;
@@ -2390,20 +2392,21 @@ function paintStatusLine() {
   if (alert) {
     bits.push(u.status === 'staged'
       ? `已下好 v${u.latest}，重启即可更新`
-      : `发现新版本 v${u.latest}，在「关于」里下载`);
+      : `发现新版本 v${u.latest}，在「设置 → 软件更新」里下载`);
   }
   conn.title = bits.length ? `查看版本与运行环境（${bits.join('；')}）` : '查看版本与运行环境';
 }
 
-/** 「关于」里的更新块。独立成函数是因为主进程推新状态时要能**原地重绘**，
- *  而不是重开一次窗口。 */
+/** 设置面板「软件更新」分区里的更新交互块。独立成函数是因为主进程推新状态时要能
+ *  **原地重绘**，而不是重开一次窗口。★ 无论设置面板开没开，这块都在 DOM 里（overlay 常驻），
+ *  事件推过来的快照随时都能画上去。 */
 function renderUpdate() {
-  const box = $('#abUpd');
+  const box = $('#updBox');
   if (!box) return;
   const u = state.update;
-  const st = $('#abUpdState');
-  const msg = $('#abUpdMsg');
-  const bar = $('#abUpdBar');
+  const st = $('#updState');
+  const msg = $('#updMsg');
+  const bar = $('#updBar');
 
   if (!u) {
     st.textContent = '—';
@@ -2432,15 +2435,15 @@ function renderUpdate() {
 
   const p = u && u.progress;
   bar.hidden = !p;
-  if (p) $('#abUpdBarIn').style.width = (p.pct == null ? 100 : p.pct) + '%';
+  if (p) $('#updBarIn').style.width = (p.pct == null ? 100 : p.pct) + '%';
 
-  const check = $('#abUpdCheck');
+  const check = $('#updCheck');
   check.disabled = !(u && u.canCheck);
   check.textContent = u && u.status === 'checking' ? '检查中…' : '检查更新';
-  $('#abUpdDown').hidden = !(u && u.canDownload);
-  $('#abUpdApply').hidden = !(u && u.canApply);
+  $('#updDown').hidden = !(u && u.canDownload);
+  $('#updApply').hidden = !(u && u.canApply);
   // 有暂存区或有失败记录时才给"打开更新目录" —— 那里有 apply-<版本>.log
-  $('#abUpdLog').hidden = !(u && (u.status === 'staged' || u.status === 'failed'));
+  $('#updLog').hidden = !(u && (u.status === 'staged' || u.status === 'failed'));
 }
 
 /** 收到一份新快照：存下来 → 重绘关于块 → 重绘状态行 → 该提示的提示一次 */
@@ -2458,7 +2461,7 @@ function applyUpdateState(u) {
   // ② 发现新版本 → 提示一次（同一个版本只说一次；用户点「检查更新」时也走这里）
   if (u.status === 'available' && u.latest && !announcedVers.has(u.latest)) {
     announcedVers.add(u.latest);
-    toast('info', `发现新版本 v${u.latest}`, '在「关于」里可以下载；下载与安装都由你决定。');
+    toast('info', `发现新版本 v${u.latest}`, '在「设置 → 软件更新」里可以下载；下载与安装都由你决定。');
   }
 }
 
@@ -2488,9 +2491,9 @@ function setUpdateBaseMsg(msg, cls) {
   el.className = 'hint-line' + (cls ? ' ' + cls : '');
 }
 
-/** 绑定「关于」里的更新按钮。**只在这里绑一次**（renderUpdate 只改内容不改结构）。 */
+/** 绑定设置面板「软件更新」分区里的更新按钮。**只在这里绑一次**（renderUpdate 只改内容不改结构）。 */
 function bindUpdate() {
-  $('#abUpdCheck').addEventListener('click', async () => {
+  $('#updCheck').addEventListener('click', async () => {
     const r = await API.updateCheck();
     if (r && r.unsupported) return;              // 不支持时状态块里已经写清原因，不再弹
     if (!r || !r.ok) return toast('bad', '检查更新失败', (r && r.reason) || '');
@@ -2501,13 +2504,13 @@ function bindUpdate() {
     if (!r.available) toast('ok', '已是最新版本', r.reason || '');
   });
 
-  $('#abUpdDown').addEventListener('click', async () => {
+  $('#updDown').addEventListener('click', async () => {
     toast('info', '开始下载', '下完还需要你点一次「重启并更新」才会换文件。');
     const r = await API.updateDownload();
     if (!r || !r.ok) toast('bad', '下载没成功', (r && r.reason) || '');
   });
 
-  $('#abUpdApply').addEventListener('click', async () => {
+  $('#updApply').addEventListener('click', async () => {
     const yes = await confirmDialog({
       icon: '⬆',
       title: '重启并更新？',
@@ -2524,7 +2527,7 @@ function bindUpdate() {
     if (!r || !r.ok) toast('bad', '没能开始更新', (r && r.reason) || '');
   });
 
-  $('#abUpdLog').addEventListener('click', () => {
+  $('#updLog').addEventListener('click', () => {
     const dir = state.update && state.update.dir;
     if (!dir) return;
     API.openFolder(dir).then(r => { if (!r || !r.ok) toast('bad', '打不开更新目录'); });
@@ -3325,9 +3328,9 @@ function bind() {
       console.log(`[update-probe] --- ${tag} ---`);
       console.log('[update-probe]   状态 =', u.status, '|', u.statusText,
         '| 目标 =', u.latest || '-', '| 方案 =', u.plan ? `${u.plan.mode} ${u.plan.sizeText}` : '-');
-      console.log('[update-probe]   块内文案 =', JSON.stringify((($('#abUpdMsg') || {}).textContent) || ''));
-      console.log('[update-probe]   按钮：检查 =', btn('#abUpdCheck'), '| 下载 =', btn('#abUpdDown'),
-        '| 重启并更新 =', btn('#abUpdApply'));
+      console.log('[update-probe]   块内文案 =', JSON.stringify((($('#updMsg') || {}).textContent) || ''));
+      console.log('[update-probe]   按钮：检查 =', btn('#updCheck'), '| 下载 =', btn('#updDown'),
+        '| 重启并更新 =', btn('#updApply'));
       const connTxt = $('#conn').querySelector('span').textContent;
       console.log('[update-probe]   状态行 =', JSON.stringify(connTxt),
         '| 带可更新标记 =', /可更新/.test(connTxt),
@@ -3335,30 +3338,30 @@ function bind() {
       return u;
     };
 
-    await openAbout();
+    await openSettings();
     await sleep(300);
-    console.log('[update-probe] 关于窗口可见 =', !$('#aboutOverlay').hidden,
-      '| 更新块可见 =', !!$('#abUpd') && !$('#abUpd').hidden);
+    console.log('[update-probe] 设置面板可见 =', !$('#setOverlay').hidden,
+      '| 更新块可见 =', !!$('#updBox') && !$('#updBox').hidden);
     dump('① 检查之前');
 
     // ② 点「检查更新」
-    $('#abUpdCheck').click();
+    $('#updCheck').click();
     await sleep(1200);
     const u2 = dump('② 检查之后');
     console.log('[update-probe] 检查后判定 =',
       '发现新版本 =', u2.status === 'available',
-      '| 下载按钮出现 =', !$('#abUpdDown').hidden,
+      '| 下载按钮出现 =', !$('#updDown').hidden,
       '| 提示 =', lastToast());
     await snap('shot-upd-available.png', '发现新版本');
 
     // ③ 点「下载」→ 下载 + 校验 + 摊进暂存区
-    $('#abUpdDown').click();
+    $('#updDown').click();
     await sleep(2500);
     const u3 = dump('③ 下载之后');
     console.log('[update-probe] 下载后判定 =',
       '已就绪 =', u3.status === 'staged',
-      '| 重启按钮出现 =', !$('#abUpdApply').hidden,
-      '| 下载按钮收起 =', $('#abUpdDown').hidden,
+      '| 重启按钮出现 =', !$('#updApply').hidden,
+      '| 下载按钮收起 =', $('#updDown').hidden,
       '| 提示 =', lastToast());
     await snap('shot-upd-staged.png', '已就绪');
 

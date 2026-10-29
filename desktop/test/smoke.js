@@ -2878,17 +2878,21 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
    * 界面自己另拼一份状态。这类错误不会崩，只会静默不工作。
    */
   section('自更新 界面接线');
-  ok(/id="abUpd"/.test(htmlSrc) && /id="abUpdState"/.test(htmlSrc), '「关于」里有更新块 #abUpd');
-  for (const id of ['abUpdCheck', 'abUpdDown', 'abUpdApply', 'abUpdLog', 'abUpdMsg', 'abUpdBarIn']) {
-    ok(new RegExp(`id="${id}"`).test(htmlSrc), `「关于」更新块含 #${id}`);
+  ok(/id="updBox"/.test(htmlSrc) && /id="updState"/.test(htmlSrc), '设置面板「软件更新」分区里有更新块 #updBox');
+  for (const id of ['updCheck', 'updDown', 'updApply', 'updLog', 'updMsg', 'updBarIn']) {
+    ok(new RegExp(`id="${id}"`).test(htmlSrc), `设置面板更新块含 #${id}`);
   }
-  ok(/id="abUpdDown"[^>]*\shidden/.test(htmlSrc) && /id="abUpdApply"[^>]*\shidden/.test(htmlSrc),
+  ok(/id="updDown"[^>]*\shidden/.test(htmlSrc) && /id="updApply"[^>]*\shidden/.test(htmlSrc),
     '「下载」与「重启并更新」默认隐藏（没有可下载的东西时不该出现）');
   ok(/id="sAutoUpdate"/.test(htmlSrc) && /id="sUpdateBase"/.test(htmlSrc),
-    '设置面板里有「启动时自动检查更新」与「更新源」两项（能改的东西只在设置里）');
+    '设置面板里有「启动时自动检查更新」与「更新源」两项');
+  // v1.9.0：更新块从「关于」挪进「软件更新」分区，和「更新源 / 自动检查」凑成一处
+  const iUpdSec = htmlSrc.indexOf('data-sec="update"');
   const iAboutSec = htmlSrc.indexOf('id="aboutOverlay"');
-  ok(htmlSrc.slice(iAboutSec).includes('id="abUpdCheck"'),
-    '更新块在「关于」弹窗里（版本号 + "按一下检查"是同一类事情）');
+  ok(iUpdSec > 0 && iAboutSec > iUpdSec && htmlSrc.slice(iUpdSec, iAboutSec).includes('id="updCheck"'),
+    '更新块在「软件更新」分区里（和更新源/自动检查凑一处）');
+  ok(htmlSrc.slice(iAboutSec).includes('id="updCheck"') === false,
+    '「关于」弹窗里不再有更新块（只剩运行环境信息）');
   ok(/autoUpdate: \$\('#sAutoUpdate'\)\.checked/.test(appSrc),
     '保存设置时把开关读进 autoUpdate（不是硬编码 true）');
   ok(/const updateBase = \$\('#sUpdateBase'\)\.value\.trim\(\)/.test(appSrc)
