@@ -3403,6 +3403,16 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
     ok(cls.classifyItem({ type: 'folder', path: 'D:\\x' }, builtin).name === '文件与目录', '文件夹 → 文件与目录');
     ok(cls.classifyItem({ type: 'script', path: 'a.bat' }, builtin).name === '开发', '脚本 → 开发');
 
+    // —— 文档扩展名：txt/ini/word/markdown/pdf 归「文本文档」（v1.7.1）——
+    ok(cls.classifyItem({ type: 'file', path: 'D:\\notes\\备忘.txt' }, builtin).name === '文本文档', '.txt → 文本文档');
+    ok(cls.classifyItem({ type: 'file', path: 'C:\\Windows\\win.ini' }, builtin).name === '文本文档', '.ini → 文本文档');
+    ok(cls.classifyItem({ type: 'file', path: 'D:\\doc\\报告.docx' }, builtin).name === '文本文档', '.docx → 文本文档');
+    ok(cls.classifyItem({ type: 'file', path: 'D:\\doc\\readme.md' }, builtin).name === '文本文档', '.md → 文本文档');
+    ok(cls.classifyItem({ type: 'file', path: 'D:\\doc\\手册.pdf' }, builtin).name === '文本文档', '.pdf → 文本文档');
+    ok(cls.classifyItem({ type: 'app', path: 'D:\\doc\\a.doc' }, builtin).name === '文本文档', '★ .lnk 解析出的 .doc 也归文档（不限定 type=file）');
+    ok(cls.classifyItem({ type: 'app', path: 'C:\\Steam\\steamapps\\x.exe' }, builtin).name === '游戏', '★ .exe 不被文档扩展名误判');
+    ok(cls.classifyItem({ type: 'file', path: 'C:\\Tools\\random.exe' }, builtin) === null, '★ 无扩展名/未知扩展名不猜（random.exe 不在文档表也不在关键词表）');
+
     // —— 系统目录 / 管理单元 ——
     ok(cls.classifyItem({ type: 'app', path: 'C:\\Windows\\System32\\mstsc.exe' }, builtin).name === '系统工具', 'System32 → 系统工具');
     ok(cls.classifyItem({ type: 'app', path: 'D:\\x\\devmgmt.msc' }, builtin).name === '系统工具', '.msc → 系统工具');

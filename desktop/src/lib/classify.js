@@ -37,6 +37,15 @@ const TYPE_GROUP = {
 
 const SYS_GROUP = { name: '系统工具', icon: '🛠️' };
 
+/* 文档类文件：扩展名是确定性信号（和路径无关），txt/ini/word/markdown/pdf 等归「文本文档」。
+   与「系统工具」同级，都是不用猜的硬规则。 */
+const DOC_GROUP = { name: '文本文档', icon: '📄' };
+const DOC_EXT = [
+  '.txt', '.ini', '.md', '.markdown', '.log',
+  '.doc', '.docx', '.pdf', '.rtf', '.odt', '.wps', '.pages',
+  '.csv', '.tsv', '.tex', '.epub', '.mobi',
+];
+
 /** 校验并解析云端分类表。结构不对返回 null（调用方退回缓存/内置表）。 */
 function parseRules(jsonText) {
   try {
@@ -85,12 +94,15 @@ function classifyItem(item, rules) {
   // 归一化分隔符 + 小写，后续匹配统一用 /
   const p = raw.replace(/\\/g, '/').toLowerCase();
 
-  // 2) 系统目录 / 管理单元
+  // 2) 文档扩展名（确定性信号，和路径无关）
+  if (DOC_EXT.some(ext => p.endsWith(ext))) return DOC_GROUP;
+
+  // 3) 系统目录 / 管理单元
   if (/\.(msc|cpl)$/.test(p) || p.includes('/system32/') || p.includes('/windows/systemapps/')) {
     return SYS_GROUP;
   }
 
-  // 3) 关键词表（顺序即优先级，命中第一个就停）
+  // 4) 关键词表（顺序即优先级，命中第一个就停）
   const list = (rules && Array.isArray(rules.rules)) ? rules.rules : [];
   for (const r of list) {
     if (!r || !Array.isArray(r.match)) continue;
@@ -135,6 +147,6 @@ function computeMoves(groups, rules, defaultIds) {
 }
 
 module.exports = {
-  BUILTIN_RULES, TYPE_GROUP, SYS_GROUP,
+  BUILTIN_RULES, TYPE_GROUP, SYS_GROUP, DOC_GROUP, DOC_EXT,
   parseRules, builtinRules, classifyItem, matchPath, computeMoves,
 };
