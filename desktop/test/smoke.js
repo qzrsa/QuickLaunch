@@ -3455,6 +3455,8 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
     // —— 关键词表：按路径子串，顺序即优先级 ——
     ok(cls.classifyItem({ type: 'app', path: 'C:\\Program Files (x86)\\Steam\\steamapps\\common\\x.exe' }, builtin).name === '游戏', 'steamapps → 游戏');
     ok(cls.classifyItem({ type: 'app', path: 'D:\\Microsoft VS Code\\Code.exe' }, builtin).name === '开发', 'vs code → 开发');
+    ok(cls.classifyItem({ type: 'app', path: 'python.exe' }, builtin).name === '开发', '★ 裸 python.exe → 开发（v2.0.3，不再落软件）');
+    ok(cls.classifyItem({ type: 'app', path: 'C:\\Python311\\python.exe' }, builtin).name === '开发', '★ 带路径 python.exe → 开发');
     ok(cls.classifyItem({ type: 'app', path: 'D:\\Adobe\\Photoshop.exe' }, builtin).name === '设计', 'adobe → 设计');
 
     // —— 下载分组：下载器 + 云盘（v1.7.3），排在「社交」之前防止被 tencent 抢 ——

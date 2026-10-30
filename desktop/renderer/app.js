@@ -1959,6 +1959,9 @@ function renderPruneList() {
 }
 
 async function openPrune() {
+  // ★ 从设置面板「检查…」进入时先关掉设置：pruneOverlay 在 DOM 里位于 setOverlay 之前，
+  //   同 z-index 下会被设置面板盖住（用户看到的「清理无效项窗口在设置后面」）。
+  $('#setOverlay').hidden = true;
   state.prune = { rows: [], picked: new Set(), last: null, busy: false };
   $('#pruneOverlay').hidden = false;
   $('#pruneResult').hidden = true;
