@@ -47,6 +47,16 @@ const TYPE_GROUP = {
 
 const SYS_GROUP = { name: '系统工具', icon: '🛠️' };
 
+/* Windows 自带系统工具的**可执行文件名**白名单（v2.0.2）。这些工具常以「裸命令名」存储
+   （taskmgr.exe / regedit.exe / calc.exe …，没有完整 System32 路径），光靠路径规则认不到，
+   会在「整理」时被误判成「软件」。按**精确 basename** 匹配（不子串），不会误拉第三方工具。 */
+const SYS_EXE = [
+  'taskmgr.exe', 'regedit.exe', 'calc.exe', 'notepad.exe', 'cmd.exe', 'powershell.exe', 'pwsh.exe',
+  'control.exe', 'explorer.exe', 'mstsc.exe', 'msconfig.exe', 'dxdiag.exe',
+  'resmon.exe', 'perfmon.exe', 'cleanmgr.exe', 'winver.exe', 'msinfo32.exe',
+  'charmap.exe', 'magnify.exe', 'mspaint.exe', 'wordpad.exe', 'snippingtool.exe',
+];
+
 /* 文档类文件：扩展名是确定性信号（和路径无关），txt/ini/word/markdown/pdf/办公表格 等归「文本文档」。
    与「系统工具」同级，都是不用猜的硬规则。 */
 const DOC_GROUP = { name: '文本文档', icon: '📄' };
@@ -133,6 +143,9 @@ function classifyItem(item, rules) {
     return SYS_GROUP;
   }
 
+  // 4.5) Windows 自带工具按「可执行文件名」认（裸命令名没有路径，路径规则认不到）
+  if (SYS_EXE.includes(path.basename(p))) return SYS_GROUP;
+
   // 5) 关键词表（顺序即优先级，命中第一个就停）
   const list = (rules && Array.isArray(rules.rules)) ? rules.rules : [];
   for (const r of list) {
@@ -181,6 +194,6 @@ function computeMoves(groups, rules, defaultIds) {
 }
 
 module.exports = {
-  BUILTIN_RULES, TYPE_GROUP, SYS_GROUP, DOC_GROUP, DOC_EXT, DEV_GROUP, DEV_EXT, SOFTWARE_GROUP,
+  BUILTIN_RULES, TYPE_GROUP, SYS_GROUP, SYS_EXE, DOC_GROUP, DOC_EXT, DEV_GROUP, DEV_EXT, SOFTWARE_GROUP,
   parseRules, builtinRules, classifyItem, matchPath, computeMoves,
 };

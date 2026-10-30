@@ -3440,6 +3440,18 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
     ok(cls.classifyItem({ type: 'app', path: 'C:\\Windows\\System32\\mstsc.exe' }, builtin).name === '系统工具', 'System32 → 系统工具');
     ok(cls.classifyItem({ type: 'app', path: 'D:\\x\\devmgmt.msc' }, builtin).name === '系统工具', '.msc → 系统工具');
 
+    // —— Windows 自带工具按「裸命令名」认（v2.0.2）：没有路径也能认到，别被整理成「软件」 ——
+    ok(cls.classifyItem({ type: 'app', path: 'taskmgr.exe' }, builtin).name === '系统工具', '裸 taskmgr.exe → 系统工具');
+    ok(cls.classifyItem({ type: 'app', path: 'regedit.exe' }, builtin).name === '系统工具', '裸 regedit.exe → 系统工具');
+    ok(cls.classifyItem({ type: 'app', path: 'calc.exe' }, builtin).name === '系统工具', '裸 calc.exe → 系统工具');
+    ok(cls.classifyItem({ type: 'app', path: 'notepad.exe' }, builtin).name === '系统工具', '裸 notepad.exe → 系统工具');
+    ok(cls.classifyItem({ type: 'app', path: 'cmd.exe' }, builtin).name === '系统工具', '裸 cmd.exe → 系统工具');
+    ok(cls.classifyItem({ type: 'app', path: 'powershell.exe' }, builtin).name === '系统工具', '裸 powershell.exe → 系统工具');
+    ok(cls.classifyItem({ type: 'app', path: 'control.exe' }, builtin).name === '系统工具', '裸 control.exe → 系统工具');
+    ok(cls.classifyItem({ type: 'app', path: 'D:\\任意目录\\regedit.exe' }, builtin).name === '系统工具', '★ 任意目录下的 regedit.exe 也认（按 basename）');
+    ok(cls.classifyItem({ type: 'app', path: 'C:\\Windows\\System32\\notepad.exe' }, builtin).name === '系统工具', '★ 完整 System32 路径 + basename 双重命中仍是系统工具');
+    ok(cls.classifyItem({ type: 'app', path: 'D:\\tools\\mycalc.exe' }, builtin).name === '软件', '★ mycalc.exe 不是精确名，不误判（basename 精确匹配，不子串）');
+
     // —— 关键词表：按路径子串，顺序即优先级 ——
     ok(cls.classifyItem({ type: 'app', path: 'C:\\Program Files (x86)\\Steam\\steamapps\\common\\x.exe' }, builtin).name === '游戏', 'steamapps → 游戏');
     ok(cls.classifyItem({ type: 'app', path: 'D:\\Microsoft VS Code\\Code.exe' }, builtin).name === '开发', 'vs code → 开发');
