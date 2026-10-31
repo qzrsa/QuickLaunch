@@ -1421,18 +1421,18 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
 
   /* ------------------------------------------------------------------
      设置面板分区（对齐 QZRS Scrcpy 的 collapsible sections）
-     原来是十几个字段一路平铺：开关挤成一行换行、维护按钮混在表单里、更新源滚到底才看见。
-     现在四个分区，常用默认展开、维护/更新默认收起。
+    原来是十几个字段一路平铺：开关挤成一行换行、维护按钮混在表单里、更新源滚到底才看见。
+    现在五个分区，常用默认展开、维护/更新/个性化默认收起。
      这里只钉"结构不能退回去"：分区成对出现、控件 id 一个不少、收起的 body 真的不占位。
      ------------------------------------------------------------------ */
   section('设置面板分区');
   ok(/id="setSecs"/.test(htmlSrc), '设置面板有分区容器 #setSecs');
   const secIds = (htmlSrc.match(/data-sec="[a-z]+"/g) || []).map(s => s.slice(10, -1));
-  ok(JSON.stringify(secIds) === JSON.stringify(['launch', 'window', 'maint', 'update']),
-    '四个分区按「多久动一次」排序', secIds.join(','));
+  ok(JSON.stringify(secIds) === JSON.stringify(['launch', 'window', 'personal', 'maint', 'update']),
+    '五个分区按「多久动一次」排序', secIds.join(','));
   const nHead = (htmlSrc.match(/class="sec-head"/g) || []).length;
   const nBody = (htmlSrc.match(/class="sec-body"/g) || []).length;
-  ok(nHead === 4 && nBody === 4, '每个分区都是 head + body 成对', `head=${nHead} body=${nBody}`);
+  ok(nHead === 5 && nBody === 5, '每个分区都是 head + body 成对', `head=${nHead} body=${nBody}`);
   ok((htmlSrc.match(/class="sec open"/g) || []).length === 2,
     '常用的两个分区默认展开，维护/更新默认收起（用户手点过的状态另有 localStorage 记忆）');
   ok(/\.sec:not\(\.open\) \.sec-body\s*\{\s*display:\s*none/.test(css),
@@ -3464,6 +3464,8 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
     ok(cls.classifyItem({ type: 'app', path: 'D:\\Microsoft VS Code\\Code.exe' }, builtin).name === '开发', 'vs code → 开发');
     ok(cls.classifyItem({ type: 'app', path: 'python.exe' }, builtin).name === '开发', '★ 裸 python.exe → 开发（v2.0.3，不再落软件）');
     ok(cls.classifyItem({ type: 'app', path: 'C:\\Python311\\python.exe' }, builtin).name === '开发', '★ 带路径 python.exe → 开发');
+    ok(cls.classifyItem({ type: 'app', path: 'D:\\Program Files\\WorkBuddy\\WorkBuddy.exe' }, builtin).name === '开发', '★ WorkBuddy → 开发（v2.0.6）');
+    ok(cls.classifyItem({ type: 'app', path: 'D:\\Program Files (x86)\\按键精灵\\按键精灵2014.exe' }, builtin).name === '开发', '★ 按键精灵 → 开发（v2.0.6）');
     ok(cls.classifyItem({ type: 'app', path: 'D:\\Adobe\\Photoshop.exe' }, builtin).name === '设计', 'adobe → 设计');
 
     // —— 下载分组：下载器 + 云盘（v1.7.3），排在「社交」之前防止被 tencent 抢 ——
@@ -3562,9 +3564,13 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
     ok(/ipcMain\.handle\('ql:classify:undo'/.test(mainSrcC)
       && /startsWith\('classify-'\)/.test(mainSrcC),
       '撤销只认 data/backup 下的 classify-* 文件，别的不放行');
+    ok(/ipcMain\.handle\('ql:bg:pick'/.test(mainSrcC) && /toJPEG\(85\)/.test(mainSrcC),
+      '★ 主进程选背景图：nativeImage 缩放 + 转 JPEG dataURL（v2.0.6）');
 
     // —— 设置默认值 + 分组落成 ——
     ok(store.defaultConfig().settings.smartClassify === true, '★ 智能分类默认开（拿不准仍落桶）');
+    ok(store.defaultConfig().settings.bg === '' && store.defaultConfig().settings.bgBlur === 0,
+      '★ 个性化默认：无背景图、模糊度 0（v2.0.6）');
     const tmpCfg = store.defaultConfig();
     const byName = store.ensureGroupByName(tmpCfg, '游戏', '🎮');
     ok(!!byName && byName.auto === true, '按名字新建的组带 auto 标记（一键整理认得它是分类体系组）');
@@ -3614,6 +3620,15 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
     const preloadC = fs.readFileSync(path.join(__dirname, '..', 'src', 'preload.js'), 'utf8');
     ok(/classifyAll/.test(preloadC) && /classifyUndo/.test(preloadC) && /classifyList/.test(preloadC),
       '预加载暴露 classifyAll / classifyUndo / classifyList');
+    ok(/bgPick/.test(preloadC) && /ql:bg:pick/.test(preloadC),
+      '预加载暴露 bgPick（选背景图）');
+    // —— 个性化（v2.0.6）：自定义背景图 + 模糊度 ——
+    ok(/id="bgImg"/.test(htmlC) && /data-sec="personal"/.test(htmlC) && /id="sBgBlur"/.test(htmlC),
+      '设置面板有「个性化」分区：背景图层 + 模糊度滑杆');
+    ok(/function applyBackground/.test(appSrcC) && /function renderBgUI/.test(appSrcC),
+      '渲染层有 applyBackground / renderBgUI（背景图与模糊度应用 + 文案）');
+    ok(/bg:\s*state\.bgDraft/.test(appSrcC) && /bgBlur:\s*Number\(\$\('#sBgBlur'\)\.value\)/.test(appSrcC),
+      '★ bg/bgBlur 贯通 settingsFromDom 与 saveSettings（和 patch 一一对应）');
   }
 
   section('结果');

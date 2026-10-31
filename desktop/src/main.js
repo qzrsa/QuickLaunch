@@ -1251,6 +1251,29 @@ function registerIpc() {
     return dataUrl ? { ok: true, dataUrl } : { ok: false, msg: '无法读取该图片文件' };
   });
 
+  /* 个性化：选背景图。缩放 + 转 JPEG 在主进程做（渲染层拿不到 nativeImage，也没必要为一张
+     背景图把 10MB 的原图原样塞进配置）。2560px 内、质量 85 的 JPEG 通常只有几百 KB。 */
+  ipcMain.handle('ql:bg:pick', async (e) => {
+    const w = BrowserWindow.fromWebContents(e.sender);
+    const r = await dialog.showOpenDialog(w, {
+      title: '选择背景图',
+      properties: ['openFile'],
+      filters: [['图片', ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif']]],
+    });
+    if (r.canceled || !r.filePaths.length) return { ok: false, canceled: true };
+    try {
+      const img = nativeImage.createFromPath(r.filePaths[0]);
+      if (img.isEmpty()) return { ok: false, msg: '无法读取该图片，请换一张试试' };
+      const s = img.getSize();
+      const out = s.width > 2560 ? img.resize({ width: 2560, quality: 'good' }) : img;
+      const buf = out.toJPEG(85);
+      if (!buf || !buf.length) return { ok: false, msg: '图片处理失败' };
+      return { ok: true, dataUrl: 'data:image/jpeg;base64,' + buf.toString('base64') };
+    } catch (err) {
+      return { ok: false, msg: err.message };
+    }
+  });
+
   /* 拖入导入 */
   ipcMain.handle('ql:import', async (event, payload) => {
     const { paths = [], urls = [], groupId = null, dryRun = false } = payload || {};

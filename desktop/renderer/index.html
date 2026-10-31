@@ -10,6 +10,7 @@
 <body>
 
 <div class="bg"><i class="blob b1"></i><i class="blob b2"></i><i class="blob b3"></i></div>
+<div class="bg-img" id="bgImg"></div>
 
 <div class="app">
   <!-- ===================== 左侧栏 ===================== -->
@@ -368,6 +369,31 @@
               <span class="trow-txt"><span class="trow-t">界面动画</span><span class="trow-d">入场、弹窗等装饰动画；关掉更省资源（切换立即生效）</span></span>
               <input type="checkbox" id="sAnimations"><span class="track"></span>
             </label>
+          </div>
+        </section>
+
+        <section class="sec" data-sec="personal">
+          <button type="button" class="sec-head" aria-expanded="false">
+            <svg class="sec-arrow" viewBox="0 0 12 12" aria-hidden="true"><path d="M4.5 2.5 8 6l-3.5 3.5"/></svg>
+            <span class="sec-title">个性化</span>
+            <span class="sec-badge" data-badge="personal"></span>
+          </button>
+          <div class="sec-body">
+            <div class="field">
+              <label>自定义背景图 <span class="hint">支持 JPG / PNG / WebP，选图后自动压缩</span></label>
+              <div class="path-row">
+                <button class="btn sm" id="btnBgPick">选择图片…</button>
+                <button class="btn sm" id="btnBgClear" hidden>移除背景</button>
+              </div>
+              <p class="hint-line" id="bgMsg"></p>
+            </div>
+            <div class="field">
+              <label>背景模糊度 <span class="hint">数值越大越糊，0 = 原样</span></label>
+              <div class="bg-blur-row">
+                <input type="range" id="sBgBlur" min="0" max="40" step="1" value="0">
+                <span class="bg-blur-val" id="bgBlurVal">0</span>
+              </div>
+            </div>
           </div>
         </section>
 

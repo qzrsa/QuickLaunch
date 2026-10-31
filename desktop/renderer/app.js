@@ -71,6 +71,7 @@ const state = {
   prune: { rows: [], picked: new Set(), last: null, busy: false },
   update: null,           // 自更新快照（主进程推过来的，界面只读）
   setSnap: null,          // 打开设置时的快照：比对出「有未保存的修改」
+  bgDraft: '',            // 个性化：待保存的背景图 dataURL（选图/移除后暂存，保存才写盘）
 };
 
 /* ------------------------------------------------------------ 基础 */
@@ -575,6 +576,44 @@ function applySettingsToDom(settings) {
   const on = !settings || settings.animations !== false;
   if (on) document.documentElement.removeAttribute('data-anim');
   else document.documentElement.setAttribute('data-anim', 'off');
+  // 个性化背景图 + 模糊度
+  applyBackground((settings && settings.bg) || '', (settings && settings.bgBlur) || 0);
+}
+
+/** 个性化：把背景图（dataURL）+ 模糊度（px）铺到 #bgImg 图层上。
+ *  ★ 模糊用 CSS filter: blur；blur 会把边缘糊透明，所以图层用 inset:-40px 外扩 + scale 兜底。
+ *  ★ 没有背景图时清掉 on 类 + 滤镜，退回默认光斑背景。 */
+function applyBackground(bg, blur) {
+  const layer = $('#bgImg');
+  if (!layer) return;
+  const has = !!bg;
+  if (has) {
+    layer.style.backgroundImage = `url("${bg}")`;
+    layer.style.filter = blur > 0 ? `blur(${blur}px)` : 'none';
+    layer.classList.add('on');
+  } else {
+    layer.style.backgroundImage = 'none';
+    layer.style.filter = 'none';
+    layer.classList.remove('on');
+  }
+  document.body.classList.toggle('has-bg', has);
+}
+
+/** 个性化设置面板的静态文案：移除按钮显隐 + 模糊度数值 + 状态说明。 */
+function renderBgUI() {
+  const btn = $('#btnBgClear');
+  if (btn) btn.hidden = !state.bgDraft;
+  const val = $('#bgBlurVal');
+  if (val) val.textContent = String(Number($('#sBgBlur').value) || 0);
+  const msg = $('#bgMsg');
+  if (msg) msg.textContent = state.bgDraft ? '已选择背景图，保存后生效（也可再点「选择图片」换一张）' : '未设置背景图，使用默认背景';
+}
+
+/** 取消设置时：把背景图草稿回滚到「已保存」的那份，并恢复主窗口背景（丢弃未保存的预览）。 */
+function revertBgDraft() {
+  const saved = (state.config && state.config.settings && state.config.settings.bg) || '';
+  state.bgDraft = saved;
+  applyBackground(saved, ((state.config && state.config.settings && state.config.settings.bgBlur) || 0));
 }
 
 /* ------------------------------------------------------------ 编辑弹窗 */
@@ -2212,6 +2251,7 @@ function updateSecBadges() {
   else if (state.capturedHotkey) set('launch', state.capturedHotkey, true);
   else set('launch', '热键未绑定', false);
   set('window', $('#sAnimations').checked ? '动画开' : '动画关', false);
+  set('personal', state.bgDraft ? '有背景' : '默认背景', !!state.bgDraft);
   const src = $('#sUpdateBase').value.trim();
   set('update', src ? '自定义源' : '官方源', !!src);
 }
@@ -2232,6 +2272,8 @@ function settingsFromDom() {
     autoUpdate: $('#sAutoUpdate').checked,
     updateBase: $('#sUpdateBase').value.trim(),
     startGroup: $('#sStartGroup').value || 'last',
+    bg: state.bgDraft || '',
+    bgBlur: Number($('#sBgBlur').value) || 0,
   });
 }
 
@@ -2300,6 +2342,10 @@ async function openSettings() {
   renderStartGroupOptions(s.startGroup);
   state.capturedHotkey = s.hotkey || '';
   setHotkeyMsg('', '');
+  // 个性化：背景图草稿从已保存设置取，模糊度滑杆回填
+  state.bgDraft = s.bg || '';
+  $('#sBgBlur').value = Number(s.bgBlur) || 0;
+  renderBgUI();
 
   state.info = await API.info();
   const i = state.info;
@@ -2674,6 +2720,8 @@ async function saveSettings() {
     updateBase,
     startGroup: $('#sStartGroup').value || 'last',
     theme: document.documentElement.dataset.theme,
+    bg: state.bgDraft || '',
+    bgBlur: Number($('#sBgBlur').value) || 0,
   };
   const r = await API.setSettings(patch);
   if (!r.ok) return toast('bad', '保存失败', r.msg);
@@ -3271,6 +3319,29 @@ function bind() {
     if (on) document.documentElement.removeAttribute('data-anim');
     else document.documentElement.setAttribute('data-anim', 'off');
   });
+  // 个性化：选背景图（主进程选图 + 压缩 → dataURL，暂存草稿，保存才写盘）
+  $('#btnBgPick').addEventListener('click', async () => {
+    const r = await API.bgPick();
+    if (!r) return;
+    if (r.canceled) return;
+    if (!r.ok) return toast('bad', '选图失败', r.msg || '');
+    state.bgDraft = r.dataUrl;
+    applyBackground(state.bgDraft, Number($('#sBgBlur').value) || 0);
+    renderBgUI();
+    markSettingsDirty();
+  });
+  $('#btnBgClear').addEventListener('click', () => {
+    state.bgDraft = '';
+    applyBackground('', Number($('#sBgBlur').value) || 0);
+    renderBgUI();
+    markSettingsDirty();
+  });
+  // 模糊度滑杆：拖的时候实时预览（只改图层滤镜，不写盘）
+  $('#sBgBlur').addEventListener('input', () => {
+    renderBgUI();
+    applyBackground(state.bgDraft, Number($('#sBgBlur').value) || 0);
+    markSettingsDirty();
+  });
   // 手动修图标：只补"占位图 / 网址还挂着 emoji"那批，不会冲掉用户自己挑的表情/图片
   $('#btnReextractIcons').addEventListener('click', () => { healAllIcons(); });
   // 恢复默认分组：误删「文件与目录 / 系统工具 / 开发 / 网站 / 软件」的后悔药（只补不删）
@@ -3322,6 +3393,7 @@ function bind() {
     if (overlayLocked(ov)) return;   // 导入中：关掉就是丢进度，按钮此时也是 disabled
     ov.hidden = true;
     state.editing = null;
+    if (ov.id === 'setOverlay') revertBgDraft();   // 取消设置：背景图草稿回滚到已保存值
   }));
   $$('.overlay').forEach(o => o.addEventListener('mousedown', e => {
     if (e.target !== o) return;
@@ -3332,6 +3404,7 @@ function bind() {
     }
     o.hidden = true;
     state.editing = null;
+    if (o.id === 'setOverlay') revertBgDraft();
   }));
 
   /* 全局快捷键 */
@@ -3667,6 +3740,8 @@ function createMockBridge() {
     classifyAll: async () => ({ ok: true, dryRun: true, moved: 0, byGroup: [], moves: [] }),
     classifyUndo: async () => ({ ok: true }),
     classifyList: async () => ({ ok: true, list: [] }),
+    /* 预览模式：选背景图直接给一张淡色占位图（浏览器里没有主进程文件对话框） */
+    bgPick: async () => ({ ok: true, dataUrl: 'data:image/svg+xml;base64,' + btoa('<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#3b6cf6"/><stop offset="1" stop-color="#7c5cff"/></linearGradient></defs><rect width="1600" height="900" fill="url(#g)"/></svg>') }),
     restoreItems: async pairs => {
       let restored = 0;
       (pairs || []).forEach(p => {

@@ -144,6 +144,17 @@ input, select, textarea { outline: none; }
   to { transform: translate3d(40px, -50px, 0) scale(1.14); }
 }
 
+/* 自定义背景图（个性化）。z-index 0 与 .bg 同级，.app 在它上面。
+   用 inset 外扩 + scale 兜底：filter: blur 会把边缘糊成透明，不扩出去会露一圈边。 */
+.bg-img {
+  position: fixed; inset: -40px; z-index: 0; pointer-events: none;
+  background-size: cover; background-position: center; background-repeat: no-repeat;
+  opacity: 0; transition: opacity .3s var(--ease);
+}
+.bg-img.on { opacity: 1; }
+/* 有自定义背景时，把默认光斑压暗一点，避免两种背景叠在一起打架 */
+body.has-bg .bg .blob { opacity: .25; }
+
 /* ---------------------------------------------- 布局 */
 /* ★ grid-template-rows 必须给死：只写 height:100vh 时，那一行是隐式 auto 尺寸，
    分组一多就被内容撑到比窗口还高（实测 24 个分组 → 864px 的窗口里行高 1485px），
@@ -621,6 +632,11 @@ body.edit-mode .content { padding-bottom: 108px; }
 .hint-line { font-size: 11.5px; color: var(--text-3); }
 .hint-line.warn { color: var(--danger); }
 .hint-line.good { color: var(--ok); }
+
+/* 个性化：背景模糊度滑杆 */
+.bg-blur-row { display: flex; align-items: center; gap: 12px; }
+.bg-blur-row input[type="range"] { flex: 1; min-width: 0; accent-color: var(--accent); }
+.bg-blur-val { width: 32px; text-align: right; font-size: 12.5px; color: var(--text-2); font-variant-numeric: tabular-nums; }
 
 .types { display: flex; flex-wrap: wrap; gap: 7px; }
 .type-chip {

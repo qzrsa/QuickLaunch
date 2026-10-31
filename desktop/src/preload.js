@@ -32,6 +32,8 @@ contextBridge.exposeInMainWorld('ql', {
   // 渲染层只叫一声 —— 要读盘、要 nativeImage，而且「修协议」的正则只该有一份。
   healUrls: () => ipcRenderer.invoke('ql:heal:urls'),
   iconPick: () => ipcRenderer.invoke('ql:icon:pick'),
+  /* 个性化：选背景图（主进程选图 + 缩放 + 转 JPEG dataURL） */
+  bgPick: () => ipcRenderer.invoke('ql:bg:pick'),
 
   /* 清理无效项（路径确实不存在）：判断、删除、撤销都在主进程，
      渲染层只拿清单、传 id —— 判据只能有一份（见 lib/prune.js）。 */
