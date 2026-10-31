@@ -2931,6 +2931,9 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
   ok(/function paintStatusLine\(\)/.test(appSrc), '有 paintStatusLine()');
   ok(/const alert = updAlert\(u\)[\s\S]{0,300}可更新/.test(appSrc),
     '状态行在有新版本时会补上「可更新」（更新不自动下载，没有常驻提示就等于没这功能）');
+  ok(/updAlert\(state\.update\)\)\s*openSettingsToUpdate\(\)/.test(appSrc)
+    && /function openSettingsToUpdate\(\)/.test(appSrc),
+    '★ 状态行检测到新版本时点它进「设置 → 软件更新」，否则看「关于」（v2.0.5）');
   ok(/renderUpdate\(\)/.test(appSrc) && /applyUpdateState\(/.test(appSrc),
     '快照到了就重绘更新块（不是重开一次窗口）');
   ok((appSrc.match(/API\.on\('ql:update-state'/g) || []).length === 1, '只订阅一次更新快照事件');
@@ -3435,6 +3438,9 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
     ok(cls.classifyItem({ type: 'file', path: 'D:\\易语言\\模块.ec' }, builtin).name === '开发', '.ec → 开发');
     ok(cls.classifyItem({ type: 'app', path: 'D:\\易语言\\主程序.e' }, builtin).name === '开发', '★ .lnk 解析出的 .e 也归开发（不限定 type）');
     ok(cls.classifyItem({ type: 'app', path: 'D:\\易语言\\易语言.exe' }, builtin).name === '开发', '★ 易语言 exe（路径含「易语言」）→ 开发（v2.0.4）');
+    ok(cls.classifyItem({ type: 'app', path: 'D:\\Program Files (x86)\\e\\Ve.exe' }, builtin).name === '开发', '★ 易语言主程序 Ve.exe（安装目录叫 e，路径无「易语言」）→ 开发（v2.0.5）');
+    ok(cls.classifyItem({ type: 'app', path: 'Ve.exe' }, builtin).name === '开发', '★ 裸 Ve.exe → 开发（精确 basename，不子串）');
+    ok(cls.classifyItem({ type: 'app', path: 'C:\\Program Files (x86)\\e\\e.exe' }, builtin).name === '开发', '★ 易语言标准版 e.exe → 开发');
     ok(cls.classifyItem({ type: 'file', path: 'D:\\doc\\readme.epub' }, builtin).name === '文本文档', '★ .epub 不被 .e 误判（endsWith 精确到扩展名）');
 
     // —— 系统目录 / 管理单元 ——
@@ -3551,6 +3557,8 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
       '★ 执行整理按 itemIds 过滤（只动勾选的项）');
     ok(/ipcMain\.handle\('ql:classify:list'/.test(mainSrcC) && /startsWith\('classify-'\)/.test(mainSrcC),
       '★ 主进程暴露整理快照列表 classify:list');
+    ok(/MAX_CLASSIFY_SNAPS/.test(mainSrcC) && /files\.slice\(MAX_CLASSIFY_SNAPS\)/.test(mainSrcC),
+      '★ 整理快照最多保留 10 份，超出删最旧（v2.0.5）');
     ok(/ipcMain\.handle\('ql:classify:undo'/.test(mainSrcC)
       && /startsWith\('classify-'\)/.test(mainSrcC),
       '撤销只认 data/backup 下的 classify-* 文件，别的不放行');

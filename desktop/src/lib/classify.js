@@ -80,6 +80,11 @@ const DOC_EXT = [
 const DEV_GROUP = { name: '开发', icon: '💻' };
 const DEV_EXT = ['.e', '.ec'];
 
+/* 易语言主程序（v2.0.5）：IDE 可执行文件名是 Ve.exe（标准版也有 e.exe），安装目录名就叫 e，
+   路径里没有「易语言」三个字，光靠关键词表匹配不到 → 按精确 basename 认，归「开发」。
+   与 SYS_EXE 同策略：精确 basename（不子串），ve.exe/e.exe 是易语言专属名，不会误拉别的。 */
+const DEV_EXE = ['ve.exe', 'e.exe'];
+
 /* 拿不准的软件（.exe 等 app 类型）→ 落「软件」组。v2.0.0 新增：普通软件有了明确落点，
    不用再挤「拖入的快捷方式」。 */
 const SOFTWARE_GROUP = { name: '软件', icon: '🚀' };
@@ -134,6 +139,9 @@ function classifyItem(item, rules) {
 
   // 2) 易语言源文件（.e / .ec，扩展名高度专属，优先于通用文档）→ 开发
   if (DEV_EXT.some(ext => p.endsWith(ext))) return DEV_GROUP;
+
+  // 2.5) 易语言主程序（Ve.exe / e.exe，安装目录就叫 e，路径无「易语言」字样）→ 开发
+  if (DEV_EXE.includes(path.basename(p))) return DEV_GROUP;
 
   // 3) 文档扩展名（确定性信号，和路径无关）
   if (DOC_EXT.some(ext => p.endsWith(ext))) return DOC_GROUP;
@@ -194,6 +202,6 @@ function computeMoves(groups, rules, defaultIds) {
 }
 
 module.exports = {
-  BUILTIN_RULES, TYPE_GROUP, SYS_GROUP, SYS_EXE, DOC_GROUP, DOC_EXT, DEV_GROUP, DEV_EXT, SOFTWARE_GROUP,
+  BUILTIN_RULES, TYPE_GROUP, SYS_GROUP, SYS_EXE, DOC_GROUP, DOC_EXT, DEV_GROUP, DEV_EXT, DEV_EXE, SOFTWARE_GROUP,
   parseRules, builtinRules, classifyItem, matchPath, computeMoves,
 };

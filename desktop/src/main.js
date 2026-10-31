@@ -521,7 +521,28 @@ function writeClassifyBackup(cfg) {
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, `classify-${stamp}.json`);
   fs.writeFileSync(file, JSON.stringify(cfg, null, 2), 'utf8');
+  pruneClassifySnaps();
   return file;
+}
+
+/** 整理快照最多保留 N 份，超出按 mtime 从旧到新删（v2.0.5）。 */
+const MAX_CLASSIFY_SNAPS = 10;
+function pruneClassifySnaps() {
+  const dir = path.join(dataLocation.dir, 'backup');
+  try {
+    const files = fs.readdirSync(dir)
+      .filter(f => f.startsWith('classify-') && f.endsWith('.json'))
+      .map(f => {
+        const file = path.join(dir, f);
+        let mtime = 0;
+        try { mtime = fs.statSync(file).mtimeMs; } catch { /* noop */ }
+        return { file, mtime };
+      })
+      .sort((a, b) => b.mtime - a.mtime);
+    for (const f of files.slice(MAX_CLASSIFY_SNAPS)) {
+      try { fs.unlinkSync(f.file); } catch { /* noop */ }
+    }
+  } catch { /* 目录还不存在 = 没有快照可删 */ }
 }
 
 /** 把 moves 汇总成 [{groupName,count}]（按目标组名聚合，供提示与预览用）。 */

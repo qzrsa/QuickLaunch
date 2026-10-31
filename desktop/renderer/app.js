@@ -2323,6 +2323,22 @@ async function openSettings() {
   $('#setOverlay').hidden = false;
 }
 
+/** 点状态行「· 可更新」时：进设置面板并展开「软件更新」分区，滚到它面前。
+ *  用户点版本号是想要下载/更新入口，不是看运行环境 —— 那归「关于」。 */
+async function openSettingsToUpdate() {
+  await openSettings();
+  const sec = $('#setSecs .sec[data-sec="update"]');
+  if (sec) {
+    if (!sec.classList.contains('open')) {
+      sec.classList.add('open');
+      const head = sec.querySelector('.sec-head');
+      if (head) head.setAttribute('aria-expanded', 'true');
+      writeSecState('update', true);
+    }
+    sec.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+}
+
 /** 运行形态的中文名。**只有这一份** —— 侧栏状态行、「关于」窗口、复制的诊断信息
  *  全从 formText() 取，免得两边各写一套、迟早不一致。 */
 const FORM_TXT = {
@@ -3293,7 +3309,12 @@ function bind() {
      状态行只在桌面版可点 —— 预览模式没有主进程，点开也拿不到真信息。 */
   $('#btnAbout').addEventListener('click', () => { openAbout(); });
   $('#btnAboutCopy').addEventListener('click', copyDiag);
-  $('#conn').addEventListener('click', () => { if (!PREVIEW) openAbout(); });
+  $('#conn').addEventListener('click', () => {
+    if (PREVIEW) return;
+    // 检测到新版本（可更新）时，点版本号直接进「设置 → 软件更新」；否则看「关于」
+    if (updAlert(state.update)) openSettingsToUpdate();
+    else openAbout();
+  });
 
   /* 弹窗关闭 */
   $$('[data-close]').forEach(b => b.addEventListener('click', () => {
