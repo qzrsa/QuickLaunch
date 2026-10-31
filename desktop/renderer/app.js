@@ -1737,7 +1737,9 @@ function assignImported(ids) {
   toast('info', `已勾选 ${state.picked.size} 项`, '选「移动到分组…」，或直接整批拖到左侧分组');
 }
 
-/** 一键智能分类整理：先 dryRun 预览 → 确认 → 执行 → 带「撤销」。 */
+/** 一键智能分类整理：dryRun → 逐项勾选预览弹窗 → 按勾选执行 → 带撤销 + 快照。 */
+let classifyPreview = null;   // { moves, picked }
+
 async function runClassifyAll() {
   let preview;
   try { preview = await API.classifyAll({ dryRun: true }); }
@@ -1748,20 +1750,50 @@ async function runClassifyAll() {
     return toast('info', '没有可整理的项', '能自动归类的项都已经在正确分组里了');
   }
 
-  const parts = (preview.byGroup || []).map(g => `${g.groupName} ${g.count} 项`).join('、');
-  const go = confirm(`将把 ${preview.moved} 个启动项重新归类：\n${parts}\n\n先备份、可撤销；只动「确定能归类的」项，拿不准的和你自定义分组里的都不动。\n\n继续？`);
-  if (!go) return;
+  classifyPreview = {
+    moves: preview.moves || [],
+    picked: new Set((preview.moves || []).map(m => m.itemId)),
+  };
+  $('#setOverlay').hidden = true;   // 从设置面板进入：先关设置，弹窗独占
+  renderClassifyPreview();
+  $('#classifyOverlay').hidden = false;
+}
 
+function renderClassifyPreview() {
+  const p = classifyPreview;
+  if (!p) return;
+  $('#classifyList').innerHTML = p.moves.map(m => {
+    const on = p.picked.has(m.itemId);
+    return `<div class="scan-item${on ? ' on' : ''}" data-id="${m.itemId}">
+      <div class="cb">${on ? '✓' : ''}</div>
+      <div class="si-txt">
+        <b>${esc(m.name)}</b>
+        <span>${esc(m.fromGname)} → ${esc(m.toName)}</span>
+      </div>
+    </div>`;
+  }).join('');
+  $('#classifyCount').textContent = `已选 ${p.picked.size} / ${p.moves.length} 项`;
+  $('#classifySub').textContent = `共 ${p.moves.length} 项可重新归类，取消勾选的项这次不动`;
+  $('#btnClassifyGo').disabled = !p.picked.size;
+}
+
+async function doClassifyGo() {
+  const p = classifyPreview;
+  if (!p || !p.picked.size) return;
+  const itemIds = [...p.picked];
+  $('#btnClassifyGo').disabled = true;
   let r;
-  try { r = await API.classifyAll({}); }
-  catch (err) { return toast('bad', '整理失败', (err && err.message) || ''); }
-  if (!r.ok) return toast('bad', '整理失败', r.msg || '');
-
+  try { r = await API.classifyAll({ itemIds }); }
+  catch (err) { $('#btnClassifyGo').disabled = false; return toast('bad', '整理失败', (err && err.message) || ''); }
+  if (!r.ok) { $('#btnClassifyGo').disabled = false; return toast('bad', '整理失败', r.msg || ''); }
+  $('#classifyOverlay').hidden = true;
+  classifyPreview = null;
   toast('ok', `已整理 ${r.moved} 个启动项`,
     (r.byGroup || []).map(g => `${g.groupName} ${g.count} 项`).join('、') || '分组已归位', {
       ttl: 9000,
       action: r.backupFile ? { label: '撤销', run: () => undoClassify(r.backupFile) } : undefined,
     });
+  refreshClassifySnaps();
 }
 
 async function undoClassify(backupFile) {
@@ -1769,9 +1801,51 @@ async function undoClassify(backupFile) {
     const r = await API.classifyUndo(backupFile);
     if (!r.ok) return toast('bad', '撤销失败', r.msg || '');
     toast('ok', '已撤销整理');
+    refreshClassifySnaps();
   } catch (err) {
     toast('bad', '撤销失败', (err && err.message) || '');
   }
+}
+
+/** 整理快照：列出 data/backup/classify-*.json，可随时恢复。 */
+async function refreshClassifySnaps() {
+  const box = $('#classifySnapList');
+  if (!box) return;
+  let r;
+  try { r = await API.classifyList(); }
+  catch { box.innerHTML = '<div class="snap-empty">读不到快照列表</div>'; return; }
+  const list = (r && r.list) || [];
+  if (!list.length) {
+    box.innerHTML = '<div class="snap-empty">还没有快照 —— 跑一次「整理」就会自动留一份</div>';
+    return;
+  }
+  box.innerHTML = list.map(s => {
+    const t = new Date(s.mtime);
+    const p2 = n => String(n).padStart(2, '0');
+    const time = `${t.getFullYear()}-${p2(t.getMonth() + 1)}-${p2(t.getDate())} ${p2(t.getHours())}:${p2(t.getMinutes())}:${p2(t.getSeconds())}`;
+    const size = s.size > 1024 ? (s.size / 1024).toFixed(0) + ' KB' : s.size + ' B';
+    return `<div class="snap-item">
+      <span class="snap-time">${time}</span>
+      <span class="snap-size">${size}</span>
+      <div class="spacer"></div>
+      <button class="btn sm" data-file="${esc(s.file)}">恢复</button>
+    </div>`;
+  }).join('');
+}
+
+async function restoreSnap(file) {
+  const go = await confirmDialog({
+    icon: '♻️', title: '恢复到这个快照？',
+    text: '会把当前分组配置整体替换成这份快照，之后做的改动会丢。',
+    okText: '恢复', danger: true,
+  });
+  if (!go) return;
+  let r;
+  try { r = await API.classifyUndo(file); }
+  catch (err) { return toast('bad', '恢复失败', (err && err.message) || ''); }
+  if (!r.ok) return toast('bad', '恢复失败', r.msg || '');
+  toast('ok', '已恢复快照');
+  refreshClassifySnaps();
 }
 
 /* ------------------------------------------------------------ 扫描 */
@@ -2245,6 +2319,7 @@ async function openSettings() {
   if (i.update && !state.update) state.update = i.update;
   renderUpdate();
   $('#setDirty').textContent = '';
+  refreshClassifySnaps();   // 打开设置时刷新「整理快照」列表
   $('#setOverlay').hidden = false;
 }
 
@@ -3184,8 +3259,35 @@ function bind() {
   $('#btnReextractIcons').addEventListener('click', () => { healAllIcons(); });
   // 恢复默认分组：误删「文件与目录 / 系统工具 / 开发 / 网站 / 软件」的后悔药（只补不删）
   $('#btnRestoreDefaults').addEventListener('click', () => { restoreDefaultGroups(); });
-  // 智能分类整理：先预览、确认后执行；执行前主进程先整份备份，可一键撤销
+  // 智能分类整理：dryRun → 逐项勾选预览弹窗 → 按勾选执行；执行前主进程先整份备份，可撤销 + 快照
   $('#btnClassifyAll').addEventListener('click', runClassifyAll);
+  $('#classifyList').addEventListener('click', e => {
+    const row = e.target.closest('.scan-item');
+    if (!row || !classifyPreview) return;
+    const id = row.dataset.id;
+    if (classifyPreview.picked.has(id)) classifyPreview.picked.delete(id);
+    else classifyPreview.picked.add(id);
+    row.classList.toggle('on', classifyPreview.picked.has(id));
+    row.querySelector('.cb').textContent = classifyPreview.picked.has(id) ? '✓' : '';
+    $('#classifyCount').textContent = `已选 ${classifyPreview.picked.size} / ${classifyPreview.moves.length} 项`;
+    $('#btnClassifyGo').disabled = !classifyPreview.picked.size;
+  });
+  $('#btnClassifyCheckAll').addEventListener('click', () => {
+    if (!classifyPreview) return;
+    classifyPreview.picked = new Set(classifyPreview.moves.map(m => m.itemId));
+    renderClassifyPreview();
+  });
+  $('#btnClassifyCheckNone').addEventListener('click', () => {
+    if (!classifyPreview) return;
+    classifyPreview.picked = new Set();
+    renderClassifyPreview();
+  });
+  $('#btnClassifyGo').addEventListener('click', doClassifyGo);
+  // 整理快照列表：点「恢复」回到那一次整理前
+  $('#classifySnapList').addEventListener('click', e => {
+    const btn = e.target.closest('button[data-file]');
+    if (btn) restoreSnap(btn.dataset.file);
+  });
 
   /* 「关于」的两个入口：设置页脚的按钮，和侧栏底部那条状态行。
      状态行只在桌面版可点 —— 预览模式没有主进程，点开也拿不到真信息。 */
@@ -3539,6 +3641,11 @@ function createMockBridge() {
       save();
       return { ok: true, removed, skipped: [], backup: '（预览模式不写备份）' };
     },
+    /* 预览模式：智能分类整理（dryRun 恒空，点「整理」提示没有可整理的项）；
+       快照列表恒空。真逻辑在主进程。 */
+    classifyAll: async () => ({ ok: true, dryRun: true, moved: 0, byGroup: [], moves: [] }),
+    classifyUndo: async () => ({ ok: true }),
+    classifyList: async () => ({ ok: true, list: [] }),
     restoreItems: async pairs => {
       let restored = 0;
       (pairs || []).forEach(p => {

@@ -1347,11 +1347,22 @@ function registerIpc() {
   /* 一键智能分类整理（设置 → 启动项维护）。
      ★ dryRun 只算不写盘，给「预览」用；真执行先备份整份配置，可撤销。 */
   ipcMain.handle('ql:classify:all', (_e, opts) => {
-    const { dryRun = false } = opts || {};
+    const { dryRun = false, itemIds = null } = opts || {};
     const cfg = store.load();
-    const moves = classify.computeMoves(cfg.groups, classifyRules);
+    let moves = classify.computeMoves(cfg.groups, classifyRules);
 
-    if (dryRun) return { ok: true, dryRun: true, moved: moves.length, byGroup: groupCounts(moves) };
+    // 指定了要整理的项（渲染层逐项勾选后回传），只动这些
+    if (Array.isArray(itemIds)) {
+      const keep = new Set(itemIds);
+      moves = moves.filter(mv => keep.has(mv.itemId));
+    }
+
+    if (dryRun) {
+      return {
+        ok: true, dryRun: true, moved: moves.length, byGroup: groupCounts(moves),
+        moves: moves.map(m => ({ itemId: m.itemId, name: m.name, fromGid: m.fromGid, fromGname: m.fromGname, toName: m.toName })),
+      };
+    }
     if (!moves.length) return { ok: true, moved: 0, byGroup: [] };
 
     // 先备份，写不出就整批放弃（绝不"整理到一半丢了原位置"）
@@ -1396,6 +1407,24 @@ function registerIpc() {
     } catch (e) {
       return { ok: false, msg: e.message };
     }
+  });
+
+  /* 列出整理快照（data/backup/classify-*.json），供设置面板「整理快照」恢复用。 */
+  ipcMain.handle('ql:classify:list', () => {
+    const dir = path.join(dataLocation.dir, 'backup');
+    let list = [];
+    try {
+      list = fs.readdirSync(dir)
+        .filter(f => f.startsWith('classify-') && f.endsWith('.json'))
+        .map(f => {
+          const file = path.join(dir, f);
+          let mtime = 0, size = 0;
+          try { const st = fs.statSync(file); mtime = st.mtimeMs; size = st.size; } catch { /* noop */ }
+          return { file, name: f, mtime, size };
+        })
+        .sort((a, b) => b.mtime - a.mtime);
+    } catch { /* 目录还不存在 = 没快照 */ }
+    return { ok: true, list };
   });
 
   ipcMain.handle('ql:settings:set', async (_e, patch) => {

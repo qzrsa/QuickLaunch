@@ -389,6 +389,10 @@
               </div>
               <button class="btn sm" id="btnClassifyAll">整理…</button>
             </div>
+            <div class="snap-box">
+              <div class="snap-head">整理快照<span class="muted-note">（整理前自动备份，可随时恢复）</span></div>
+              <div id="classifySnapList" class="snap-list"></div>
+            </div>
             <div class="act-row">
               <div class="act-txt">
                 <div class="act-t">重新提取图标</div>
@@ -531,6 +535,35 @@
       <div class="spacer"></div>
       <button class="btn sm" id="cfNo">取消</button>
       <button class="btn danger sm" id="cfYes">删除</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== 智能分类整理预览 ===================== -->
+<div class="overlay" id="classifyOverlay" hidden>
+  <div class="modal wide">
+    <div class="modal-head">
+      <div class="mh-ic">🗂️</div>
+      <div>
+        <h2>智能分类整理</h2>
+        <p id="classifySub">下面这些项可以重新归类</p>
+      </div>
+      <div class="spacer"></div>
+      <button class="x-btn" data-close>✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="prune-bar">
+        <button class="btn sm" id="btnClassifyCheckAll">全选</button>
+        <button class="btn sm" id="btnClassifyCheckNone">全不选</button>
+        <span class="muted-note">取消勾选的项这次不动</span>
+      </div>
+      <div class="scan-list" id="classifyList"></div>
+    </div>
+    <div class="modal-foot">
+      <span id="classifyCount" class="muted-note">已选 0 项</span>
+      <div class="spacer"></div>
+      <button class="btn sm" data-close>取消</button>
+      <button class="btn primary sm" id="btnClassifyGo">开始整理</button>
     </div>
   </div>
 </div>

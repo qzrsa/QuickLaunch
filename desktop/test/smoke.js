@@ -3434,6 +3434,7 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
     ok(cls.classifyItem({ type: 'file', path: 'D:\\易语言\\主程序.e' }, builtin).name === '开发', '.e → 开发');
     ok(cls.classifyItem({ type: 'file', path: 'D:\\易语言\\模块.ec' }, builtin).name === '开发', '.ec → 开发');
     ok(cls.classifyItem({ type: 'app', path: 'D:\\易语言\\主程序.e' }, builtin).name === '开发', '★ .lnk 解析出的 .e 也归开发（不限定 type）');
+    ok(cls.classifyItem({ type: 'app', path: 'D:\\易语言\\易语言.exe' }, builtin).name === '开发', '★ 易语言 exe（路径含「易语言」）→ 开发（v2.0.4）');
     ok(cls.classifyItem({ type: 'file', path: 'D:\\doc\\readme.epub' }, builtin).name === '文本文档', '★ .epub 不被 .e 误判（endsWith 精确到扩展名）');
 
     // —— 系统目录 / 管理单元 ——
@@ -3543,8 +3544,13 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
     ok(/ipcMain\.handle\('ql:classify:all'/.test(mainSrcC)
       && /computeMoves\(cfg\.groups, classifyRules\)/.test(mainSrcC),
       '一键整理：computeMoves 纯函数规划，主进程只落地');
-    ok(/if \(dryRun\) return \{ ok: true, dryRun: true/.test(mainSrcC),
-      '★ dryRun 只算不写盘（预览用）');
+    ok(/if \(dryRun\) \{[\s\S]{0,200}ok: true, dryRun: true/.test(mainSrcC)
+      && /moves: moves\.map\(m => \(\{ itemId: m\.itemId/.test(mainSrcC),
+      '★ dryRun 只算不写盘，且返回逐项详情（渲染层勾选用）');
+    ok(/Array\.isArray\(itemIds\)/.test(mainSrcC) && /keep\.has\(mv\.itemId\)/.test(mainSrcC),
+      '★ 执行整理按 itemIds 过滤（只动勾选的项）');
+    ok(/ipcMain\.handle\('ql:classify:list'/.test(mainSrcC) && /startsWith\('classify-'\)/.test(mainSrcC),
+      '★ 主进程暴露整理快照列表 classify:list');
     ok(/ipcMain\.handle\('ql:classify:undo'/.test(mainSrcC)
       && /startsWith\('classify-'\)/.test(mainSrcC),
       '撤销只认 data/backup 下的 classify-* 文件，别的不放行');
@@ -3598,8 +3604,8 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
     ok(/\$\('#btnClassifyAll'\)\.addEventListener\('click', runClassifyAll\)/.test(appSrcC),
       '一键整理按钮已接线');
     const preloadC = fs.readFileSync(path.join(__dirname, '..', 'src', 'preload.js'), 'utf8');
-    ok(/classifyAll/.test(preloadC) && /classifyUndo/.test(preloadC),
-      '预加载暴露 classifyAll / classifyUndo');
+    ok(/classifyAll/.test(preloadC) && /classifyUndo/.test(preloadC) && /classifyList/.test(preloadC),
+      '预加载暴露 classifyAll / classifyUndo / classifyList');
   }
 
   section('结果');

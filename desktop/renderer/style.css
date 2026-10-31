@@ -727,6 +727,20 @@ body.edit-mode .content { padding-bottom: 108px; }
 .act-d { font-size: 11.5px; color: var(--text-3); line-height: 1.55; margin-top: 2px; }
 .act-row .btn { flex: none; }
 
+/* 整理快照列表（设置面板 → 启动项维护） */
+.snap-box { padding: 4px 0 12px; }
+.snap-head { font-size: 12.5px; font-weight: 600; color: var(--text-2); margin-bottom: 8px; }
+.snap-head .muted-note { font-weight: 400; }
+.snap-list { display: grid; gap: 6px; }
+.snap-item {
+  display: flex; align-items: center; gap: 10px; padding: 8px 11px;
+  border: 1px solid var(--line); border-radius: var(--r-s); background: var(--panel-2);
+}
+.snap-item .snap-time { font-size: 12.5px; font-weight: 600; color: var(--text-2); }
+.snap-item .snap-size { font-size: 11px; color: var(--text-3); }
+.snap-item .btn { flex: none; }
+.snap-empty { padding: 6px 2px; font-size: 11.5px; color: var(--text-3); }
+
 /* 有未保存的改动：放在页脚「关于」右边，滚到哪儿都看得见 */
 .set-dirty { font-size: 11.5px; font-weight: 600; color: var(--warn); }
 .modal-body > .warn-box { margin-bottom: 12px; }
