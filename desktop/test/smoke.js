@@ -1200,8 +1200,9 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
   section('侧栏布局不变量');
   const css = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'style.css'), 'utf8');
   const rule = sel => {
-    const m = css.match(new RegExp(sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*\\{([^}]*)\\}'));
-    return m ? m[1] : '';
+    // ★ 锚到「行首」才是这个选择器的规则体；否则 .rail 会误匹配 body.has-bg .rail 这类覆盖规则。
+    const m = css.match(new RegExp('(^|\\n)\\s*' + sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*\\{([^}]*)\\}'));
+    return m ? m[2] : '';
   };
   ok(/grid-template-rows:\s*100%/.test(rule('.app')),
     '.app 行高写死 100%（否则隐式 auto 行被内容撑破窗口）');
@@ -3629,6 +3630,12 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
       '渲染层有 applyBackground / renderBgUI（背景图与模糊度应用 + 文案）');
     ok(/bg:\s*state\.bgDraft/.test(appSrcC) && /bgBlur:\s*Number\(\$\('#sBgBlur'\)\.value\)/.test(appSrcC),
       '★ bg/bgBlur 贯通 settingsFromDom 与 saveSettings（和 patch 一一对应）');
+    // —— 个性化（v2.0.7）：有自定义背景时，侧栏 + 卡片改成毛玻璃透出背景图 ——
+    const cssBg = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'style.css'), 'utf8');
+    ok(/body\.has-bg \.rail[\s\S]*?backdrop-filter/.test(cssBg) && /body\.has-bg \.card[\s\S]*?backdrop-filter/.test(cssBg),
+      '★ 有背景时侧栏与卡片加 backdrop-filter 毛玻璃（透出一部分背景图）');
+    ok(/body\.has-bg \.nav-new/.test(cssBg) && /color-mix\(in srgb, var\(--panel\)/.test(cssBg),
+      '★ 侧栏/卡片/新建分组用半透明 --panel（color-mix）保证文字可读');
   }
 
   section('结果');

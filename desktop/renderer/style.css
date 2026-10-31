@@ -155,6 +155,25 @@ input, select, textarea { outline: none; }
 /* 有自定义背景时，把默认光斑压暗一点，避免两种背景叠在一起打架 */
 body.has-bg .bg .blob { opacity: .25; }
 
+/* 有自定义背景时：侧栏与卡片改成「毛玻璃」半透明，透出一部分背景图（和顶栏同一套质感）。
+   backdrop-filter 采样的是它后面的 .bg-img；半透明 var(--panel) 保证文字仍可读。 */
+body.has-bg .rail {
+  background: color-mix(in srgb, var(--panel) 58%, transparent);
+  backdrop-filter: blur(22px) saturate(150%);
+  -webkit-backdrop-filter: blur(22px) saturate(150%);
+}
+body.has-bg .card {
+  background: color-mix(in srgb, var(--panel) 55%, transparent);
+  backdrop-filter: blur(16px) saturate(140%);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
+}
+/* 「新建分组」吸附按钮：底色跟侧栏同款半透明，盖缝的 box-shadow 也用同色，
+   否则会露出一条实色 --panel 的缝（它自己不加 backdrop-filter，免得把已糊的侧栏再糊一遍）。 */
+body.has-bg .nav-new {
+  background: color-mix(in srgb, var(--panel) 58%, transparent);
+  box-shadow: 0 -3px 0 0 color-mix(in srgb, var(--panel) 58%, transparent);
+}
+
 /* ---------------------------------------------- 布局 */
 /* ★ grid-template-rows 必须给死：只写 height:100vh 时，那一行是隐式 auto 尺寸，
    分组一多就被内容撑到比窗口还高（实测 24 个分组 → 864px 的窗口里行高 1485px），
