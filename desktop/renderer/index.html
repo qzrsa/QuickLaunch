@@ -49,6 +49,12 @@
         <kbd>/</kbd>
       </label>
 
+      <!-- 贴边小窗里唯一的「还原」入口：退出贴边模式、回到完整窗口。 -->
+      <button class="btn nodrag" id="btnExitEdge" title="退出贴边，还原完整窗口" hidden>
+        <svg class="ic" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 6h8M6 2l-4 4 4 4"/></svg>
+        <span>还原窗口</span>
+      </button>
+
       <select class="mini-select nodrag" id="sort">
         <option value="custom">自定义顺序</option>
         <option value="recent">最近使用</option>
@@ -369,6 +375,20 @@
               <span class="trow-txt"><span class="trow-t">界面动画</span><span class="trow-d">入场、弹窗等装饰动画；关掉更省资源（切换立即生效）</span></span>
               <input type="checkbox" id="sAnimations"><span class="track"></span>
             </label>
+            <label class="trow">
+              <span class="trow-txt"><span class="trow-t">贴边呼出</span><span class="trow-d">窗口缩成精简小窗贴到屏幕边缘，鼠标移到那边自动呼出</span></span>
+              <input type="checkbox" id="sEdgeOn"><span class="track"></span>
+            </label>
+            <div class="field" id="edgeRow" hidden>
+              <label>贴在哪条边</label>
+              <select id="sEdge">
+                <option value="left">屏幕左侧</option>
+                <option value="right">屏幕右侧</option>
+                <option value="top">屏幕顶部</option>
+                <option value="bottom">屏幕底部</option>
+              </select>
+              <p class="hint-line">开启后窗口变成小窗并贴边隐藏，鼠标移到那条边立即滑出、移开自动收回。</p>
+            </div>
           </div>
         </section>
 

@@ -188,6 +188,23 @@ body.has-bg .nav-new {
   box-shadow: inset 0 0 0 1px var(--line);
 }
 
+/* ---------------------------------------------- 贴边呼出（小窗形态）
+   body.compact 由渲染层在 settings.edge 开启时挂上；主进程同步把窗口缩成
+   440×400 贴边。这里只负责「精简」：藏掉侧栏、顶栏的标题/排序/多选/新建/
+   窗口控制，只留搜索框 + 「还原窗口」按钮 + 卡片（单列）。 */
+body.compact .app { grid-template-columns: 1fr; }
+body.compact .rail { display: none; }
+body.compact .topbar { padding: 0 16px 0 18px; }
+body.compact .topbar .title,
+body.compact .topbar .mini-select,
+body.compact .topbar #btnSelect,
+body.compact .topbar #btnAdd,
+body.compact .topbar .win-ctrls { display: none; }
+body.compact .topbar .search { flex: 1; }
+body.compact .kbd-hint { display: none; }
+body.compact .content { padding: 16px 18px 24px; }
+body.compact .grid { grid-template-columns: 1fr; gap: 10px; }
+
 /* ---------------------------------------------- 左侧栏 */
 .rail {
   display: flex; flex-direction: column; gap: 6px;

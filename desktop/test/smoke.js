@@ -1449,8 +1449,8 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
     'btnReextractIcons', 'btnRestoreDefaults', 'btnPruneInvalid'];
   const lost = needIds.filter(id => !new RegExp(`id="${id}"`).test(htmlSrc));
   ok(lost.length === 0, '分区化之后所有控件 id 都还在（界面按 id 取值，不按 DOM 位置）', lost.join(',') || 'ok');
-  ok((htmlSrc.match(/<label class="trow">/g) || []).length === 7,
-    '7 个开关都是整行 <label>（热键/自启/发送到/悬停/动画/智能分类/自动更新，点文字也能切，读屏能拿到名字）');
+  ok((htmlSrc.match(/<label class="trow">/g) || []).length === 8,
+    '8 个开关都是整行 <label>（热键/自启/发送到/悬停/动画/贴边呼出/智能分类/自动更新，点文字也能切，读屏能拿到名字）');
 
   // 折叠逻辑只有一份实现：写 localStorage、切 class、同步 aria
   ok(/const SET_SEC_KEY = ['"]ql\.settings\.secs['"]/.test(appSrc)
@@ -1868,7 +1868,10 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
     // 白白等了 5 分钟看门狗才退出，日志里只有一行"用了 300757ms"）。
     const evLine = (preloadSrc.match(/const EVENTS = \[[\s\S]*?\];/) || [''])[0];
     const declared = new Set((evLine.match(/'ql:[^']+'/g) || []).map(s => s.slice(1, -1)));
-    const sent = [...new Set((mainSrc.match(/send\(\s*'ql:[^']+'/g) || [])
+    // ★ 只匹配「主进程 → 渲染层」的频道（webContents.send / event.sender.send）。
+    //   触发条窗口内联页里的 ipcRenderer.send('ql:edge-hover') 是反方向（渲染层 → 主进程），
+    //   不该进这张「主进程往外发」的白名单对账。
+    const sent = [...new Set((mainSrc.match(/(?:webContents|event\.sender)\.send\(\s*'ql:[^']+'/g) || [])
       .map(s => s.match(/'ql:[^']+'/)[0].slice(1, -1)))];
     // ★ 先把"两边都解析出来了"钉死：解析失败会得到空集合，下面的差集断言就**永远为绿**，
     //   等于没写（本项目吃过好几次"空集合上的断言"的亏）。
@@ -3636,6 +3639,21 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
       '★ 有背景时侧栏与卡片加 backdrop-filter 毛玻璃（透出一部分背景图）');
     ok(/body\.has-bg \.nav-new/.test(cssBg) && /color-mix\(in srgb, var\(--panel\)/.test(cssBg),
       '★ 侧栏/卡片/新建分组用半透明 --panel（color-mix）保证文字可读');
+    // —— 贴边呼出（v2.1.0）：小窗贴边隐藏 + 鼠标移到边缘自动呼出 ——
+    ok(store.defaultConfig().settings.edge === '', '★ 贴边呼出默认关闭（edge 空串）');
+    ok(/id="sEdgeOn"/.test(htmlC) && /id="sEdge"/.test(htmlC) && /id="btnExitEdge"/.test(htmlC),
+      '设置面板有「贴边呼出」开关 + 边选择，主界面有小窗「还原窗口」按钮');
+    ok((appSrcC.match(/edge:\s*\$\('#sEdgeOn'\)\.checked \? \$\('#sEdge'\)\.value : ''/g) || []).length >= 2,
+      '★ edge 贯通 settingsFromDom 与 saveSettings（开关+边 → 一个字段）');
+    ok(/classList\.toggle\('compact'/.test(appSrcC) && /btnExitEdge/.test(appSrcC),
+      '★ 渲染层按 edge 切 body.compact（小窗形态）+ 还原按钮显隐');
+    ok(/function applyEdgeMode/.test(mainSrcC) && /function createEdgeBar/.test(mainSrcC)
+      && /function edgeSlideOut/.test(mainSrcC) && /function edgeSlideIn/.test(mainSrcC),
+      '★ 主进程贴边四件套：applyEdgeMode / createEdgeBar / edgeSlideOut / edgeSlideIn');
+    ok(/EDGE_PROBE/.test(mainSrcC) && /ql:edge-hover/.test(mainSrcC),
+      '★ 贴边探针 + 触发条 hover 通道（ql:edge-hover）');
+    ok(/body\.compact \.rail/.test(cssBg) && /body\.compact \.grid/.test(cssBg),
+      '★ body.compact 小窗布局：隐藏侧栏 + 单列网格');
   }
 
   section('结果');

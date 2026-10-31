@@ -569,7 +569,7 @@ function setWinMaxIcon(max) {
   b.title = max ? '向下还原' : '最大化';
 }
 
-/** 把设置反映到 DOM 上（目前只有「悬停显示卡片快捷按钮」） */
+/** 把设置反映到 DOM 上（悬停按钮、动画开关、个性化背景、贴边小窗形态） */
 function applySettingsToDom(settings) {
   document.body.classList.toggle('hover-actions', !!(settings && settings.hoverActions));
   // 动画开关：默认开；明确关了才挂 data-anim="off"。
@@ -578,6 +578,12 @@ function applySettingsToDom(settings) {
   else document.documentElement.setAttribute('data-anim', 'off');
   // 个性化背景图 + 模糊度
   applyBackground((settings && settings.bg) || '', (settings && settings.bgBlur) || 0);
+  // 贴边呼出：小窗形态（隐藏侧栏/底栏，只留搜索框 + 卡片）。「还原窗口」按钮只在
+  // 小窗里出现（完整窗口里隐藏）。主进程会同步把窗口尺寸/贴边也切过去。
+  const compact = !!(settings && settings.edge);
+  document.body.classList.toggle('compact', compact);
+  const exit = $('#btnExitEdge');
+  if (exit) exit.hidden = !compact;
 }
 
 /** 个性化：把背景图（dataURL）+ 模糊度（px）铺到 #bgImg 图层上。
@@ -2274,6 +2280,7 @@ function settingsFromDom() {
     startGroup: $('#sStartGroup').value || 'last',
     bg: state.bgDraft || '',
     bgBlur: Number($('#sBgBlur').value) || 0,
+    edge: $('#sEdgeOn').checked ? $('#sEdge').value : '',
   });
 }
 
@@ -2346,6 +2353,10 @@ async function openSettings() {
   state.bgDraft = s.bg || '';
   $('#sBgBlur').value = Number(s.bgBlur) || 0;
   renderBgUI();
+  // 贴边呼出：开关 + 边选择回填
+  $('#sEdgeOn').checked = !!s.edge;
+  $('#sEdge').value = s.edge || 'left';
+  $('#edgeRow').hidden = !s.edge;
 
   state.info = await API.info();
   const i = state.info;
@@ -2722,6 +2733,7 @@ async function saveSettings() {
     theme: document.documentElement.dataset.theme,
     bg: state.bgDraft || '',
     bgBlur: Number($('#sBgBlur').value) || 0,
+    edge: $('#sEdgeOn').checked ? $('#sEdge').value : '',
   };
   const r = await API.setSettings(patch);
   if (!r.ok) return toast('bad', '保存失败', r.msg);
@@ -3318,6 +3330,20 @@ function bind() {
     const on = $('#sAnimations').checked;
     if (on) document.documentElement.removeAttribute('data-anim');
     else document.documentElement.setAttribute('data-anim', 'off');
+  });
+  // 贴边呼出：开关联动「贴哪条边」的下拉显隐
+  $('#sEdgeOn').addEventListener('change', () => {
+    $('#edgeRow').hidden = !$('#sEdgeOn').checked;
+  });
+  // 小窗里的「还原窗口」：只清 edge 这一个字段（不走 saveSettings——那会把设置面板
+  // 里所有控件按当前 DOM 值整批重存，面板没打开过时等于用默认值覆盖真实设置）。
+  $('#btnExitEdge').addEventListener('click', async () => {
+    const r = await API.setSettings({ edge: '' });
+    if (!r.ok) return toast('bad', '操作失败', r.msg);
+    Object.assign(state.config.settings, r.settings || { edge: '' });
+    applySettingsToDom(state.config.settings);
+    $('#sEdgeOn').checked = false;
+    $('#edgeRow').hidden = true;
   });
   // 个性化：选背景图（主进程选图 + 压缩 → dataURL，暂存草稿，保存才写盘）
   $('#btnBgPick').addEventListener('click', async () => {
