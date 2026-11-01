@@ -606,9 +606,27 @@ function applySettingsToDom(settings) {
   if (compact !== wasCompact) {
     if (compact) state.preCompactView = state.active;
     else if (state.preCompactView) state.active = state.preCompactView;
+    if (!compact) {                       // 退出小窗：清掉弹出动画残留的方向/类
+      delete document.body.dataset.edge;
+      const app = document.querySelector('.app');
+      if (app) app.classList.remove('edge-anim');
+    }
     renderNav();
     render({ noAnim: true });
   }
+}
+
+/** 贴边小窗「弹出」动画：从所贴边缘方向小幅滑入 + 淡入（.2s，干脆不拖沓）。
+ *  ★ 每次呼出都要重播：先摘掉 edge-anim 类、强制 reflow、再加回，让 animation 重新跑。
+ *  ★ 方向写进 body[data-edge]，CSS 按方向选不同的 keyframes（right→从右往左，以此类推）。 */
+function playEdgeIn(edge) {
+  if (!state._compact) return;
+  document.body.dataset.edge = edge || 'right';
+  const app = document.querySelector('.app');
+  if (!app) return;
+  app.classList.remove('edge-anim');
+  void app.offsetWidth;          // 强制 reflow，让同一帧内重新加类也能重播动画
+  app.classList.add('edge-anim');
 }
 
 /** 个性化：把背景图（dataURL）+ 模糊度（px）铺到 #bgImg 图层上。
@@ -3524,6 +3542,7 @@ function bind() {
   /* 主进程事件 */
   API.on('ql:win-state', p => setWinMaxIcon(p && p.maximized));
   API.on('ql:focus-search', () => setTimeout(() => { $('#q').focus(); $('#q').select(); }, 60));
+  API.on('ql:edge-out', edge => playEdgeIn(edge));   // 贴边小窗呼出 → 重播弹出动画
   // ★ soft：先问一句「是不是只有计数变了」。是 → 就地改文本，一次重绘都不做（不闪）；
   //   不是（改了名 / 增删项 / 动设置）→ 照常重绘，只是不播入场动画。
   API.on('ql:config-changed', () => refresh({ soft: true }));

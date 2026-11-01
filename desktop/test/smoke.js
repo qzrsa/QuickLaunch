@@ -3677,7 +3677,7 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
       '★ 触边判定走光标轮询（cursorAtEdge + EDGE_HOVER_PX）');
     ok(/if \(fsHidden\) return/.test(mainSrcC) && /cursorAtEdge\(p, wa, edgeBarEdge\)/.test(mainSrcC),
       '★ 轮询：全屏不呼出 + 光标贴边才呼出');
-    // —— 触发条回归（v2.1.4）：纯显示 + 鼠标穿透，只画 3px 线、其余透明，四边视觉都 3px ——
+    // —— 触发条回归（v2.1.4）：纯显示 + 鼠标穿透，只画一条细线、其余透明 ——
     ok(/function createEdgeBar/.test(mainSrcC) && /function destroyEdgeBar/.test(mainSrcC)
       && /function edgeBarHtml/.test(mainSrcC) && /EDGE_BAR_THICK/.test(mainSrcC),
       '★ 触发条回归：createEdgeBar / destroyEdgeBar / edgeBarHtml / EDGE_BAR_THICK');
@@ -3685,6 +3685,19 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
       '★ 触发条鼠标穿透（setIgnoreMouseEvents），交互仍走光标轮询（无 ql:edge-hover）');
     ok(/edgeBar\.hide\(\)/.test(mainSrcC) && /edgeBar\.showInactive\(\)/.test(mainSrcC),
       '★ 触发条随小窗呼出/收起、全屏开/关同步显隐');
+    // —— 触发条更明显 + 弹出动画（v2.1.5）——
+    ok(/rgba\(122,132,155,0\.62\)/.test(mainSrcC) && /width:4px/.test(mainSrcC),
+      '★ 触发条加粗到 4px + 提透明度（rgba .62），比上一版更明显');
+    ok(/border-radius:4px 0 0 4px/.test(mainSrcC)
+      && /'left:0;top:0;bottom:0;width:4px;border-radius:4px 0 0 4px;'/.test(mainSrcC),
+      '★ 右贴边线画在窗口 left 侧（否则被 Windows 强制加宽推到屏外，右/下边会看不见）');
+    ok(/ql:edge-out/.test(mainSrcC) && /ql:edge-out/.test(appSrcC) && /function playEdgeIn/.test(appSrcC),
+      '★ 呼出发 ql:edge-out → 渲染层 playEdgeIn 重播弹出动画');
+    ok(/dataset\.edge/.test(appSrcC) && /edge-anim/.test(appSrcC) && /\.app\.edge-anim/.test(cssBg),
+      '★ 方向写 body[data-edge]，.app.edge-anim 触发动画');
+    ok(/@keyframes edgeInRight/.test(cssBg) && /@keyframes edgeInLeft/.test(cssBg)
+      && /@keyframes edgeInTop/.test(cssBg) && /@keyframes edgeInBottom/.test(cssBg),
+      '★ 四方向弹出 keyframes（edgeInRight/Left/Top/Bottom）');
   }
 
   section('结果');

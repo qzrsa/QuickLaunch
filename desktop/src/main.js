@@ -959,7 +959,10 @@ function edgeSlideOut(focus) {
   if (focus) { win.show(); win.focus(); }
   else win.showInactive();
   win.moveTop();
-  if (!win.webContents.isLoading()) win.webContents.send('ql:focus-search');
+  if (!win.webContents.isLoading()) {
+    win.webContents.send('ql:focus-search');
+    win.webContents.send('ql:edge-out', edge);   // 渲染层据此重播「弹出」动画（带方向）
+  }
   console.log('[edge] 呼出 edge=' + edge + ' isVisible=' + win.isVisible());
 }
 
@@ -974,17 +977,18 @@ function edgeSlideIn() {
 
 /* ---------------------------------------------------- 触发条（纯显示）
  * 只做「这里能呼出」的视觉提示。交互不靠它：setIgnoreMouseEvents(true) 让鼠标穿透，
- * hover 呼出 / 移开收回全由 cursorAtEdge 轮询负责。内容只画一条贴着屏幕边缘的 3px 细线、
+ * hover 呼出 / 移开收回全由 cursorAtEdge 轮询负责。内容只画一条贴着屏幕边缘的 4px 细线、
  * 其余全透明 —— 这样 Windows 把窗口强制撑到最小尺寸（16~39px）也看不出变宽。
- *   右/下：窗口往屏幕外溢出（Windows 只允许这两个方向越界）→ 强制加宽部分跑到屏外，看不见。
- *   左/上：窗口被夹回屏内 → 但只有靠边那 3px 有内容，多出来的部分透明，同样看不见。 */
+ *   ★ 四个方向线都画在窗口的 left/top 侧：右/下边窗口被 Windows 强制加宽时**往屏外扩展**
+ *     （窗口 left/top 坐标不变），只有靠 left/top 那一小条留在屏内 —— 线必须画在这一侧才看得见；
+ *     左/上边窗口被夹回屏内，left/top 也正好是贴屏幕边缘的那一侧。 */
 function edgeBarHtml(edge) {
-  const line = 'background:rgba(125,135,155,0.45);';   // 低调半透明灰线
+  const line = 'background:rgba(122,132,155,0.62);';   // 半透明蓝灰线（比 0.45 更明显一点点）
   let pin;
-  if (edge === 'left') pin = 'left:0;top:0;bottom:0;width:3px;border-radius:0 3px 3px 0;';
-  else if (edge === 'right') pin = 'right:0;top:0;bottom:0;width:3px;border-radius:3px 0 0 3px;';
-  else if (edge === 'top') pin = 'top:0;left:0;right:0;height:3px;border-radius:0 0 3px 3px;';
-  else pin = 'bottom:0;left:0;right:0;height:3px;border-radius:3px 3px 0 0;';
+  if (edge === 'left') pin = 'left:0;top:0;bottom:0;width:4px;border-radius:0 4px 4px 0;';
+  else if (edge === 'right') pin = 'left:0;top:0;bottom:0;width:4px;border-radius:4px 0 0 4px;';
+  else if (edge === 'top') pin = 'top:0;left:0;right:0;height:4px;border-radius:0 0 4px 4px;';
+  else pin = 'top:0;left:0;right:0;height:4px;border-radius:4px 4px 0 0;';
   return '<!doctype html><html><head><meta charset="utf-8"><style>'
     + 'html,body{margin:0;padding:0;background:transparent;overflow:hidden;width:100%;height:100%;}'
     + '#bar{position:fixed;' + pin + line + '}'
@@ -1020,6 +1024,11 @@ function createEdgeBar(edge) {
   edgeBar.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(edgeBarHtml(edge)));
   edgeBar.once('ready-to-show', () => {
     if (edgeBar && !edgeBar.isDestroyed() && !fsHidden) edgeBar.showInactive();
+    // ★ 开发期验证：Windows 可能把无边框透明窗强制到最小尺寸，这里打印**真实** bounds
+    //   确认「往右/下屏外扩展、left/top 坐标不变」—— 触发条线画在 left/top 侧就靠这个成立。
+    if (edgeBar && !edgeBar.isDestroyed()) {
+      console.log('[edge] 触发条实际 bounds=' + JSON.stringify(edgeBar.getBounds()));
+    }
   });
   console.log('[edge] 触发条已建 edge=' + edge + ' bounds=' + JSON.stringify(bounds));
 }
