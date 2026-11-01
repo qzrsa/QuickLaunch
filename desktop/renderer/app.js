@@ -416,6 +416,13 @@ function matches(item) {
   const q = state.q.toLowerCase().trim();
   if (!q) return true;
   const name = item.name || '';
+  // 小窗（compact）没有侧栏、空间小，只按「名称」搜（含拼音），不搜路径/描述/参数；
+  // 完整窗口才搜全字段。
+  if (state._compact) {
+    if (name.toLowerCase().includes(q)) return true;
+    if (!/[\u4e00-\u9fff]/.test(q)) return pinyinKeys(name).includes(q);
+    return false;
+  }
   const hay = [
     name.toLowerCase(),
     (item.path || '').toLowerCase(),
@@ -526,7 +533,7 @@ function render(opts) {
   }
   $('#empty').hidden = true;
 
-  const perSection = state.active === 'all' && !state.q && state.sort === 'custom' && sections.length > 1;
+  const perSection = !state._compact && state.active === 'all' && !state.q && state.sort === 'custom' && sections.length > 1;
   let html = '';
   let n = 0;
   // 编辑模式下不显示「新建启动项」卡片：那一格点下去是"新建"而不是"勾选"，很容易误触
@@ -591,6 +598,9 @@ function applySettingsToDom(settings) {
   document.body.classList.toggle('compact', compact);
   const exit = $('#btnExitEdge');
   if (exit) exit.hidden = !compact;
+  // 搜索框提示语：小窗只搜名称，占位符更短、不挤；完整窗口恢复全字段提示。
+  const q = $('#q');
+  if (q) q.placeholder = compact ? '搜索名称' : '搜索名称、路径或描述，拼音也行…';
   // 形态切换时同步视图：进入小窗记住「之前停在哪个分组」并切到「全部」（小窗没侧栏，
   // 停在具体分组会看不到别的项）；退出时恢复到进入前的分组。
   if (compact !== wasCompact) {

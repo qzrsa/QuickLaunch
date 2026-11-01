@@ -3653,7 +3653,7 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
     ok(/EDGE_PROBE/.test(mainSrcC) && /ql:edge-hover/.test(mainSrcC),
       '★ 贴边探针 + 触发条 hover 通道（ql:edge-hover）');
     ok(/body\.compact \.rail/.test(cssBg) && /body\.compact \.grid/.test(cssBg),
-      '★ body.compact 小窗布局：隐藏侧栏 + 单列网格');
+      '★ body.compact 小窗布局：隐藏侧栏 + 独立网格');
     // —— 贴边小窗细化（v2.1.1）：小窗默认「全部」、触发条透明轻薄、全屏自动隐藏 ——
     ok(/preCompactView/.test(appSrcC) && /_compact/.test(appSrcC) && /if \(state\._compact\) state\.active = 'all'/.test(appSrcC),
       '★ 小窗形态默认停在「全部」分组，退出小窗恢复之前的分组（preCompactView）');
@@ -3664,6 +3664,17 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
       '★ 全屏自动隐藏：常驻检测子进程 + 开/关/回调三件套');
     ok(/startFullscreenWatch\(\);/.test(mainSrcC) && /stopFullscreenWatch\(\);/.test(mainSrcC),
       '★ 全屏检测随贴边模式开关启停（applyEdgeMode / quitApp）');
+    // —— 贴边小窗九宫格（v2.1.2）：小窗 3 列图标格、只按名称搜索、隐藏路径/描述 ——
+    ok(/body\.compact \.grid\s*\{[^}]*repeat\(3,\s*1fr\)/.test(cssBg),
+      '★ 小窗网格改 3 列图标九宫格（repeat(3, 1fr)）');
+    ok(/body\.compact \.card-meta p\s*\{\s*display:\s*none/.test(cssBg)
+      && /body\.compact \.card-foot\s*\{\s*display:\s*none/.test(cssBg),
+      '★ 小窗卡片不显示路径/描述与标签（card-meta p / card-foot 隐藏）');
+    ok(/if \(state\._compact\)[\s\S]*?return false/.test(appSrcC)
+      && /placeholder = compact \? '搜索名称' : '搜索名称、路径或描述，拼音也行…'/.test(appSrcC),
+      '★ 小窗只按名称搜索（matches 短路 + 占位符缩短）');
+    ok(/!state\._compact && state\.active === 'all'/.test(appSrcC),
+      '★ 小窗强制平铺（不按分区分组渲染）');
   }
 
   section('结果');

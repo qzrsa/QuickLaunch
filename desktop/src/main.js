@@ -246,9 +246,9 @@ let lastBounds = null;
 // 触发条窗口（贴边的那条 3px 细条，负责「hover → 呼出」）；edgeBarEdge = 它贴的边。
 let edgeBar = null;
 let edgeBarEdge = '';
-// 小窗（compact）形态的固定尺寸：宽够放搜索框 + 一列卡片，高够显示最近使用。
-const EDGE_WIN_W = 440;
-const EDGE_WIN_H = 400;
+// 小窗（compact）形态的固定尺寸：3 列图标九宫格（icon + 名称），窄一点不挡画面。
+const EDGE_WIN_W = 340;
+const EDGE_WIN_H = 420;
 // 触发条长度（贴边那一维的可见长度）：短一点更轻薄、不挡内容。
 const EDGE_BAR_LEN = 220;
 // 全屏检测：常驻的 PowerShell 子进程 + 当前是否因全屏隐藏了触发条。
