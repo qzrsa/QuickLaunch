@@ -3654,6 +3654,16 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
       '★ 贴边探针 + 触发条 hover 通道（ql:edge-hover）');
     ok(/body\.compact \.rail/.test(cssBg) && /body\.compact \.grid/.test(cssBg),
       '★ body.compact 小窗布局：隐藏侧栏 + 单列网格');
+    // —— 贴边小窗细化（v2.1.1）：小窗默认「全部」、触发条透明轻薄、全屏自动隐藏 ——
+    ok(/preCompactView/.test(appSrcC) && /_compact/.test(appSrcC) && /if \(state\._compact\) state\.active = 'all'/.test(appSrcC),
+      '★ 小窗形态默认停在「全部」分组，退出小窗恢复之前的分组（preCompactView）');
+    ok(/rgba\(128,\s*136,\s*152,\s*0\.20\)/.test(mainSrcC) && /transparent:\s*true/.test(mainSrcC),
+      '★ 触发条改透明 + 轻薄（rgba 半透明背景 + transparent 窗口）');
+    ok(/function startFullscreenWatch/.test(mainSrcC) && /function stopFullscreenWatch/.test(mainSrcC)
+      && /function onFullscreen/.test(mainSrcC) && /FS_WATCH_PS/.test(mainSrcC),
+      '★ 全屏自动隐藏：常驻检测子进程 + 开/关/回调三件套');
+    ok(/startFullscreenWatch\(\);/.test(mainSrcC) && /stopFullscreenWatch\(\);/.test(mainSrcC),
+      '★ 全屏检测随贴边模式开关启停（applyEdgeMode / quitApp）');
   }
 
   section('结果');

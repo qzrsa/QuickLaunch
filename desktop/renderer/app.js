@@ -44,6 +44,9 @@ const PREVIEW = !!API.__mock;
 const state = {
   config: null,
   active: 'all',
+  // 贴边小窗：进入前停在哪个分组（退出小窗时恢复）；_compact = 当前是否小窗形态。
+  preCompactView: null,
+  _compact: false,
   q: '',
   sort: 'custom',
   editing: null,
@@ -476,6 +479,8 @@ const ADD_CARD = `<article class="card add" data-add="1" tabindex="0">
 
 function render(opts) {
   const host = $('#gridHost');
+  // 贴边小窗：没有侧栏，任何路径下都固定显示「全部」（否则停在具体分组会看不到别的项）
+  if (state._compact) state.active = 'all';
   // 搜索逐字过滤时 opts.noAnim = true：不要每敲一个键就把所有卡片的入场动画重播一遍
   // （上千张卡同时闪 pop 是纯闪烁）。非搜索的重绘不传 → 正常播入场动画。
   host.classList.toggle('no-anim', !!(opts && opts.noAnim));
@@ -581,9 +586,19 @@ function applySettingsToDom(settings) {
   // 贴边呼出：小窗形态（隐藏侧栏/底栏，只留搜索框 + 卡片）。「还原窗口」按钮只在
   // 小窗里出现（完整窗口里隐藏）。主进程会同步把窗口尺寸/贴边也切过去。
   const compact = !!(settings && settings.edge);
+  const wasCompact = !!state._compact;
+  state._compact = compact;
   document.body.classList.toggle('compact', compact);
   const exit = $('#btnExitEdge');
   if (exit) exit.hidden = !compact;
+  // 形态切换时同步视图：进入小窗记住「之前停在哪个分组」并切到「全部」（小窗没侧栏，
+  // 停在具体分组会看不到别的项）；退出时恢复到进入前的分组。
+  if (compact !== wasCompact) {
+    if (compact) state.preCompactView = state.active;
+    else if (state.preCompactView) state.active = state.preCompactView;
+    renderNav();
+    render({ noAnim: true });
+  }
 }
 
 /** 个性化：把背景图（dataURL）+ 模糊度（px）铺到 #bgImg 图层上。

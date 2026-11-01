@@ -249,8 +249,11 @@ let edgeBarEdge = '';
 // 小窗（compact）形态的固定尺寸：宽够放搜索框 + 一列卡片，高够显示最近使用。
 const EDGE_WIN_W = 440;
 const EDGE_WIN_H = 400;
-// 触发条长度（贴边那一维的可见长度）：够醒目又不突兀。
-const EDGE_BAR_LEN = 360;
+// 触发条长度（贴边那一维的可见长度）：短一点更轻薄、不挡内容。
+const EDGE_BAR_LEN = 220;
+// 全屏检测：常驻的 PowerShell 子进程 + 当前是否因全屏隐藏了触发条。
+let fsWatch = null;
+let fsHidden = false;
 
 /* ------------------------------------------------------------ 拖入探针 */
 
@@ -914,10 +917,12 @@ function toggleWindow() {
 
 /* ---------------------------------------------------- 贴边呼出 */
 
-/** 触发条窗口的内联页面：就一个铺满的色条，body 监听 hover 后立刻通知主进程。
+/** 触发条窗口的内联页面：一条**极淡**的半透明细条（几乎隐形，只留一点存在感），
+ *  body 监听 hover 后立刻通知主进程。
  *  ★ 触发条是纯本地的空白窗口（无远程内容、无用户输入），nodeIntegration 打开是安全的，
- *    换取「真正的 mouseenter 检测」而不是主进程轮询光标。 */
-const EDGE_BAR_HTML = `<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0;height:100%;overflow:hidden;background:#3b6cf6}</style></head><body><script>
+ *    换取「真正的 mouseenter 检测」而不是主进程轮询光标。
+ *  ★ 背景 alpha 不能是 0：Windows 上全透明像素会被当"不可点击"而鼠标穿透，mouseenter 收不到。 */
+const EDGE_BAR_HTML = `<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0;height:100%;overflow:hidden;background:rgba(128,136,152,0.20)}</style></head><body><script>
 const { ipcRenderer } = require('electron');
 const go = () => ipcRenderer.send('ql:edge-hover');
 document.body.addEventListener('mouseenter', go);
@@ -950,7 +955,7 @@ function createEdgeBar(edge) {
 
   edgeBar = new BrowserWindow({
     x, y, width: w, height: h,
-    frame: false, transparent: false, resizable: false, movable: false,
+    frame: false, transparent: true, resizable: false, movable: false,
     minimizable: false, maximizable: false, closable: false,
     skipTaskbar: true, alwaysOnTop: true, focusable: false, hasShadow: false, show: true,
     webPreferences: { nodeIntegration: true, contextIsolation: false, sandbox: false },
@@ -1034,6 +1039,7 @@ function applyEdgeMode(edge) {
     const wa = edgeWorkArea();
     const p = edgeWinPos(edge, wa);
     win.setBounds({ x: p.x, y: p.y, width: EDGE_WIN_W, height: EDGE_WIN_H });
+    startFullscreenWatch();                 // 全屏自动隐藏触发条（视频/游戏全屏时收起）
     console.log('[edge] 贴边模式开启 edge=' + edge);
   } else if (edgeBarEdge) {
     edgeBarEdge = '';
@@ -1041,6 +1047,7 @@ function applyEdgeMode(edge) {
     stopEdgePoll();
     win.setAlwaysOnTop(false);
     win.setSkipTaskbar(false);
+    stopFullscreenWatch();
     win.setMaximumSize(0, 0);               // 解除小窗尺寸锁定
     win.setMinimumSize(860, 560);           // 恢复完整窗口的最小尺寸
     const b = (store.load().settings.windowBounds) || {};
@@ -1100,6 +1107,74 @@ async function runEdgeProbe() {
     console.log('[edge-probe] 完成，退出');
     quitApp();
   }, 2200);
+}
+
+/* ---------------------------------------------------- 全屏检测（贴边呼出的「全屏自动隐藏」） */
+/* 常驻一个 PowerShell 子进程：Add-Type 只编译一次，之后每 800ms 用 Win32 查一次前台窗口
+   是否覆盖整个主屏，**状态变化**才输出一行 FULL / WIN。比「每次 spawn」省得多（单次 spawn
+   冷启动 + Add-Type 编译要 1.5s+，2~3 秒轮询几乎一直占着进程）。
+   ★ 只在前台窗口宽高 ≥ 主屏宽高时判 FULL —— 无边框全屏（视频/游戏）和真全屏都覆盖。 */
+const FS_WATCH_PS = [
+  "$ErrorActionPreference='SilentlyContinue'",
+  "Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;public class F{[DllImport(\"user32.dll\")]public static extern IntPtr GetForegroundWindow();[DllImport(\"user32.dll\")]public static extern bool GetWindowRect(IntPtr h,out R r);[DllImport(\"user32.dll\")]public static extern int GetSystemMetrics(int i);public struct R{public int L,T,Ri,B;}}'",
+  "$last=''",
+  'while($true){',
+  '  $h=[F]::GetForegroundWindow()',
+  '  $r=New-Object F+R',
+  '  [void][F]::GetWindowRect($h,[ref]$r)',
+  '  $sw=[F]::GetSystemMetrics(0); $sh=[F]::GetSystemMetrics(1)',
+  "  $cur=if(($r.Ri-$r.L) -ge $sw -and ($r.B-$r.T) -ge $sh){'FULL'}else{'WIN'}",
+  "  if($cur -ne $last){ $last=$cur; Write-Output $cur }",
+  '  Start-Sleep -Milliseconds 800',
+  '}',
+].join('\n');
+
+/** 前台全屏状态变化 → 隐藏 / 恢复触发条。 */
+function onFullscreen(isFull) {
+  if (!edgeBar || edgeBar.isDestroyed()) return;
+  if (isFull && !fsHidden) {
+    fsHidden = true;
+    edgeBar.hide();
+    console.log('[edge] 检测到全屏，隐藏触发条');
+  } else if (!isFull && fsHidden) {
+    fsHidden = false;
+    edgeBar.showInactive();
+    console.log('[edge] 退出全屏，恢复触发条');
+  }
+}
+
+/** 启动常驻全屏检测子进程（只在贴边模式开启时跑）。 */
+function startFullscreenWatch() {
+  stopFullscreenWatch();
+  fsHidden = false;
+  let buf = '';
+  fsWatch = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', FS_WATCH_PS], {
+    windowsHide: true,
+  });
+  fsWatch.stdout.on('data', d => {
+    buf += d.toString();
+    const lines = buf.split(/\r?\n/);
+    buf = lines.pop();
+    for (const line of lines) {
+      const s = line.trim();
+      if (s === 'FULL') onFullscreen(true);
+      else if (s === 'WIN') onFullscreen(false);
+    }
+  });
+  fsWatch.on('error', () => { fsWatch = null; });
+  fsWatch.on('close', () => { fsWatch = null; });
+}
+
+/** 停掉全屏检测子进程，并恢复触发条（若之前因全屏隐藏了）。 */
+function stopFullscreenWatch() {
+  if (fsWatch) {
+    try { fsWatch.kill(); } catch { /* noop */ }
+    fsWatch = null;
+  }
+  if (fsHidden && edgeBar && !edgeBar.isDestroyed()) {
+    fsHidden = false;
+    try { edgeBar.showInactive(); } catch { /* noop */ }
+  }
 }
 
 /* ---------------------------------------------------- 自更新 */
@@ -1814,6 +1889,7 @@ function quitApp() {
   quitting = true;
   globalShortcut.unregisterAll();
   stopEdgePoll();
+  stopFullscreenWatch();
   destroyEdgeBar();
   try { if (tray) tray.destroy(); } catch { /* noop */ }
   app.quit();
