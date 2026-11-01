@@ -1869,8 +1869,7 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
     const evLine = (preloadSrc.match(/const EVENTS = \[[\s\S]*?\];/) || [''])[0];
     const declared = new Set((evLine.match(/'ql:[^']+'/g) || []).map(s => s.slice(1, -1)));
     // ★ 只匹配「主进程 → 渲染层」的频道（webContents.send / event.sender.send）。
-    //   触发条窗口内联页里的 ipcRenderer.send('ql:edge-hover') 是反方向（渲染层 → 主进程），
-    //   不该进这张「主进程往外发」的白名单对账。
+    //   反方向（渲染层 → 主进程的 ipcRenderer.send）不进这张「主进程往外发」的白名单对账。
     const sent = [...new Set((mainSrc.match(/(?:webContents|event\.sender)\.send\(\s*'ql:[^']+'/g) || [])
       .map(s => s.match(/'ql:[^']+'/)[0].slice(1, -1)))];
     // ★ 先把"两边都解析出来了"钉死：解析失败会得到空集合，下面的差集断言就**永远为绿**，
@@ -3647,18 +3646,16 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
       '★ edge 贯通 settingsFromDom 与 saveSettings（开关+边 → 一个字段）');
     ok(/classList\.toggle\('compact'/.test(appSrcC) && /btnExitEdge/.test(appSrcC),
       '★ 渲染层按 edge 切 body.compact（小窗形态）+ 还原按钮显隐');
-    ok(/function applyEdgeMode/.test(mainSrcC) && /function createEdgeBar/.test(mainSrcC)
-      && /function edgeSlideOut/.test(mainSrcC) && /function edgeSlideIn/.test(mainSrcC),
-      '★ 主进程贴边四件套：applyEdgeMode / createEdgeBar / edgeSlideOut / edgeSlideIn');
-    ok(/EDGE_PROBE/.test(mainSrcC) && /ql:edge-hover/.test(mainSrcC),
-      '★ 贴边探针 + 触发条 hover 通道（ql:edge-hover）');
+    ok(/function applyEdgeMode/.test(mainSrcC) && /function edgeSlideOut/.test(mainSrcC)
+      && /function edgeSlideIn/.test(mainSrcC) && /function cursorAtEdge/.test(mainSrcC),
+      '★ 主进程贴边四件套：applyEdgeMode / edgeSlideOut / edgeSlideIn / cursorAtEdge');
+    ok(/EDGE_PROBE/.test(mainSrcC) && /EDGE_HOVER_PX/.test(mainSrcC) && /edgePollTick/.test(mainSrcC),
+      '★ 贴边探针 + 光标轮询触边判定（EDGE_HOVER_PX / edgePollTick）');
     ok(/body\.compact \.rail/.test(cssBg) && /body\.compact \.grid/.test(cssBg),
       '★ body.compact 小窗布局：隐藏侧栏 + 独立网格');
-    // —— 贴边小窗细化（v2.1.1）：小窗默认「全部」、触发条透明轻薄、全屏自动隐藏 ——
+    // —— 贴边小窗细化（v2.1.1）：小窗默认「全部」、全屏自动隐藏 ——
     ok(/preCompactView/.test(appSrcC) && /_compact/.test(appSrcC) && /if \(state\._compact\) state\.active = 'all'/.test(appSrcC),
       '★ 小窗形态默认停在「全部」分组，退出小窗恢复之前的分组（preCompactView）');
-    ok(/rgba\(128,\s*136,\s*152,\s*0\.20\)/.test(mainSrcC) && /transparent:\s*true/.test(mainSrcC),
-      '★ 触发条改透明 + 轻薄（rgba 半透明背景 + transparent 窗口）');
     ok(/function startFullscreenWatch/.test(mainSrcC) && /function stopFullscreenWatch/.test(mainSrcC)
       && /function onFullscreen/.test(mainSrcC) && /FS_WATCH_PS/.test(mainSrcC),
       '★ 全屏自动隐藏：常驻检测子进程 + 开/关/回调三件套');
@@ -3675,6 +3672,13 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
       '★ 小窗只按名称搜索（matches 短路 + 占位符缩短）');
     ok(/!state\._compact && state\.active === 'all'/.test(appSrcC),
       '★ 小窗强制平铺（不按分区分组渲染）');
+    // —— 贴边呼出改光标轮询（v2.1.3）：去掉触发条窗口，避免 Windows 强制最小尺寸把左/上边撑宽 ——
+    ok(/function cursorAtEdge/.test(mainSrcC) && /EDGE_HOVER_PX/.test(mainSrcC),
+      '★ 触边判定走光标轮询（cursorAtEdge + EDGE_HOVER_PX），无触发条窗口');
+    ok(!/createEdgeBar/.test(mainSrcC) && !/EDGE_BAR_HTML/.test(mainSrcC) && !/ql:edge-hover/.test(mainSrcC),
+      '★ 已移除触发条窗口（无 EDGE_BAR_HTML / createEdgeBar / ql:edge-hover）');
+    ok(/if \(fsHidden\) return/.test(mainSrcC) && /cursorAtEdge\(p, wa, edgeBarEdge\)/.test(mainSrcC),
+      '★ 轮询：全屏不呼出 + 光标贴边才呼出');
   }
 
   section('结果');
