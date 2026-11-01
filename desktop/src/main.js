@@ -243,15 +243,22 @@ let hotkeyFail = '';
 let lastBounds = null;
 
 /* ------------------------------------------------------------ 贴边呼出 */
-// 贴边呼出：edgeBarEdge = 当前贴的边（''=关闭）。hover 呼出 / 移开收回都靠光标轮询。
-//  ★ 不用触发条窗口：Windows 会给无边框透明窗口强制最小尺寸，且**只允许向右/下越界**、
-//    左/上边会被强制撑回屏幕内（3px 被撑到 ~32px），触发条就「太宽」了。光标轮询四边对称、可控。
+// 贴边呼出：edgeBarEdge = 当前贴的边（''=关闭）。交互（hover 呼出 / 移开收回）靠光标轮询。
 let edgeBarEdge = '';
+// 纯显示的触发条窗口（只做「这里能呼出」的视觉提示）。★ 交互不靠它：setIgnoreMouseEvents(true)
+//   让鼠标穿透，hover 呼出交给 cursorAtEdge 轮询。这样窗口被 Windows 强制撑宽也无所谓——
+//   内容只在「贴屏幕边缘」的那 3px 画一条细线、其余全透明，四边视觉上都是 3px。
+let edgeBar = null;
 // 小窗（compact）形态的固定尺寸：3 列图标九宫格（icon + 名称），窄一点不挡画面。
 const EDGE_WIN_W = 340;
 const EDGE_WIN_H = 420;
 // 贴边 hover 判定宽度：光标贴近屏幕边缘 3px 内就算「碰到边」→ 呼出。
 const EDGE_HOVER_PX = 3;
+// 触发条长度（贴边那一维的可见长度）。
+const EDGE_BAR_LEN = 220;
+// 触发条名义厚度。★ Windows 会把无边框透明窗强制撑到最小尺寸（实测 16~39px），
+//   所以这里只作定位用；真正画的线由页面 CSS 固定 3px，其余全透明，四边视觉都 3px。
+const EDGE_BAR_THICK = 4;
 // 全屏检测：常驻的 PowerShell 子进程 + 当前是否因全屏隐藏（全屏时不呼出/不显示）。
 let fsWatch = null;
 let fsHidden = false;
@@ -948,6 +955,7 @@ function edgeSlideOut(focus) {
   const p = edgeWinPos(edge, wa);
   win.setBounds({ x: p.x, y: p.y, width: EDGE_WIN_W, height: EDGE_WIN_H });
   win.setAlwaysOnTop(true, 'screen-saver');
+  if (edgeBar && !edgeBar.isDestroyed()) edgeBar.hide();   // 小窗盖住触发条那一段，先收起来
   if (focus) { win.show(); win.focus(); }
   else win.showInactive();
   win.moveTop();
@@ -960,7 +968,66 @@ function edgeSlideIn() {
   if (!win || win.isDestroyed()) return;
   if (!win.isVisible()) return;   // 已隐藏就不重复收（blur 兜底可能和轮询同时触发）
   win.hide();
+  if (edgeBar && !edgeBar.isDestroyed() && !fsHidden) edgeBar.showInactive();  // 收回时恢复触发条
   console.log('[edge] 收回');
+}
+
+/* ---------------------------------------------------- 触发条（纯显示）
+ * 只做「这里能呼出」的视觉提示。交互不靠它：setIgnoreMouseEvents(true) 让鼠标穿透，
+ * hover 呼出 / 移开收回全由 cursorAtEdge 轮询负责。内容只画一条贴着屏幕边缘的 3px 细线、
+ * 其余全透明 —— 这样 Windows 把窗口强制撑到最小尺寸（16~39px）也看不出变宽。
+ *   右/下：窗口往屏幕外溢出（Windows 只允许这两个方向越界）→ 强制加宽部分跑到屏外，看不见。
+ *   左/上：窗口被夹回屏内 → 但只有靠边那 3px 有内容，多出来的部分透明，同样看不见。 */
+function edgeBarHtml(edge) {
+  const line = 'background:rgba(125,135,155,0.45);';   // 低调半透明灰线
+  let pin;
+  if (edge === 'left') pin = 'left:0;top:0;bottom:0;width:3px;border-radius:0 3px 3px 0;';
+  else if (edge === 'right') pin = 'right:0;top:0;bottom:0;width:3px;border-radius:3px 0 0 3px;';
+  else if (edge === 'top') pin = 'top:0;left:0;right:0;height:3px;border-radius:0 0 3px 3px;';
+  else pin = 'bottom:0;left:0;right:0;height:3px;border-radius:3px 3px 0 0;';
+  return '<!doctype html><html><head><meta charset="utf-8"><style>'
+    + 'html,body{margin:0;padding:0;background:transparent;overflow:hidden;width:100%;height:100%;}'
+    + '#bar{position:fixed;' + pin + line + '}'
+    + '</style></head><body><div id="bar"></div></body></html>';
+}
+
+/** 建触发条窗口（贴边模式开启时）。edge = left/right/top/bottom。 */
+function createEdgeBar(edge) {
+  destroyEdgeBar();
+  const wa = edgeWorkArea();
+  const thick = EDGE_BAR_THICK;
+  const len = EDGE_BAR_LEN;
+  let bounds;
+  if (edge === 'left') bounds = { x: wa.x, y: wa.y + Math.round((wa.height - len) / 2), width: thick, height: len };
+  else if (edge === 'right') bounds = { x: wa.x + wa.width - thick, y: wa.y + Math.round((wa.height - len) / 2), width: thick, height: len };
+  else if (edge === 'top') bounds = { x: wa.x + Math.round((wa.width - len) / 2), y: wa.y, width: len, height: thick };
+  else bounds = { x: wa.x + Math.round((wa.width - len) / 2), y: wa.y + wa.height - thick, width: len, height: thick };
+
+  edgeBar = new BrowserWindow({
+    ...bounds,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    movable: false,
+    focusable: false,
+    skipTaskbar: true,
+    hasShadow: false,
+    show: false,
+    webPreferences: { contextIsolation: true, nodeIntegration: false },
+  });
+  edgeBar.setAlwaysOnTop(true, 'screen-saver');
+  edgeBar.setIgnoreMouseEvents(true);   // ★ 鼠标穿透：交互不靠触发条
+  edgeBar.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(edgeBarHtml(edge)));
+  edgeBar.once('ready-to-show', () => {
+    if (edgeBar && !edgeBar.isDestroyed() && !fsHidden) edgeBar.showInactive();
+  });
+  console.log('[edge] 触发条已建 edge=' + edge + ' bounds=' + JSON.stringify(bounds));
+}
+
+/** 销毁触发条窗口。 */
+function destroyEdgeBar() {
+  if (edgeBar && !edgeBar.isDestroyed()) { edgeBar.destroy(); }
+  edgeBar = null;
 }
 
 /* 贴边模式的常驻光标轮询（60ms）：呼出（光标贴边）与收回（移出小窗+边缘 300ms）都在这一循环。
@@ -1013,6 +1080,7 @@ function applyEdgeMode(edge) {
     const p = edgeWinPos(edge, wa);
     win.setBounds({ x: p.x, y: p.y, width: EDGE_WIN_W, height: EDGE_WIN_H });
     startFullscreenWatch();                 // 全屏自动隐藏触发条（视频/游戏全屏时收起）
+    createEdgeBar(edge);                    // 触发条（纯显示，鼠标穿透）
     console.log('[edge] 贴边模式开启 edge=' + edge);
   } else if (edgeBarEdge) {
     edgeBarEdge = '';
@@ -1020,6 +1088,7 @@ function applyEdgeMode(edge) {
     win.setAlwaysOnTop(false);
     win.setSkipTaskbar(false);
     stopFullscreenWatch();
+    destroyEdgeBar();
     win.setMaximumSize(0, 0);               // 解除小窗尺寸锁定
     win.setMinimumSize(860, 560);           // 恢复完整窗口的最小尺寸
     const b = (store.load().settings.windowBounds) || {};
@@ -1116,9 +1185,11 @@ function onFullscreen(isFull) {
   if (isFull && !fsHidden) {
     fsHidden = true;
     if (win && !win.isDestroyed() && win.isVisible()) edgeSlideIn();
+    if (edgeBar && !edgeBar.isDestroyed()) edgeBar.hide();
     console.log('[edge] 检测到全屏，隐藏小窗');
   } else if (!isFull && fsHidden) {
     fsHidden = false;
+    if (edgeBar && !edgeBar.isDestroyed()) edgeBar.showInactive();
     console.log('[edge] 退出全屏，恢复呼出');
   }
 }
@@ -1861,6 +1932,7 @@ function quitApp() {
   globalShortcut.unregisterAll();
   stopEdgePoll();
   stopFullscreenWatch();
+  destroyEdgeBar();
   try { if (tray) tray.destroy(); } catch { /* noop */ }
   app.quit();
 }

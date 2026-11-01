@@ -3672,13 +3672,19 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
       '★ 小窗只按名称搜索（matches 短路 + 占位符缩短）');
     ok(/!state\._compact && state\.active === 'all'/.test(appSrcC),
       '★ 小窗强制平铺（不按分区分组渲染）');
-    // —— 贴边呼出改光标轮询（v2.1.3）：去掉触发条窗口，避免 Windows 强制最小尺寸把左/上边撑宽 ——
+    // —— 贴边呼出改光标轮询（v2.1.3）：触边判定不再靠触发条窗口 ——
     ok(/function cursorAtEdge/.test(mainSrcC) && /EDGE_HOVER_PX/.test(mainSrcC),
-      '★ 触边判定走光标轮询（cursorAtEdge + EDGE_HOVER_PX），无触发条窗口');
-    ok(!/createEdgeBar/.test(mainSrcC) && !/EDGE_BAR_HTML/.test(mainSrcC) && !/ql:edge-hover/.test(mainSrcC),
-      '★ 已移除触发条窗口（无 EDGE_BAR_HTML / createEdgeBar / ql:edge-hover）');
+      '★ 触边判定走光标轮询（cursorAtEdge + EDGE_HOVER_PX）');
     ok(/if \(fsHidden\) return/.test(mainSrcC) && /cursorAtEdge\(p, wa, edgeBarEdge\)/.test(mainSrcC),
       '★ 轮询：全屏不呼出 + 光标贴边才呼出');
+    // —— 触发条回归（v2.1.4）：纯显示 + 鼠标穿透，只画 3px 线、其余透明，四边视觉都 3px ——
+    ok(/function createEdgeBar/.test(mainSrcC) && /function destroyEdgeBar/.test(mainSrcC)
+      && /function edgeBarHtml/.test(mainSrcC) && /EDGE_BAR_THICK/.test(mainSrcC),
+      '★ 触发条回归：createEdgeBar / destroyEdgeBar / edgeBarHtml / EDGE_BAR_THICK');
+    ok(/setIgnoreMouseEvents\(true\)/.test(mainSrcC) && !/ql:edge-hover/.test(mainSrcC),
+      '★ 触发条鼠标穿透（setIgnoreMouseEvents），交互仍走光标轮询（无 ql:edge-hover）');
+    ok(/edgeBar\.hide\(\)/.test(mainSrcC) && /edgeBar\.showInactive\(\)/.test(mainSrcC),
+      '★ 触发条随小窗呼出/收起、全屏开/关同步显隐');
   }
 
   section('结果');
