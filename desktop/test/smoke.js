@@ -3586,6 +3586,17 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
       '已在正确组（系统工具/开发）的不动');
     ok(!moves.some(m => m.itemId === 'a6'), '自定义组里的项不碰');
 
+    // —— 扫描导入的「已安装软件」组（scanned）也要能一键整理（v2.0.12 修复：漏了它一个都分不了） ——
+    const scannedG = [{ id: 'scanned', name: '已安装软件', items: [
+      { id: 's1', name: 'Steam', type: 'app', path: 'C:\\Steam\\steam.exe' },
+      { id: 's2', name: '微信', type: 'app', path: 'D:\\WeChat\\WeChat.exe' },
+    ] }];
+    const scannedMoves = cls.computeMoves(scannedG, builtin);
+    ok(scannedMoves.length === 2
+      && scannedMoves.some(m => m.itemId === 's1' && m.toName === '游戏')
+      && scannedMoves.some(m => m.itemId === 's2' && m.toName === '社交'),
+      `scanned（已安装软件）组也参与一键整理（实际 ${scannedMoves.length}）`);
+
     // —— 自动生成的组（auto 标记）算分类体系组，可被整理 ——
     const autoG = [{ id: 'g_auto', name: '游戏', auto: true, items: [{ id: 'b1', name: 'x', type: 'app', path: 'C:\\Steam\\x.exe' }] }];
     ok(cls.computeMoves(autoG, builtin).length === 0, 'auto 组里已在正确组 → 不动（auto 组不是自定义组）');

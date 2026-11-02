@@ -178,7 +178,9 @@ function matchPath(p, keyword) {
  * 计算「一键整理」要移动的项（纯函数，落地由调用方做）。
  * @param {Array} groups   [{id,name,items:[{id,name,type,path}],auto?}]
  * @param {object} rules   parseRules 结果
- * @param {string[]} [defaultIds]  默认组的 id 集合（这些组 + auto 组 = 可整理）
+ * @param {string[]} [defaultIds]  默认组的 id 集合（这些组 + auto 组 = 可整理）。
+ *   默认含 dropped（拖入待分类）与 scanned（扫描导入待分类）——两者都是「入口组」，
+ *   里面的项恰恰最需要一键整理；漏掉 scanned 会让「扫描本机软件」导入的软件一个都分不了。
  * @returns {{itemId:string,name:string,fromGid:string,fromGname:string,toName:string,toIcon:string}[]}
  * 规则：
  *  - 自定义组（非默认 id、无 auto 标记）里的项一律不碰 —— 尊重用户手动摆放
@@ -186,7 +188,7 @@ function matchPath(p, keyword) {
  *  - 已经在正确组（组名 == 目标组名）的项不动
  */
 function computeMoves(groups, rules, defaultIds) {
-  const defaults = new Set(defaultIds || ['files', 'tools', 'dev', 'web', 'apps', 'dropped']);
+  const defaults = new Set(defaultIds || ['files', 'tools', 'dev', 'web', 'apps', 'dropped', 'scanned']);
   const moves = [];
   for (const g of (groups || [])) {
     if (!g || !Array.isArray(g.items)) continue;
