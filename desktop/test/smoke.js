@@ -1234,9 +1234,13 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
   const migLegacy = path.join(TMP, 'mig', 'appdata');
   fs.mkdirSync(migLegacy, { recursive: true });
   fs.writeFileSync(path.join(migLegacy, 'config.json'), '{"groups":[]}');
+  fs.mkdirSync(path.join(migLegacy, 'backup'), { recursive: true });
+  fs.writeFileSync(path.join(migLegacy, 'backup', 'classify-1.json'), '{"snap":1}');
   ok(datadir.migrateLegacyConfig(migTarget, migLegacy) === true, '新位置没有配置时会把旧的搬过来');
   ok(fs.existsSync(path.join(migTarget, 'config.json')), '迁移后新位置确实有 config.json');
   ok(fs.existsSync(path.join(migLegacy, 'config.json')), '旧位置用的是复制不是移动，原文件还在');
+  ok(fs.existsSync(path.join(migTarget, 'backup', 'classify-1.json')),
+    '★ backup 目录（整理快照/清理备份）也一起搬，不是只搬 config.json');
   fs.writeFileSync(path.join(migTarget, 'config.json'), '{"groups":[1]}');
   ok(datadir.migrateLegacyConfig(migTarget, migLegacy) === false, '新位置已有配置时不覆盖');
   ok(fs.readFileSync(path.join(migTarget, 'config.json'), 'utf8') === '{"groups":[1]}',

@@ -82,22 +82,49 @@ function resolveDataDir(o) {
   return { dir: target, inProgramDir: true, note: '数据随程序走' };
 }
 
+/** 递归复制一个目录（copyFileSync + readdirSync 手写，见 migrateLegacyConfig 的说明）。 */
+function copyDirSync(from, to, fs = nodeFs) {
+  fs.mkdirSync(to, { recursive: true });
+  for (const e of fs.readdirSync(from, { withFileTypes: true })) {
+    const s = path.join(from, e.name);
+    const d = path.join(to, e.name);
+    if (e.isDirectory()) copyDirSync(s, d, fs);
+    else fs.copyFileSync(s, d);
+  }
+}
+
 /**
- * 首次把数据搬到程序目录时，把旧位置的 config.json 带过来 ——
+ * 首次把数据搬到程序目录时，把旧位置的数据带过来 ——
  * 否则老用户一打开会看到空空的面板（数据其实没丢，只是没被读到）。
- * 用**复制**不用移动：万一新位置之后被删/被清，旧配置还在。
- * @returns {boolean} 是否真的迁移了
+ * 用**复制**不用移动：万一新位置之后被删/被清，旧数据还在。
+ * ★ 除了 config.json，还要连 `backup\` 一起带：一键整理的「整理快照」、
+ *   清理无效项的备份都放在里面，只迁 config.json 会让老用户以为快照「丢」了。
+ * ★★ 递归复制**不用 `fs.cpSync`**：本机实测 Node 22 的 cpSync 在 Windows 上
+ *   路径含中文（非 ASCII）时会 native 崩溃（exit 127、不抛异常、无 stderr），
+ *   英文路径才正常 —— 而安装目录完全可能是中文路径，这里必须用基础 API 手写。
+ * @returns {boolean} 是否真的迁移了（config 或 backup 任一落地都算）
  */
 function migrateLegacyConfig(targetDir, legacyDir, fs = nodeFs) {
-  const from = path.join(legacyDir, 'config.json');
-  const to = path.join(targetDir, 'config.json');
   try {
-    if (path.resolve(from) === path.resolve(to)) return false;
-    if (fs.existsSync(to)) return false;          // 新位置已有配置，不覆盖
-    if (!fs.existsSync(from)) return false;
+    if (path.resolve(targetDir) === path.resolve(legacyDir)) return false;
+    if (!fs.existsSync(legacyDir)) return false;
     fs.mkdirSync(targetDir, { recursive: true });
-    fs.copyFileSync(from, to);
-    return true;
+
+    let moved = false;
+    const fromCfg = path.join(legacyDir, 'config.json');
+    const toCfg = path.join(targetDir, 'config.json');
+    if (fs.existsSync(fromCfg) && !fs.existsSync(toCfg)) {  // 新位置已有配置，不覆盖
+      fs.copyFileSync(fromCfg, toCfg);
+      moved = true;
+    }
+
+    const fromBak = path.join(legacyDir, 'backup');
+    const toBak = path.join(targetDir, 'backup');
+    if (fs.existsSync(fromBak) && !fs.existsSync(toBak)) {
+      copyDirSync(fromBak, toBak, fs);
+      moved = true;
+    }
+    return moved;
   } catch {
     return false;
   }
