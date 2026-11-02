@@ -1449,8 +1449,8 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
     'btnReextractIcons', 'btnRestoreDefaults', 'btnPruneInvalid'];
   const lost = needIds.filter(id => !new RegExp(`id="${id}"`).test(htmlSrc));
   ok(lost.length === 0, '分区化之后所有控件 id 都还在（界面按 id 取值，不按 DOM 位置）', lost.join(',') || 'ok');
-  ok((htmlSrc.match(/<label class="trow">/g) || []).length === 8,
-    '8 个开关都是整行 <label>（热键/自启/发送到/悬停/动画/贴边呼出/智能分类/自动更新，点文字也能切，读屏能拿到名字）');
+  ok((htmlSrc.match(/<label class="trow">/g) || []).length === 7,
+    '7 个开关都是整行 <label>（热键/自启/发送到/悬停/动画/智能分类/自动更新，点文字也能切，读屏能拿到名字）');
 
   // 折叠逻辑只有一份实现：写 localStorage、切 class、同步 aria
   ok(/const SET_SEC_KEY = ['"]ql\.settings\.secs['"]/.test(appSrc)
@@ -1868,9 +1868,7 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
     // 白白等了 5 分钟看门狗才退出，日志里只有一行"用了 300757ms"）。
     const evLine = (preloadSrc.match(/const EVENTS = \[[\s\S]*?\];/) || [''])[0];
     const declared = new Set((evLine.match(/'ql:[^']+'/g) || []).map(s => s.slice(1, -1)));
-    // ★ 只匹配「主进程 → 渲染层」的频道（webContents.send / event.sender.send）。
-    //   反方向（渲染层 → 主进程的 ipcRenderer.send）不进这张「主进程往外发」的白名单对账。
-    const sent = [...new Set((mainSrc.match(/(?:webContents|event\.sender)\.send\(\s*'ql:[^']+'/g) || [])
+    const sent = [...new Set((mainSrc.match(/send\(\s*'ql:[^']+'/g) || [])
       .map(s => s.match(/'ql:[^']+'/)[0].slice(1, -1)))];
     // ★ 先把"两边都解析出来了"钉死：解析失败会得到空集合，下面的差集断言就**永远为绿**，
     //   等于没写（本项目吃过好几次"空集合上的断言"的亏）。
@@ -3638,66 +3636,6 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
       '★ 有背景时侧栏与卡片加 backdrop-filter 毛玻璃（透出一部分背景图）');
     ok(/body\.has-bg \.nav-new/.test(cssBg) && /color-mix\(in srgb, var\(--panel\)/.test(cssBg),
       '★ 侧栏/卡片/新建分组用半透明 --panel（color-mix）保证文字可读');
-    // —— 贴边呼出（v2.1.0）：小窗贴边隐藏 + 鼠标移到边缘自动呼出 ——
-    ok(store.defaultConfig().settings.edge === '', '★ 贴边呼出默认关闭（edge 空串）');
-    ok(/id="sEdgeOn"/.test(htmlC) && /id="sEdge"/.test(htmlC) && /id="btnExitEdge"/.test(htmlC),
-      '设置面板有「贴边呼出」开关 + 边选择，主界面有小窗「还原窗口」按钮');
-    ok((appSrcC.match(/edge:\s*\$\('#sEdgeOn'\)\.checked \? \$\('#sEdge'\)\.value : ''/g) || []).length >= 2,
-      '★ edge 贯通 settingsFromDom 与 saveSettings（开关+边 → 一个字段）');
-    ok(/classList\.toggle\('compact'/.test(appSrcC) && /btnExitEdge/.test(appSrcC),
-      '★ 渲染层按 edge 切 body.compact（小窗形态）+ 还原按钮显隐');
-    ok(/function applyEdgeMode/.test(mainSrcC) && /function edgeSlideOut/.test(mainSrcC)
-      && /function edgeSlideIn/.test(mainSrcC) && /function cursorAtEdge/.test(mainSrcC),
-      '★ 主进程贴边四件套：applyEdgeMode / edgeSlideOut / edgeSlideIn / cursorAtEdge');
-    ok(/EDGE_PROBE/.test(mainSrcC) && /EDGE_HOVER_PX/.test(mainSrcC) && /edgePollTick/.test(mainSrcC),
-      '★ 贴边探针 + 光标轮询触边判定（EDGE_HOVER_PX / edgePollTick）');
-    ok(/body\.compact \.rail/.test(cssBg) && /body\.compact \.grid/.test(cssBg),
-      '★ body.compact 小窗布局：隐藏侧栏 + 独立网格');
-    // —— 贴边小窗细化（v2.1.1）：小窗默认「全部」、全屏自动隐藏 ——
-    ok(/preCompactView/.test(appSrcC) && /_compact/.test(appSrcC) && /if \(state\._compact\) state\.active = 'all'/.test(appSrcC),
-      '★ 小窗形态默认停在「全部」分组，退出小窗恢复之前的分组（preCompactView）');
-    ok(/function startFullscreenWatch/.test(mainSrcC) && /function stopFullscreenWatch/.test(mainSrcC)
-      && /function onFullscreen/.test(mainSrcC) && /FS_WATCH_PS/.test(mainSrcC),
-      '★ 全屏自动隐藏：常驻检测子进程 + 开/关/回调三件套');
-    ok(/startFullscreenWatch\(\);/.test(mainSrcC) && /stopFullscreenWatch\(\);/.test(mainSrcC),
-      '★ 全屏检测随贴边模式开关启停（applyEdgeMode / quitApp）');
-    // —— 贴边小窗九宫格（v2.1.2）：小窗 3 列图标格、只按名称搜索、隐藏路径/描述 ——
-    ok(/body\.compact \.grid\s*\{[^}]*repeat\(3,\s*1fr\)/.test(cssBg),
-      '★ 小窗网格改 3 列图标九宫格（repeat(3, 1fr)）');
-    ok(/body\.compact \.card-meta p\s*\{\s*display:\s*none/.test(cssBg)
-      && /body\.compact \.card-foot\s*\{\s*display:\s*none/.test(cssBg),
-      '★ 小窗卡片不显示路径/描述与标签（card-meta p / card-foot 隐藏）');
-    ok(/if \(state\._compact\)[\s\S]*?return false/.test(appSrcC)
-      && /placeholder = compact \? '搜索名称' : '搜索名称、路径或描述，拼音也行…'/.test(appSrcC),
-      '★ 小窗只按名称搜索（matches 短路 + 占位符缩短）');
-    ok(/!state\._compact && state\.active === 'all'/.test(appSrcC),
-      '★ 小窗强制平铺（不按分区分组渲染）');
-    // —— 贴边呼出改光标轮询（v2.1.3）：触边判定不再靠触发条窗口 ——
-    ok(/function cursorAtEdge/.test(mainSrcC) && /EDGE_HOVER_PX/.test(mainSrcC),
-      '★ 触边判定走光标轮询（cursorAtEdge + EDGE_HOVER_PX）');
-    ok(/if \(fsHidden\) return/.test(mainSrcC) && /cursorAtEdge\(p, wa, edgeBarEdge\)/.test(mainSrcC),
-      '★ 轮询：全屏不呼出 + 光标贴边才呼出');
-    // —— 触发条回归（v2.1.4）：纯显示 + 鼠标穿透，只画一条细线、其余透明 ——
-    ok(/function createEdgeBar/.test(mainSrcC) && /function destroyEdgeBar/.test(mainSrcC)
-      && /function edgeBarHtml/.test(mainSrcC) && /EDGE_BAR_THICK/.test(mainSrcC),
-      '★ 触发条回归：createEdgeBar / destroyEdgeBar / edgeBarHtml / EDGE_BAR_THICK');
-    ok(/setIgnoreMouseEvents\(true\)/.test(mainSrcC) && !/ql:edge-hover/.test(mainSrcC),
-      '★ 触发条鼠标穿透（setIgnoreMouseEvents），交互仍走光标轮询（无 ql:edge-hover）');
-    ok(/edgeBar\.hide\(\)/.test(mainSrcC) && /edgeBar\.showInactive\(\)/.test(mainSrcC),
-      '★ 触发条随小窗呼出/收起、全屏开/关同步显隐');
-    // —— 触发条更明显 + 弹出动画（v2.1.5）——
-    ok(/rgba\(122,132,155,0\.62\)/.test(mainSrcC) && /width:4px/.test(mainSrcC),
-      '★ 触发条加粗到 4px + 提透明度（rgba .62），比上一版更明显');
-    ok(/border-radius:4px 0 0 4px/.test(mainSrcC)
-      && /'left:0;top:0;bottom:0;width:4px;border-radius:4px 0 0 4px;'/.test(mainSrcC),
-      '★ 右贴边线画在窗口 left 侧（否则被 Windows 强制加宽推到屏外，右/下边会看不见）');
-    ok(/ql:edge-out/.test(mainSrcC) && /ql:edge-out/.test(appSrcC) && /function playEdgeIn/.test(appSrcC),
-      '★ 呼出发 ql:edge-out → 渲染层 playEdgeIn 重播弹出动画');
-    ok(/dataset\.edge/.test(appSrcC) && /edge-anim/.test(appSrcC) && /\.app\.edge-anim/.test(cssBg),
-      '★ 方向写 body[data-edge]，.app.edge-anim 触发动画');
-    ok(/@keyframes edgeInRight/.test(cssBg) && /@keyframes edgeInLeft/.test(cssBg)
-      && /@keyframes edgeInTop/.test(cssBg) && /@keyframes edgeInBottom/.test(cssBg),
-      '★ 四方向弹出 keyframes（edgeInRight/Left/Top/Bottom）');
   }
 
   section('结果');

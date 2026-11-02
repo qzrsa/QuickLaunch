@@ -188,55 +188,6 @@ body.has-bg .nav-new {
   box-shadow: inset 0 0 0 1px var(--line);
 }
 
-/* ---------------------------------------------- 贴边呼出（小窗形态）
-   body.compact 由渲染层在 settings.edge 开启时挂上；主进程同步把窗口缩成
-   340×420 贴边。这里只负责「精简 + 九宫格」：藏掉侧栏、顶栏的标题/排序/多选/
-   新建/窗口控制，只留搜索框 + 「还原窗口」按钮 + 3 列图标格（icon 在上、名称
-   在下，不显示路径/描述/标签/快捷按钮，避免文字被截断）。 */
-body.compact .app { grid-template-columns: 1fr; }
-body.compact .rail { display: none; }
-body.compact .topbar { padding: 0 12px 0 14px; }
-body.compact .topbar .title,
-body.compact .topbar .mini-select,
-body.compact .topbar #btnSelect,
-body.compact .topbar #btnAdd,
-body.compact .topbar .win-ctrls { display: none; }
-body.compact .topbar .search { flex: 1; }
-body.compact .kbd-hint { display: none; }
-body.compact .content { padding: 14px 14px 20px; }
-body.compact .section-head { display: none; }
-body.compact .grid { grid-template-columns: repeat(3, 1fr); gap: 12px; }
-body.compact .card {
-  min-height: 0; padding: 14px 6px 10px; gap: 8px;
-  align-items: center; text-align: center;
-}
-body.compact .card-top { flex-direction: column; align-items: center; gap: 8px; }
-body.compact .tile { width: 54px; height: 54px; font-size: 26px; border-radius: 16px; }
-body.compact .card-meta { padding-top: 0; width: 100%; }
-body.compact .card-meta h3 {
-  font-size: 12px; font-weight: 600; line-height: 1.3;
-  white-space: normal; word-break: break-all;
-  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
-  overflow: hidden; text-overflow: ellipsis;
-}
-body.compact .card-meta p { display: none; }      /* 路径/描述在小窗里不显示 */
-body.compact .card-foot { display: none; }        /* 类型标签 / 使用次数也不显示 */
-body.compact .card-acts { display: none; }        /* 快捷按钮留给右键菜单 */
-
-/* 贴边小窗「弹出」动画：从所贴边缘方向小幅滑入 + 淡入，.2s 干脆不拖沓。
-   方向由 body[data-edge] 决定（渲染层呼出时设置）；动画开关关闭时被
-   html[data-anim="off"] * 全局禁掉，不额外处理。 */
-.app.edge-anim { animation: edgeIn .2s var(--ease) both; }
-body[data-edge="right"]  .app.edge-anim { animation-name: edgeInRight; }
-body[data-edge="left"]   .app.edge-anim { animation-name: edgeInLeft; }
-body[data-edge="top"]    .app.edge-anim { animation-name: edgeInTop; }
-body[data-edge="bottom"] .app.edge-anim { animation-name: edgeInBottom; }
-@keyframes edgeIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
-@keyframes edgeInRight  { from { opacity: 0; transform: translateX(26px); } to { opacity: 1; transform: none; } }
-@keyframes edgeInLeft   { from { opacity: 0; transform: translateX(-26px); } to { opacity: 1; transform: none; } }
-@keyframes edgeInTop    { from { opacity: 0; transform: translateY(-26px); } to { opacity: 1; transform: none; } }
-@keyframes edgeInBottom { from { opacity: 0; transform: translateY(26px); } to { opacity: 1; transform: none; } }
-
 /* ---------------------------------------------- 左侧栏 */
 .rail {
   display: flex; flex-direction: column; gap: 6px;

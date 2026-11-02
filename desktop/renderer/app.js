@@ -44,9 +44,6 @@ const PREVIEW = !!API.__mock;
 const state = {
   config: null,
   active: 'all',
-  // 贴边小窗：进入前停在哪个分组（退出小窗时恢复）；_compact = 当前是否小窗形态。
-  preCompactView: null,
-  _compact: false,
   q: '',
   sort: 'custom',
   editing: null,
@@ -416,13 +413,6 @@ function matches(item) {
   const q = state.q.toLowerCase().trim();
   if (!q) return true;
   const name = item.name || '';
-  // 小窗（compact）没有侧栏、空间小，只按「名称」搜（含拼音），不搜路径/描述/参数；
-  // 完整窗口才搜全字段。
-  if (state._compact) {
-    if (name.toLowerCase().includes(q)) return true;
-    if (!/[\u4e00-\u9fff]/.test(q)) return pinyinKeys(name).includes(q);
-    return false;
-  }
   const hay = [
     name.toLowerCase(),
     (item.path || '').toLowerCase(),
@@ -486,8 +476,6 @@ const ADD_CARD = `<article class="card add" data-add="1" tabindex="0">
 
 function render(opts) {
   const host = $('#gridHost');
-  // 贴边小窗：没有侧栏，任何路径下都固定显示「全部」（否则停在具体分组会看不到别的项）
-  if (state._compact) state.active = 'all';
   // 搜索逐字过滤时 opts.noAnim = true：不要每敲一个键就把所有卡片的入场动画重播一遍
   // （上千张卡同时闪 pop 是纯闪烁）。非搜索的重绘不传 → 正常播入场动画。
   host.classList.toggle('no-anim', !!(opts && opts.noAnim));
@@ -533,7 +521,7 @@ function render(opts) {
   }
   $('#empty').hidden = true;
 
-  const perSection = !state._compact && state.active === 'all' && !state.q && state.sort === 'custom' && sections.length > 1;
+  const perSection = state.active === 'all' && !state.q && state.sort === 'custom' && sections.length > 1;
   let html = '';
   let n = 0;
   // 编辑模式下不显示「新建启动项」卡片：那一格点下去是"新建"而不是"勾选"，很容易误触
@@ -581,7 +569,7 @@ function setWinMaxIcon(max) {
   b.title = max ? '向下还原' : '最大化';
 }
 
-/** 把设置反映到 DOM 上（悬停按钮、动画开关、个性化背景、贴边小窗形态） */
+/** 把设置反映到 DOM 上（目前只有「悬停显示卡片快捷按钮」） */
 function applySettingsToDom(settings) {
   document.body.classList.toggle('hover-actions', !!(settings && settings.hoverActions));
   // 动画开关：默认开；明确关了才挂 data-anim="off"。
@@ -590,43 +578,6 @@ function applySettingsToDom(settings) {
   else document.documentElement.setAttribute('data-anim', 'off');
   // 个性化背景图 + 模糊度
   applyBackground((settings && settings.bg) || '', (settings && settings.bgBlur) || 0);
-  // 贴边呼出：小窗形态（隐藏侧栏/底栏，只留搜索框 + 卡片）。「还原窗口」按钮只在
-  // 小窗里出现（完整窗口里隐藏）。主进程会同步把窗口尺寸/贴边也切过去。
-  const compact = !!(settings && settings.edge);
-  const wasCompact = !!state._compact;
-  state._compact = compact;
-  document.body.classList.toggle('compact', compact);
-  const exit = $('#btnExitEdge');
-  if (exit) exit.hidden = !compact;
-  // 搜索框提示语：小窗只搜名称，占位符更短、不挤；完整窗口恢复全字段提示。
-  const q = $('#q');
-  if (q) q.placeholder = compact ? '搜索名称' : '搜索名称、路径或描述，拼音也行…';
-  // 形态切换时同步视图：进入小窗记住「之前停在哪个分组」并切到「全部」（小窗没侧栏，
-  // 停在具体分组会看不到别的项）；退出时恢复到进入前的分组。
-  if (compact !== wasCompact) {
-    if (compact) state.preCompactView = state.active;
-    else if (state.preCompactView) state.active = state.preCompactView;
-    if (!compact) {                       // 退出小窗：清掉弹出动画残留的方向/类
-      delete document.body.dataset.edge;
-      const app = document.querySelector('.app');
-      if (app) app.classList.remove('edge-anim');
-    }
-    renderNav();
-    render({ noAnim: true });
-  }
-}
-
-/** 贴边小窗「弹出」动画：从所贴边缘方向小幅滑入 + 淡入（.2s，干脆不拖沓）。
- *  ★ 每次呼出都要重播：先摘掉 edge-anim 类、强制 reflow、再加回，让 animation 重新跑。
- *  ★ 方向写进 body[data-edge]，CSS 按方向选不同的 keyframes（right→从右往左，以此类推）。 */
-function playEdgeIn(edge) {
-  if (!state._compact) return;
-  document.body.dataset.edge = edge || 'right';
-  const app = document.querySelector('.app');
-  if (!app) return;
-  app.classList.remove('edge-anim');
-  void app.offsetWidth;          // 强制 reflow，让同一帧内重新加类也能重播动画
-  app.classList.add('edge-anim');
 }
 
 /** 个性化：把背景图（dataURL）+ 模糊度（px）铺到 #bgImg 图层上。
@@ -2323,7 +2274,6 @@ function settingsFromDom() {
     startGroup: $('#sStartGroup').value || 'last',
     bg: state.bgDraft || '',
     bgBlur: Number($('#sBgBlur').value) || 0,
-    edge: $('#sEdgeOn').checked ? $('#sEdge').value : '',
   });
 }
 
@@ -2396,10 +2346,6 @@ async function openSettings() {
   state.bgDraft = s.bg || '';
   $('#sBgBlur').value = Number(s.bgBlur) || 0;
   renderBgUI();
-  // 贴边呼出：开关 + 边选择回填
-  $('#sEdgeOn').checked = !!s.edge;
-  $('#sEdge').value = s.edge || 'left';
-  $('#edgeRow').hidden = !s.edge;
 
   state.info = await API.info();
   const i = state.info;
@@ -2776,7 +2722,6 @@ async function saveSettings() {
     theme: document.documentElement.dataset.theme,
     bg: state.bgDraft || '',
     bgBlur: Number($('#sBgBlur').value) || 0,
-    edge: $('#sEdgeOn').checked ? $('#sEdge').value : '',
   };
   const r = await API.setSettings(patch);
   if (!r.ok) return toast('bad', '保存失败', r.msg);
@@ -3374,20 +3319,6 @@ function bind() {
     if (on) document.documentElement.removeAttribute('data-anim');
     else document.documentElement.setAttribute('data-anim', 'off');
   });
-  // 贴边呼出：开关联动「贴哪条边」的下拉显隐
-  $('#sEdgeOn').addEventListener('change', () => {
-    $('#edgeRow').hidden = !$('#sEdgeOn').checked;
-  });
-  // 小窗里的「还原窗口」：只清 edge 这一个字段（不走 saveSettings——那会把设置面板
-  // 里所有控件按当前 DOM 值整批重存，面板没打开过时等于用默认值覆盖真实设置）。
-  $('#btnExitEdge').addEventListener('click', async () => {
-    const r = await API.setSettings({ edge: '' });
-    if (!r.ok) return toast('bad', '操作失败', r.msg);
-    Object.assign(state.config.settings, r.settings || { edge: '' });
-    applySettingsToDom(state.config.settings);
-    $('#sEdgeOn').checked = false;
-    $('#edgeRow').hidden = true;
-  });
   // 个性化：选背景图（主进程选图 + 压缩 → dataURL，暂存草稿，保存才写盘）
   $('#btnBgPick').addEventListener('click', async () => {
     const r = await API.bgPick();
@@ -3542,7 +3473,6 @@ function bind() {
   /* 主进程事件 */
   API.on('ql:win-state', p => setWinMaxIcon(p && p.maximized));
   API.on('ql:focus-search', () => setTimeout(() => { $('#q').focus(); $('#q').select(); }, 60));
-  API.on('ql:edge-out', edge => playEdgeIn(edge));   // 贴边小窗呼出 → 重播弹出动画
   // ★ soft：先问一句「是不是只有计数变了」。是 → 就地改文本，一次重绘都不做（不闪）；
   //   不是（改了名 / 增删项 / 动设置）→ 照常重绘，只是不播入场动画。
   API.on('ql:config-changed', () => refresh({ soft: true }));

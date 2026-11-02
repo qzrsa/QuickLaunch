@@ -4,7 +4,7 @@
  * 负责：无边框窗口、托盘常驻、全局热键、开机自启、IPC 路由
  */
 
-const { app, BrowserWindow, Tray, Menu, ipcMain, shell, globalShortcut, nativeImage, clipboard, dialog, net, screen } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, shell, globalShortcut, nativeImage, clipboard, dialog, net } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
@@ -174,16 +174,13 @@ const PERF_PROBE = process.argv.includes('--perf-probe');
 // 为什么不能只靠 --import-probe：那个是渲染层自己捏 DataTransfer + uri-list，
 // 根本碰不到 webUtils.getPathForFile() 那一段 —— 而"拖图标进来没反应"恰恰最可能坏在那里。
 const DROP_PROBE = !app.isPackaged && process.argv.includes('--drop-probe');
-// 开发期自检：--edge-probe 真实验证「贴边呼出」的触发条窗口能不能收到 hover、
-// 呼出/收起/定位对不对（贴边逻辑没法在单测里验，必须真实窗口跑一遍）。
-const EDGE_PROBE = !app.isPackaged && process.argv.includes('--edge-probe');
 
 // ★ 任何自检都不许联网：探针必须可重复、可离线。一次真实请求就会让它变成"看运气"。
 //   所以启动时的静默检查只在**没有**任何探针时才会跑。
 // ★★ 加新探针时把这个常量一起改 —— 漏了的话新探针会带上一次不确定的网络请求。
 const ANY_PROBE = !!SHOT || MENU_PROBE || IMPORT_PROBE || DRAG_PROBE || GROUP_PROBE
   || INFO_PROBE || RAIL_PROBE || SELECT_PROBE || SECOND_PROBE || UPDATE_PROBE || PERF_PROBE
-  || DROP_PROBE || EDGE_PROBE;
+  || DROP_PROBE;
 
 /** 启动后多久才去静默检查更新。★ 刻意晚一点：启动那一刻最该做的事是把窗口画出来，
  *  而不是抢带宽；而且更新是"知道了就行"的信息，晚 8 秒没有任何损失。 */
@@ -241,27 +238,6 @@ let tray = null;
 let quitting = false;
 let hotkeyFail = '';
 let lastBounds = null;
-
-/* ------------------------------------------------------------ 贴边呼出 */
-// 贴边呼出：edgeBarEdge = 当前贴的边（''=关闭）。交互（hover 呼出 / 移开收回）靠光标轮询。
-let edgeBarEdge = '';
-// 纯显示的触发条窗口（只做「这里能呼出」的视觉提示）。★ 交互不靠它：setIgnoreMouseEvents(true)
-//   让鼠标穿透，hover 呼出交给 cursorAtEdge 轮询。这样窗口被 Windows 强制撑宽也无所谓——
-//   内容只在「贴屏幕边缘」的那 3px 画一条细线、其余全透明，四边视觉上都是 3px。
-let edgeBar = null;
-// 小窗（compact）形态的固定尺寸：3 列图标九宫格（icon + 名称），窄一点不挡画面。
-const EDGE_WIN_W = 340;
-const EDGE_WIN_H = 420;
-// 贴边 hover 判定宽度：光标贴近屏幕边缘 3px 内就算「碰到边」→ 呼出。
-const EDGE_HOVER_PX = 3;
-// 触发条长度（贴边那一维的可见长度）。
-const EDGE_BAR_LEN = 220;
-// 触发条名义厚度。★ Windows 会把无边框透明窗强制撑到最小尺寸（实测 16~39px），
-//   所以这里只作定位用；真正画的线由页面 CSS 固定 3px，其余全透明，四边视觉都 3px。
-const EDGE_BAR_THICK = 4;
-// 全屏检测：常驻的 PowerShell 子进程 + 当前是否因全屏隐藏（全屏时不呼出/不显示）。
-let fsWatch = null;
-let fsHidden = false;
 
 /* ------------------------------------------------------------ 拖入探针 */
 
@@ -870,20 +846,12 @@ function createWindow() {
 
   const persistBounds = () => {
     if (!win || win.isDestroyed() || win.isMinimized()) return;
-    if (edgeBarEdge) return;   // 贴边模式：不存小窗位置（那是贴边坐标，不是完整窗口的）
     const cfg2 = store.load();
     cfg2.settings.windowBounds = win.getNormalBounds();
     try { store.save(cfg2); } catch { /* noop */ }
   };
   win.on('resize', () => { clearTimeout(lastBounds); lastBounds = setTimeout(persistBounds, 500); });
   win.on('move', () => { clearTimeout(lastBounds); lastBounds = setTimeout(persistBounds, 500); });
-
-  // 贴边模式：窗口失焦（用户点完走人 / 点到别处）→ 收起小窗。
-  // hover 呼出 + 移开收回由 edgePollTick 的光标轮询负责，这里兜「点进去用过再走」这条线。
-  win.on('blur', () => {
-    if (!edgeBarEdge) return;
-    edgeSlideIn();
-  });
 
   win.on('close', e => {
     if (quitting) return;
@@ -899,8 +867,6 @@ function createWindow() {
 
 function showWindow() {
   if (!win) return createWindow();
-  // 贴边模式：唤出的是贴边小窗（聚焦，用户是主动唤出的）
-  if (edgeBarEdge) return edgeSlideOut(true);
   if (win.isMinimized()) win.restore();
   win.show();
   win.focus();
@@ -913,325 +879,8 @@ function showWindow() {
 
 function toggleWindow() {
   if (!win) return createWindow();
-  // 贴边模式：可见就收回，不可见就呼出（聚焦）
-  if (edgeBarEdge) {
-    if (win.isVisible()) edgeSlideIn();
-    else edgeSlideOut(true);
-    return;
-  }
   if (win.isVisible() && win.isFocused() && !win.isMinimized()) win.hide();
   else showWindow();
-}
-
-/* ---------------------------------------------------- 贴边呼出 */
-
-/** 贴边那条边所在显示器的工作区。先贴主显示器（贴边是固定行为，主屏最符合预期）。 */
-function edgeWorkArea() {
-  return screen.getPrimaryDisplay().workArea;
-}
-
-/** 小窗（compact）贴边时的坐标：紧贴所选边缘，垂直/水平居中。 */
-function edgeWinPos(edge, wa) {
-  if (edge === 'left') return { x: wa.x, y: wa.y + Math.round((wa.height - EDGE_WIN_H) / 2) };
-  if (edge === 'right') return { x: wa.x + wa.width - EDGE_WIN_W, y: wa.y + Math.round((wa.height - EDGE_WIN_H) / 2) };
-  if (edge === 'top') return { x: wa.x + Math.round((wa.width - EDGE_WIN_W) / 2), y: wa.y };
-  return { x: wa.x + Math.round((wa.width - EDGE_WIN_W) / 2), y: wa.y + wa.height - EDGE_WIN_H };
-}
-
-/** 光标是否贴在所贴边缘的 EDGE_HOVER_PX 内（触边 → 呼出）。 */
-function cursorAtEdge(p, wa, edge) {
-  const PX = EDGE_HOVER_PX;
-  if (edge === 'left') return p.x >= wa.x && p.x < wa.x + PX;
-  if (edge === 'right') return p.x >= wa.x + wa.width - PX && p.x < wa.x + wa.width;
-  if (edge === 'top') return p.y >= wa.y && p.y < wa.y + PX;
-  return p.y >= wa.y + wa.height - PX && p.y < wa.y + wa.height;
-}
-
-/** 呼出贴边小窗。focus=true 时抢焦点（热键/托盘主动唤出）；false 用 showInactive（hover 呼出，不打断手头工作）。 */
-function edgeSlideOut(focus) {
-  if (!win || win.isDestroyed() || !edgeBarEdge) return;
-  const edge = edgeBarEdge;
-  const wa = edgeWorkArea();
-  const p = edgeWinPos(edge, wa);
-  win.setBounds({ x: p.x, y: p.y, width: EDGE_WIN_W, height: EDGE_WIN_H });
-  win.setAlwaysOnTop(true, 'screen-saver');
-  if (edgeBar && !edgeBar.isDestroyed()) edgeBar.hide();   // 小窗盖住触发条那一段，先收起来
-  if (focus) { win.show(); win.focus(); }
-  else win.showInactive();
-  win.moveTop();
-  if (!win.webContents.isLoading()) {
-    win.webContents.send('ql:focus-search');
-    win.webContents.send('ql:edge-out', edge);   // 渲染层据此重播「弹出」动画（带方向）
-  }
-  console.log('[edge] 呼出 edge=' + edge + ' isVisible=' + win.isVisible());
-}
-
-/** 收回贴边小窗（隐藏）。轮询继续跑：光标再贴边又能呼出。 */
-function edgeSlideIn() {
-  if (!win || win.isDestroyed()) return;
-  if (!win.isVisible()) return;   // 已隐藏就不重复收（blur 兜底可能和轮询同时触发）
-  win.hide();
-  if (edgeBar && !edgeBar.isDestroyed() && !fsHidden) edgeBar.showInactive();  // 收回时恢复触发条
-  console.log('[edge] 收回');
-}
-
-/* ---------------------------------------------------- 触发条（纯显示）
- * 只做「这里能呼出」的视觉提示。交互不靠它：setIgnoreMouseEvents(true) 让鼠标穿透，
- * hover 呼出 / 移开收回全由 cursorAtEdge 轮询负责。内容只画一条贴着屏幕边缘的 4px 细线、
- * 其余全透明 —— 这样 Windows 把窗口强制撑到最小尺寸（16~39px）也看不出变宽。
- *   ★ 四个方向线都画在窗口的 left/top 侧：右/下边窗口被 Windows 强制加宽时**往屏外扩展**
- *     （窗口 left/top 坐标不变），只有靠 left/top 那一小条留在屏内 —— 线必须画在这一侧才看得见；
- *     左/上边窗口被夹回屏内，left/top 也正好是贴屏幕边缘的那一侧。 */
-function edgeBarHtml(edge) {
-  const line = 'background:rgba(122,132,155,0.62);';   // 半透明蓝灰线（比 0.45 更明显一点点）
-  let pin;
-  if (edge === 'left') pin = 'left:0;top:0;bottom:0;width:4px;border-radius:0 4px 4px 0;';
-  else if (edge === 'right') pin = 'left:0;top:0;bottom:0;width:4px;border-radius:4px 0 0 4px;';
-  else if (edge === 'top') pin = 'top:0;left:0;right:0;height:4px;border-radius:0 0 4px 4px;';
-  else pin = 'top:0;left:0;right:0;height:4px;border-radius:4px 4px 0 0;';
-  return '<!doctype html><html><head><meta charset="utf-8"><style>'
-    + 'html,body{margin:0;padding:0;background:transparent;overflow:hidden;width:100%;height:100%;}'
-    + '#bar{position:fixed;' + pin + line + '}'
-    + '</style></head><body><div id="bar"></div></body></html>';
-}
-
-/** 建触发条窗口（贴边模式开启时）。edge = left/right/top/bottom。 */
-function createEdgeBar(edge) {
-  destroyEdgeBar();
-  const wa = edgeWorkArea();
-  const thick = EDGE_BAR_THICK;
-  const len = EDGE_BAR_LEN;
-  let bounds;
-  if (edge === 'left') bounds = { x: wa.x, y: wa.y + Math.round((wa.height - len) / 2), width: thick, height: len };
-  else if (edge === 'right') bounds = { x: wa.x + wa.width - thick, y: wa.y + Math.round((wa.height - len) / 2), width: thick, height: len };
-  else if (edge === 'top') bounds = { x: wa.x + Math.round((wa.width - len) / 2), y: wa.y, width: len, height: thick };
-  else bounds = { x: wa.x + Math.round((wa.width - len) / 2), y: wa.y + wa.height - thick, width: len, height: thick };
-
-  edgeBar = new BrowserWindow({
-    ...bounds,
-    frame: false,
-    transparent: true,
-    resizable: false,
-    movable: false,
-    focusable: false,
-    skipTaskbar: true,
-    hasShadow: false,
-    show: false,
-    webPreferences: { contextIsolation: true, nodeIntegration: false },
-  });
-  edgeBar.setAlwaysOnTop(true, 'screen-saver');
-  edgeBar.setIgnoreMouseEvents(true);   // ★ 鼠标穿透：交互不靠触发条
-  edgeBar.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(edgeBarHtml(edge)));
-  edgeBar.once('ready-to-show', () => {
-    if (edgeBar && !edgeBar.isDestroyed() && !fsHidden) edgeBar.showInactive();
-    // ★ 开发期验证：Windows 可能把无边框透明窗强制到最小尺寸，这里打印**真实** bounds
-    //   确认「往右/下屏外扩展、left/top 坐标不变」—— 触发条线画在 left/top 侧就靠这个成立。
-    if (edgeBar && !edgeBar.isDestroyed()) {
-      console.log('[edge] 触发条实际 bounds=' + JSON.stringify(edgeBar.getBounds()));
-    }
-  });
-  console.log('[edge] 触发条已建 edge=' + edge + ' bounds=' + JSON.stringify(bounds));
-}
-
-/** 销毁触发条窗口。 */
-function destroyEdgeBar() {
-  if (edgeBar && !edgeBar.isDestroyed()) { edgeBar.destroy(); }
-  edgeBar = null;
-}
-
-/* 贴边模式的常驻光标轮询（60ms）：呼出（光标贴边）与收回（移出小窗+边缘 300ms）都在这一循环。
-   ★ 全屏时不呼出（fsHidden）；用户点进窗口（聚焦）后收起交给 blur，轮询不再管。 */
-let edgePollTimer = null;
-let edgeLastInside = 0;
-function insideRect(p, r) {
-  return p.x >= r.x && p.x < r.x + r.width && p.y >= r.y && p.y < r.y + r.height;
-}
-function startEdgePoll() {
-  if (edgePollTimer) return;   // 已在跑，别重复建
-  edgeLastInside = Date.now();
-  edgePollTimer = setInterval(edgePollTick, 60);
-}
-function stopEdgePoll() {
-  if (edgePollTimer) { clearInterval(edgePollTimer); edgePollTimer = null; }
-}
-function edgePollTick() {
-  if (!edgeBarEdge || !win || win.isDestroyed()) { stopEdgePoll(); return; }
-  const p = screen.getCursorScreenPoint();
-  const wa = edgeWorkArea();
-  if (!win.isVisible()) {
-    // 隐藏态：全屏不呼出；光标贴边 → 呼出
-    if (fsHidden) return;
-    if (cursorAtEdge(p, wa, edgeBarEdge)) { edgeLastInside = Date.now(); edgeSlideOut(false); }
-    return;
-  }
-  // 呼出态：用户聚焦（打字/点卡片）交给 blur 收；否则移出小窗+边缘 300ms → 收回
-  if (win.isFocused()) return;
-  const inWin = insideRect(p, win.getBounds());
-  const inEdge = cursorAtEdge(p, wa, edgeBarEdge);
-  if (inWin || inEdge) { edgeLastInside = Date.now(); return; }
-  if (Date.now() - edgeLastInside >= 300) edgeSlideIn();
-}
-
-/** 开启 / 关闭 / 切换贴边模式。edge='' 关闭，否则贴 left/right/top/bottom。
- *  ★ 关闭分支只在「之前处于贴边模式」时才还原；启动时 edge='' 且从未开过，直接跳过。 */
-function applyEdgeMode(edge) {
-  edge = edge || '';
-  if (!win || win.isDestroyed()) return;
-  if (edge) {
-    // ★ 先标记，再动窗口：否则 setBounds 触发的 move/resize 会把小窗位置写进 windowBounds。
-    edgeBarEdge = edge;
-    startEdgePoll();
-    win.setMinimumSize(EDGE_WIN_W, EDGE_WIN_H);
-    win.setMaximumSize(EDGE_WIN_W, EDGE_WIN_H);
-    win.setAlwaysOnTop(true, 'screen-saver');
-    win.setSkipTaskbar(true);
-    const wa = edgeWorkArea();
-    const p = edgeWinPos(edge, wa);
-    win.setBounds({ x: p.x, y: p.y, width: EDGE_WIN_W, height: EDGE_WIN_H });
-    startFullscreenWatch();                 // 全屏自动隐藏触发条（视频/游戏全屏时收起）
-    createEdgeBar(edge);                    // 触发条（纯显示，鼠标穿透）
-    console.log('[edge] 贴边模式开启 edge=' + edge);
-  } else if (edgeBarEdge) {
-    edgeBarEdge = '';
-    stopEdgePoll();
-    win.setAlwaysOnTop(false);
-    win.setSkipTaskbar(false);
-    stopFullscreenWatch();
-    destroyEdgeBar();
-    win.setMaximumSize(0, 0);               // 解除小窗尺寸锁定
-    win.setMinimumSize(860, 560);           // 恢复完整窗口的最小尺寸
-    const b = (store.load().settings.windowBounds) || {};
-    if (b.width && b.height) win.setBounds(b);   // 还原完整窗口的位置/大小
-    else win.center();
-    if (!win.isVisible()) win.show();
-    console.log('[edge] 贴边模式关闭');
-  }
-}
-
-/** --edge-probe：真实环境验证贴边呼出（小窗切形态、呼出/收起、定位、触边判定）。
- *  ★ 「光标贴边 → 呼出」依赖真实鼠标位置，探针用 edgeSlideOut(false) 直接验证等价的呼出路径，
- *    并单独校验 cursorAtEdge 纯函数的判定；真实 hover 留给用户手测。 */
-async function runEdgeProbe() {
-  console.log('[edge-probe] 开始：贴边呼出链路验证');
-  const out = path.join(ROOT, '.tmpdata', 'edge-probe');
-  try { fs.mkdirSync(out, { recursive: true }); } catch { /* noop */ }
-  const snap = async name => {
-    try {
-      const img = await win.webContents.capturePage();
-      const f = path.join(out, name + '.png');
-      fs.writeFileSync(f, img.toPNG());
-      console.log('[edge-probe] 截图 ->', f);
-    } catch (e) { console.error('[edge-probe] 截图失败:', e.message); }
-  };
-  // 等 ready-to-show 走完（那时 showWindow → edgeSlideOut(true) 已呼出小窗），再验证
-  setTimeout(async () => {
-    await sleep(500);
-    const wa = edgeWorkArea();
-    console.log('[edge-probe] workArea=' + JSON.stringify(wa));
-    console.log('[edge-probe] 显示器数=' + screen.getAllDisplays().length
-      + ' 主显示器 bounds=' + JSON.stringify(screen.getPrimaryDisplay().bounds));
-    console.log('[edge-probe] edgeWinPos=' + JSON.stringify(edgeWinPos('right', wa)));
-    console.log('[edge-probe] 窗口 isVisible=' + win.isVisible() + ' bounds=' + JSON.stringify(win.getBounds()));
-    await snap('edge-out');
-    // 校验 cursorAtEdge 纯函数：四边「贴边 2px」应判真、「离边 20px」应判假
-    for (const e of ['left', 'right', 'top', 'bottom']) {
-      const on = e === 'left' ? { x: wa.x + 2, y: 500 }
-        : e === 'right' ? { x: wa.x + wa.width - 2, y: 500 }
-        : e === 'top' ? { x: 500, y: wa.y + 2 }
-        : { x: 500, y: wa.y + wa.height - 2 };
-      const off = e === 'left' ? { x: wa.x + 20, y: 500 }
-        : e === 'right' ? { x: wa.x + wa.width - 20, y: 500 }
-        : e === 'top' ? { x: 500, y: wa.y + 20 }
-        : { x: 500, y: wa.y + wa.height - 20 };
-      const okEdge = cursorAtEdge(on, wa, e) && !cursorAtEdge(off, wa, e);
-      console.log(`[edge-probe] cursorAtEdge ${e}: 贴边=${cursorAtEdge(on, wa, e)} 离边=${!cursorAtEdge(off, wa, e)} ${okEdge ? '✓' : '✗ 不对'}`);
-    }
-    // 模拟收起 → 验证 edgeSlideIn
-    edgeSlideIn();
-    await sleep(400);
-    console.log('[edge-probe] 收回后 isVisible=' + win.isVisible());
-    // 模拟「贴边呼出」→ 验证 edgeSlideOut
-    edgeSlideOut(false);
-    // ★ 探针里鼠标是静止的、多半不在小窗内 —— 轮询会在 300ms 后自动收回，
-    //   让后面的 capturePage 拍到「已隐藏」窗口而挂起。这里停掉轮询，手动控制时机。
-    stopEdgePoll();
-    await sleep(500);
-    await snap('edge-in');
-    // 探针跑完还原 dev 配置里的 edge（不残留贴边模式，避免影响后续开发/截图）
-    try {
-      const c = store.load();
-      c.settings.edge = '';
-      store.save(c);
-    } catch { /* noop */ }
-    console.log('[edge-probe] 完成，退出');
-    quitApp();
-  }, 2200);
-}
-
-/* ---------------------------------------------------- 全屏检测（贴边呼出的「全屏自动隐藏」） */
-/* 常驻一个 PowerShell 子进程：Add-Type 只编译一次，之后每 800ms 用 Win32 查一次前台窗口
-   是否覆盖整个主屏，**状态变化**才输出一行 FULL / WIN。比「每次 spawn」省得多（单次 spawn
-   冷启动 + Add-Type 编译要 1.5s+，2~3 秒轮询几乎一直占着进程）。
-   ★ 只在前台窗口宽高 ≥ 主屏宽高时判 FULL —— 无边框全屏（视频/游戏）和真全屏都覆盖。 */
-const FS_WATCH_PS = [
-  "$ErrorActionPreference='SilentlyContinue'",
-  "Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;public class F{[DllImport(\"user32.dll\")]public static extern IntPtr GetForegroundWindow();[DllImport(\"user32.dll\")]public static extern bool GetWindowRect(IntPtr h,out R r);[DllImport(\"user32.dll\")]public static extern int GetSystemMetrics(int i);public struct R{public int L,T,Ri,B;}}'",
-  "$last=''",
-  'while($true){',
-  '  $h=[F]::GetForegroundWindow()',
-  '  $r=New-Object F+R',
-  '  [void][F]::GetWindowRect($h,[ref]$r)',
-  '  $sw=[F]::GetSystemMetrics(0); $sh=[F]::GetSystemMetrics(1)',
-  "  $cur=if(($r.Ri-$r.L) -ge $sw -and ($r.B-$r.T) -ge $sh){'FULL'}else{'WIN'}",
-  "  if($cur -ne $last){ $last=$cur; Write-Output $cur }",
-  '  Start-Sleep -Milliseconds 800',
-  '}',
-].join('\n');
-
-/** 前台全屏状态变化 → 全屏时收起小窗并禁止呼出（fsHidden 让轮询跳过呼出）。 */
-function onFullscreen(isFull) {
-  if (!edgeBarEdge) return;
-  if (isFull && !fsHidden) {
-    fsHidden = true;
-    if (win && !win.isDestroyed() && win.isVisible()) edgeSlideIn();
-    if (edgeBar && !edgeBar.isDestroyed()) edgeBar.hide();
-    console.log('[edge] 检测到全屏，隐藏小窗');
-  } else if (!isFull && fsHidden) {
-    fsHidden = false;
-    if (edgeBar && !edgeBar.isDestroyed()) edgeBar.showInactive();
-    console.log('[edge] 退出全屏，恢复呼出');
-  }
-}
-
-/** 启动常驻全屏检测子进程（只在贴边模式开启时跑）。 */
-function startFullscreenWatch() {
-  stopFullscreenWatch();
-  fsHidden = false;
-  let buf = '';
-  fsWatch = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', FS_WATCH_PS], {
-    windowsHide: true,
-  });
-  fsWatch.stdout.on('data', d => {
-    buf += d.toString();
-    const lines = buf.split(/\r?\n/);
-    buf = lines.pop();
-    for (const line of lines) {
-      const s = line.trim();
-      if (s === 'FULL') onFullscreen(true);
-      else if (s === 'WIN') onFullscreen(false);
-    }
-  });
-  fsWatch.on('error', () => { fsWatch = null; });
-  fsWatch.on('close', () => { fsWatch = null; });
-}
-
-/** 停掉全屏检测子进程，并复位全屏标记（若之前因全屏隐藏了）。 */
-function stopFullscreenWatch() {
-  if (fsWatch) {
-    try { fsWatch.kill(); } catch { /* noop */ }
-    fsWatch = null;
-  }
-  fsHidden = false;
 }
 
 /* ---------------------------------------------------- 自更新 */
@@ -1846,10 +1495,6 @@ function registerIpc() {
       out.update = svc.snapshot();
       try { win?.webContents.send('ql:update-state', out.update); } catch { /* 窗口没了就算了 */ }
     }
-    // 贴边呼出开关/贴边改了 → 主进程立刻切窗口形态 + 触发条（渲染层只负责 body.compact）
-    if ('edge' in patch) {
-      applyEdgeMode(cfg.settings.edge);
-    }
     buildTray();
     return out;
   });
@@ -1939,9 +1584,6 @@ function registerIpc() {
 function quitApp() {
   quitting = true;
   globalShortcut.unregisterAll();
-  stopEdgePoll();
-  stopFullscreenWatch();
-  destroyEdgeBar();
   try { if (tray) tray.destroy(); } catch { /* noop */ }
   app.quit();
 }
@@ -1995,18 +1637,6 @@ if (!app.requestSingleInstanceLock()) {
     registerIpc();
     createWindow();
     createTray();
-    // 贴边呼出：按已保存的设置切形态（开启 → 触发条 + 小窗；否则不动）。
-    // ★ 必须在 createWindow 之后、ready-to-show 之前 —— 这样 ready-to-show 的
-    //   showWindow() 会看到 edgeBarEdge 已就位，直接呼出小窗而不是显示完整窗口。
-    if (EDGE_PROBE) {
-      // 探针：把 edge 写进 dev 配置，让渲染层 getConfig 也读到 → body.compact 切小窗
-      // （验的是整条「设置 → 主进程窗口 → 渲染层布局」链路，而不只是主进程那一半）。
-      const c = store.load();
-      c.settings.edge = 'right';
-      store.save(c);
-    }
-    applyEdgeMode(store.load().settings.edge);
-    if (EDGE_PROBE) runEdgeProbe();
 
     const cfg = store.load();
     if (cfg.settings.hotkeyEnabled) {
