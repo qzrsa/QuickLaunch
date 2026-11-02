@@ -559,6 +559,55 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
     ok(true, '本机没找到开始菜单快捷方式，跳过真实 .lnk 解析断言');
   }
 
+  /* --------------------------------------------- 桌面新增图标自动同步（v2.0.8） */
+  section('桌面新增图标自动同步');
+  {
+    const dw = require('../src/lib/desktopwatch');
+    // 严格过滤：白名单扩展名 + 跳过隐藏/临时
+    ok(dw.shouldSync('Chrome.lnk') && dw.shouldSync('官网.url')
+      && dw.shouldSync('app.exe') && dw.shouldSync('Game.appref-ms'),
+      '严格过滤认 .lnk/.url/.exe/.appref-ms');
+    ok(!dw.shouldSync('desktop.ini') && !dw.shouldSync('Thumbs.db')
+      && !dw.shouldSync('a.tmp') && !dw.shouldSync('note.txt'),
+      '严格过滤排除 desktop.ini/Thumbs.db/临时/其他扩展名');
+    ok(!dw.shouldSync('.hidden.lnk') && !dw.shouldSync('~$doc.lnk'),
+      '严格过滤跳过隐藏/临时前缀（. 与 ~ 开头）');
+    ok(dw.shouldSync('desktop.ini', { all: true }) && dw.shouldSync('a.tmp', { all: true }),
+      'all 模式不过滤，桌面任何文件都收');
+    // snapshot + diffNew（注入假 fs）
+    const fakeFs = { readdirSync: () => [
+      { name: 'a.lnk', isDirectory: () => false },
+      { name: 'b.txt', isDirectory: () => false },
+      { name: 'sub', isDirectory: () => true },
+    ] };
+    const snap = dw.snapshot('/desk', fakeFs);
+    ok(snap.has('a.lnk') && snap.has('b.txt') && !snap.has('sub'),
+      'snapshot 只收文件、不收子文件夹');
+    ok(dw.diffNew(new Set(['a.lnk', 'b.txt']), new Set(['a.lnk', 'b.txt', 'c.exe'])).join(',') === 'c.exe',
+      'diffNew 只返回新增');
+    // 源码接线
+    const dwMain = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+    const dwStore = fs.readFileSync(path.join(__dirname, '..', 'src', 'lib', 'store.js'), 'utf8');
+    const dwHtml = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'index.html'), 'utf8');
+    const dwJs = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'app.js'), 'utf8');
+    ok(/function startDesktopWatch/.test(dwMain) && /function stopDesktopWatch/.test(dwMain)
+      && /function desktopWatchTick/.test(dwMain) && /desktopwatch\.diffNew/.test(dwMain),
+      '★ 主进程三件套：startDesktopWatch / stopDesktopWatch / desktopWatchTick');
+    ok(/function finalizeImport/.test(dwMain) && /finalizeImport\(cfg, r, \{ groupId, emit \}\)/.test(dwMain),
+      '★ ql:import 与桌面同步共用 finalizeImport（提图标/落组只有一份）');
+    ok(/desktopWatch: false/.test(dwStore) && /desktopWatchAll: false/.test(dwStore),
+      '★ 默认关闭：desktopWatch / desktopWatchAll 都是 false');
+    ok(/desktopWatch && !ANY_PROBE\) startDesktopWatch/.test(dwMain),
+      '★ 启动时按设置开监控，探针跳过（离线可重复）');
+    ok(/'desktopWatch' in patch/.test(dwMain) && /stopDesktopWatch\(\);/.test(dwMain),
+      '★ 设置保存时启停监控 + 退出时停监控');
+    ok(/id="sDesktopWatch"/.test(dwHtml) && /id="sDesktopWatchAll"/.test(dwHtml),
+      '设置面板有「桌面新增图标自动同步」+「同步所有文件」两个开关');
+    ok(/sDesktopWatch'\)\.checked/.test(dwJs) && /sDesktopWatchAll'\)\.checked/.test(dwJs)
+      && /\$\('#sDesktopWatchAll'\)\.disabled = !\$\('#sDesktopWatch'\)\.checked/.test(dwJs),
+      '★ settingsFromDom / saveSettings 都收两字段 + 总开关关掉时「同步所有文件」置灰联动');
+  }
+
   /* --------------------------------------------- 拖入导入：进度与上限（v1.4.9） */
   section('拖入导入：进度条 / 上限放开 / 恢复默认接线');
   {
@@ -570,7 +619,7 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
 
     ok(/send\('ql:import-progress'/.test(mainSrc2), '★ 主进程逐项推 ql:import-progress（没进度就像卡死）');
     ok(/Math\.min\(6, total\)/.test(mainSrc2), '提图标 6 路并发（串行时上百项要等很久）');
-    ok(/phase: 'resolve'/.test(mainSrc2) && /phase: 'icons'/.test(mainSrc2) && /phase: 'done'/.test(mainSrc2),
+    ok(/phase: 'resolve'/.test(mainSrc2) && /progress\('icons'/.test(mainSrc2) && /phase: 'done'/.test(mainSrc2),
       '三个阶段都推：解析 / 提图标 / 完成');
     ok(/\.unshift\(\.\.\.slots\)/.test(mainSrc2), '并发提图后按原顺序插回（先占槽位再回填）');
     ok(/'ql:import-progress'/.test(preloadSrc2), 'preload 白名单登记了 ql:import-progress');
@@ -1449,8 +1498,8 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
     'btnReextractIcons', 'btnRestoreDefaults', 'btnPruneInvalid'];
   const lost = needIds.filter(id => !new RegExp(`id="${id}"`).test(htmlSrc));
   ok(lost.length === 0, '分区化之后所有控件 id 都还在（界面按 id 取值，不按 DOM 位置）', lost.join(',') || 'ok');
-  ok((htmlSrc.match(/<label class="trow">/g) || []).length === 7,
-    '7 个开关都是整行 <label>（热键/自启/发送到/悬停/动画/智能分类/自动更新，点文字也能切，读屏能拿到名字）');
+  ok((htmlSrc.match(/<label class="trow">/g) || []).length === 9,
+    '9 个开关都是整行 <label>（热键/自启/发送到/悬停/动画/智能分类/桌面同步/同步所有文件/自动更新，点文字也能切，读屏能拿到名字）');
 
   // 折叠逻辑只有一份实现：写 localStorage、切 class、同步 aria
   ok(/const SET_SEC_KEY = ['"]ql\.settings\.secs['"]/.test(appSrc)

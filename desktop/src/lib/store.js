@@ -189,6 +189,12 @@ function defaultConfig() {
       //  rev 3：`<=1.4.3` 给 `.url` 一律写 🌐
       //  rev 4：`<=1.4.4` 的 `.exe` 走 app.getFileIcon，成片是同一张"窗口+蓝块"
       iconRev: 1,
+      // 桌面新增图标自动同步：往桌面放新图标/快捷方式时自动收进启动项。
+      // 默认关；只加新、不删（删除走「清理无效项」）；程序运行时才监控。
+      desktopWatch: false,
+      // 桌面同步的过滤：false（默认）= 只认 .lnk/.url/.exe 等快捷方式与程序、
+      //   跳过隐藏/临时文件；true = 不过滤，桌面任何新增文件（含 desktop.ini/Thumbs.db/临时）都收。
+      desktopWatchAll: false,
     },
     groups: buildGroups(),
   };

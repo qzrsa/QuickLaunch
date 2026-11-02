@@ -2265,6 +2265,8 @@ function settingsFromDom() {
     autostart: $('#sAutostart').checked,
     sendTo: $('#sSendTo').checked,
     smartClassify: $('#sSmartClassify').checked,
+    desktopWatch: $('#sDesktopWatch').checked,
+    desktopWatchAll: $('#sDesktopWatchAll').checked,
     closeAction: $('#sCloseAction').value,
     trayQuick: $('#sTrayQuick').value,
     hoverActions: $('#sHoverActs').checked,
@@ -2332,6 +2334,9 @@ async function openSettings() {
   $('#sAutostart').checked = !!s.autostart;
   $('#sSendTo').checked = !!s.sendTo;
   $('#sSmartClassify').checked = s.smartClassify !== false;
+  $('#sDesktopWatch').checked = !!s.desktopWatch;
+  $('#sDesktopWatchAll').checked = !!s.desktopWatchAll;
+  $('#sDesktopWatchAll').disabled = !$('#sDesktopWatch').checked;
   $('#sCloseAction').value = s.closeAction || 'tray';
   $('#sTrayQuick').value = s.trayQuick || 'top';
   $('#sHoverActs').checked = !!s.hoverActions;
@@ -2712,6 +2717,8 @@ async function saveSettings() {
     autostart: $('#sAutostart').checked,
     sendTo: $('#sSendTo').checked,
     smartClassify: $('#sSmartClassify').checked,
+    desktopWatch: $('#sDesktopWatch').checked,
+    desktopWatchAll: $('#sDesktopWatchAll').checked,
     closeAction: $('#sCloseAction').value,
     trayQuick: $('#sTrayQuick').value,
     hoverActions: $('#sHoverActs').checked,
@@ -3318,6 +3325,10 @@ function bind() {
     const on = $('#sAnimations').checked;
     if (on) document.documentElement.removeAttribute('data-anim');
     else document.documentElement.setAttribute('data-anim', 'off');
+  });
+  // 桌面自动同步：总开关关掉时，「同步所有文件」也跟着置灰（值保留，保存时仍按勾选写盘）
+  $('#sDesktopWatch').addEventListener('change', () => {
+    $('#sDesktopWatchAll').disabled = !$('#sDesktopWatch').checked;
   });
   // 个性化：选背景图（主进程选图 + 压缩 → dataURL，暂存草稿，保存才写盘）
   $('#btnBgPick').addEventListener('click', async () => {

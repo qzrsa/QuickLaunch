@@ -16,6 +16,7 @@ const prune = require('./lib/prune');
 const menus = require('./lib/menus');
 const importer = require('./lib/importer');
 const classify = require('./lib/classify');
+const desktopwatch = require('./lib/desktopwatch');
 const updater = require('./lib/updater');
 const { imageFileToDataUrl, fileDefaultIconToDataUrl, urlIconFileToDataUrl, isImageIcon, bufferToIconDataUrl } = require('./lib/icon');
 const urlsc = require('./lib/urlshortcut');
@@ -1081,6 +1082,137 @@ function popupMenu(evt, template) {
   });
 }
 
+/* ---------------------------------------------------- 导入落库（拖入 / 桌面同步共用）
+ * 把 buildItems 的产出提图标 + 落组 + 写盘。ql:import 与桌面自动同步都走这里，
+ * 避免「提图标 / 落组」这套逻辑写两份、日后漂移。 */
+
+/** 提图标 + 落组 + 写盘。groupId=null 且智能分类开启 → 分散归类；否则整批进指定/兜底组。 */
+async function finalizeImport(cfg, r, { groupId = null, emit = null } = {}) {
+  // 落点：groupId 失效（拖到虚拟视图 / 分组刚被删）→ 视为未指定
+  if (groupId && !cfg.groups.some(x => x.id === groupId)) groupId = null;
+  const smart = cfg.settings.smartClassify !== false && !groupId;
+
+  const total = r.items.length;
+  const progress = (phase, done) => { if (emit) emit({ phase, done, total }); };
+  progress('icons', 0);
+  const slots = new Array(total);
+  let cursor = 0;
+  let doneCount = 0;
+
+  // 6 路并发提图标（与扫描导入同一套思路）：串行时上百项要等很久。
+  // 先占好槽位再回填，顺序与候选列表严格一致。
+  const worker = async () => {
+    for (;;) {
+      const idx = cursor++;
+      if (idx >= total) return;
+      const it = r.items[idx];
+      const created = store.newItem(it.name, it.icon, it.type, it.path, {
+        args: it.args || '', cwd: it.cwd || '', desc: it.desc || '',
+      });
+      // 图标：`.url` 用 IconFile 指的图片 → 网址按 URL 去桌面/开始菜单找 → 应用类提程序自带 ICO。
+      // 全都失败才保持 emoji 回退（🌐 就是"没找到真图标"的兜底，不是错误）。
+      if (!isImageIcon(created.icon)) {
+        let d = it._iconFile ? urlIconFileToDataUrl(it._iconFile, 128) : '';
+        if (!d && created.type === 'url') {
+          d = iconForUrl(created.path, 128);
+          if (!d) d = await fetchFaviconDataUrl(created.path, 64);
+        }
+        if (!d && created.type === 'app' && created.path) d = await fileDefaultIconToDataUrl(created.path, 128);
+        if (d) created.icon = d;
+      }
+      slots[idx] = created;
+      doneCount++;
+      progress('icons', doneCount);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(6, total) }, worker));
+
+  const ids = [];
+  const classified = [];
+  if (smart) {
+    const bucket = store.ensureGroup(cfg, 'dropped', '拖入的快捷方式', '📥');
+    const byGroup = new Map();   // groupId -> { g, items[] }
+    for (const created of slots) {
+      const c = classify.classifyItem(created, classifyRules);
+      const g = c ? store.ensureGroupByName(cfg, c.name, c.icon) : bucket;
+      let entry = byGroup.get(g.id);
+      if (!entry) { entry = { g, items: [] }; byGroup.set(g.id, entry); }
+      entry.items.push(created);
+    }
+    for (const { g, items } of byGroup.values()) {
+      g.items.unshift(...items);   // 每组内部仍按原顺序插到最前，导入完立刻能看见
+      for (const it of items) ids.push({ id: it.id, groupId: g.id });
+      classified.push({ groupId: g.id, groupName: g.name, count: items.length });
+    }
+    store.save(cfg);
+    progress('done', total);
+    return {
+      added: ids.length, ids, classified,
+      groupId: classified.length === 1 ? classified[0].groupId : null,
+      groupName: classified.length === 1 ? classified[0].groupName : '',
+    };
+  }
+
+  // 单组：整批进指定组或兜底组
+  const g = groupId ? cfg.groups.find(x => x.id === groupId) : null
+    || store.ensureGroup(cfg, 'dropped', '拖入的快捷方式', '📥');
+  g.items.unshift(...slots);
+  const singleIds = slots.map(created => ({ id: created.id, groupId: g.id }));
+  store.save(cfg);
+  progress('done', total);
+  return { added: singleIds.length, ids: singleIds, groupId: g.id, groupName: g.name };
+}
+
+/* ---------------------------------------------------- 桌面新增图标自动同步
+ * 低频轮询（2.5s）读桌面目录、跟上次快照 diff，发现新增 → 过滤 → 走 finalizeImport 落库。
+ * 只加新、不删（删除走「清理无效项」）；程序运行时才监控；首次开启把当前桌面记为基线（不导既有文件）。 */
+
+let deskWatchTimer = null;
+let deskWatchBase = null;      // 上次桌面文件名快照（Set<name>）
+
+function startDesktopWatch() {
+  stopDesktopWatch();
+  let dir;
+  try { dir = app.getPath('desktop'); } catch { return; }
+  deskWatchBase = desktopwatch.snapshot(dir, fs);
+  deskWatchTimer = setInterval(() => desktopWatchTick(dir), 2500);
+  console.log('[desk] 桌面同步开启 dir=' + dir + ' 基线 ' + deskWatchBase.size + ' 项');
+}
+
+function stopDesktopWatch() {
+  if (deskWatchTimer) { clearInterval(deskWatchTimer); deskWatchTimer = null; }
+  deskWatchBase = null;
+}
+
+async function desktopWatchTick(dir) {
+  if (!deskWatchBase) return;
+  const cur = desktopwatch.snapshot(dir, fs);
+  const added = desktopwatch.diffNew(deskWatchBase, cur);
+  deskWatchBase = cur;   // 无论成败都更新基线，避免同一个文件反复试
+  if (!added.length) return;
+
+  const cfg = store.load();
+  const all = !!cfg.settings.desktopWatchAll;
+  const paths = added
+    .filter(name => desktopwatch.shouldSync(name, { all }))
+    .map(name => path.join(dir, name));
+  if (!paths.length) return;
+
+  console.log('[desk] 发现新增 ' + paths.length + ' 项：' + added.join('、'));
+  try {
+    const existing = cfg.groups.flatMap(g => g.items || []);
+    const r = await importer.buildItems({ paths, existing });
+    if (r.items.length) {
+      await finalizeImport(cfg, r, { groupId: null });
+      console.log('[desk] 已导入 ' + r.items.length + ' 项'
+        + (r.skipped.length ? '，跳过重复 ' + r.skipped.length : ''));
+    }
+    try { win?.webContents.send('ql:config-changed'); } catch { /* 窗口没了就算了 */ }
+  } catch (e) {
+    console.warn('[desk] 导入失败：', e.message);
+  }
+}
+
 /* ---------------------------------------------------- IPC */
 
 function registerIpc() {
@@ -1306,86 +1438,9 @@ function registerIpc() {
       return { ok: true, added: 0, skipped: r.skipped, failed: r.failed, truncated: r.truncated || 0 };
     }
 
-    // 落点：groupId 失效（拖到虚拟视图 / 分组刚被删）→ 视为未指定
-    if (groupId && !cfg.groups.some(x => x.id === groupId)) groupId = null;
-    // 智能分类：没指定落点时，能确定的项自动归类，拿不准的落「拖入的快捷方式」。
-    // ★ 用户显式拖到侧栏 / 当前分组（groupId 非空）时不智能分类 —— 那是有明确意图的。
-    const smart = cfg.settings.smartClassify !== false && !groupId;
-
-    const total = r.items.length;
-    emit({ phase: 'icons', done: 0, total });
-    const slots = new Array(total);
-    let cursor = 0;
-    let doneCount = 0;
-
-    // 6 路并发提图标（与扫描导入同一套思路）：串行时上百项要等很久。
-    // 先占好槽位再回填，顺序与候选列表严格一致。
-    const worker = async () => {
-      for (;;) {
-        const idx = cursor++;
-        if (idx >= total) return;
-        const it = r.items[idx];
-        const created = store.newItem(it.name, it.icon, it.type, it.path, {
-          args: it.args || '', cwd: it.cwd || '', desc: it.desc || '',
-        });
-        // 图标：`.url` 用 IconFile 指的图片 → 网址按 URL 去桌面/开始菜单找 → 应用类提程序自带 ICO。
-        // 全都失败才保持 emoji 回退（🌐 就是"没找到真图标"的兜底，不是错误）。
-        if (!isImageIcon(created.icon)) {
-          let d = it._iconFile ? urlIconFileToDataUrl(it._iconFile, 128) : '';
-          if (!d && created.type === 'url') {
-            d = iconForUrl(created.path, 128);
-            if (!d) d = await fetchFaviconDataUrl(created.path, 64);
-          }
-          if (!d && created.type === 'app' && created.path) d = await fileDefaultIconToDataUrl(created.path, 128);
-          if (d) created.icon = d;
-        }
-        slots[idx] = created;
-        doneCount++;
-        emit({ phase: 'icons', done: doneCount, total });
-      }
-    };
-    await Promise.all(Array.from({ length: Math.min(6, total) }, worker));
-
-    // 落组：智能分类时按项分散到多个组；否则整批进一个组。
-    const ids = [];
-    const classified = [];   // [{ groupId, groupName, count }]
-    if (smart) {
-      const bucket = store.ensureGroup(cfg, 'dropped', '拖入的快捷方式', '📥');
-      const byGroup = new Map();   // groupId -> { g, items[] }
-      for (const created of slots) {
-        const c = classify.classifyItem(created, classifyRules);
-        const g = c ? store.ensureGroupByName(cfg, c.name, c.icon) : bucket;
-        let entry = byGroup.get(g.id);
-        if (!entry) { entry = { g, items: [] }; byGroup.set(g.id, entry); }
-        entry.items.push(created);
-      }
-      for (const { g, items } of byGroup.values()) {
-        g.items.unshift(...items);   // 每组内部仍按原顺序插到最前，拖完立刻能看见
-        for (const it of items) ids.push({ id: it.id, groupId: g.id });
-        classified.push({ groupId: g.id, groupName: g.name, count: items.length });
-      }
-      store.save(cfg);
-      emit({ phase: 'done', done: total, total });
-      return {
-        ok: true, added: ids.length, ids, classified,
-        groupId: classified.length === 1 ? classified[0].groupId : null,
-        groupName: classified.length === 1 ? classified[0].groupName : '',
-        skipped: r.skipped, failed: r.failed, truncated: r.truncated || 0,
-      };
-    }
-
-    // 单组：整批进指定组或兜底组
-    const g = groupId ? cfg.groups.find(x => x.id === groupId) : null
-      || store.ensureGroup(cfg, 'dropped', '拖入的快捷方式', '📥');
-    // unshift(...slots) 按原顺序插到最前，拖完立刻能看见
-    g.items.unshift(...slots);
-    const singleIds = slots.map(created => ({ id: created.id, groupId: g.id }));
-    store.save(cfg);
-    emit({ phase: 'done', done: total, total });
-    return {
-      ok: true, added: singleIds.length, ids: singleIds, groupId: g.id, groupName: g.name,
-      skipped: r.skipped, failed: r.failed, truncated: r.truncated || 0,
-    };
+    // 提图标 + 落组 + 写盘都收在 finalizeImport（拖入 / 桌面同步共用同一份逻辑）
+    const res = await finalizeImport(cfg, r, { groupId, emit });
+    return { ok: true, ...res, skipped: r.skipped, failed: r.failed, truncated: r.truncated || 0 };
   });
 
   /* 一键智能分类整理（设置 → 启动项维护）。
@@ -1490,6 +1545,11 @@ function registerIpc() {
       out.sendTo = r;
       if (!r.ok) out.ok = false, out.msg = r.msg;
     }
+    // 桌面自动同步开关改了 → 立刻启停监控（desktopWatchAll 只是过滤档位，tick 里实时读，不用动）
+    if ('desktopWatch' in patch) {
+      if (cfg.settings.desktopWatch) startDesktopWatch();
+      else stopDesktopWatch();
+    }
     // 更新源/自动检查改了 → 立刻推一份新快照，免得界面上还留着按旧设置算出来的状态
     if (svc && ('updateBase' in patch || 'autoUpdate' in patch)) {
       out.update = svc.snapshot();
@@ -1584,6 +1644,7 @@ function registerIpc() {
 function quitApp() {
   quitting = true;
   globalShortcut.unregisterAll();
+  stopDesktopWatch();
   try { if (tray) tray.destroy(); } catch { /* noop */ }
   app.quit();
 }
@@ -1653,6 +1714,9 @@ if (!app.requestSingleInstanceLock()) {
         if (!r.ok) console.warn('[sendto] 刷新快捷方式失败：', r.msg);
       });
     }
+
+    // 桌面新增图标自动同步：按设置启动监控（默认关）。探针必须离线可重复，跳过。
+    if (cfg.settings.desktopWatch && !ANY_PROBE) startDesktopWatch();
 
     // 上次更新的收尾（更新成功/失败/已下好没重启）—— 纯本地读盘，不发请求
     svc.boot();
