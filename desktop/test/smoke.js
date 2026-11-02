@@ -3644,6 +3644,16 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
     const devReuse = store.ensureGroupByName(tmpCfg, '开发', '💻');
     ok(devReuse.id === 'dev', '默认组「开发」被名字命中而复用，不另起同名组');
 
+    // —— 默认组名固定 id：即使默认组缺失，也按固定 id 补建，绝不另起同名 auto 组 ——
+    {
+      const c2 = store.defaultConfig();
+      c2.groups = c2.groups.filter(g => g.id !== 'apps');   // 造「软件」默认组缺失的老数据
+      const soft = store.ensureGroupByName(c2, '软件', '🚀');
+      ok(soft.id === 'apps' && soft.auto !== true,
+        '「软件」命中默认组：apps 缺失也按固定 id 补建，不另起同名 auto 组');
+      ok(c2.groups.filter(g => g.name === '软件').length === 1, '不会出现两个「软件」组');
+    }
+
     // —— v2.0.0：网站改名 / 新增软件组 / 易语言合并 ——
     ok(store.buildGroups().find(g => g.id === 'web').name === '网站',
       '★ 默认分组「常用网站」已改名「网站」');
@@ -3660,6 +3670,16 @@ function section(t) { console.log(`\n\x1b[1m${t}\x1b[0m`); }
       ok(!legacy.groups.some(g => g.name === '易语言'), '迁移后没有「易语言」组');
       ok(legacy.groups.find(g => g.id === 'dev').items.some(i => i.id === 'e1'), '易语言的项进了「开发」组');
       ok(store.migrateGroups(legacy).changed === false, '★ 迁移只跑一次（rev 开关，幂等）');
+
+      // —— 合并同名默认组（rev 2）：两个「软件」组 → 一个 apps ——
+      const dup = store.defaultConfig();
+      dup.groups.push({ id: 'g_soft_auto', name: '软件', icon: '🚀', auto: true,
+        items: [{ id: 's9', name: '某软件', type: 'app', path: 'D:\\x\\y.exe' }] });
+      const dr = store.migrateGroups(dup);
+      ok(dr.changed === true, '★ 迁移合并同名「软件」组（rev 2）');
+      ok(dup.groups.filter(g => g.name === '软件').length === 1, '合并后只剩一个「软件」组');
+      ok(dup.groups.find(g => g.id === 'apps').items.some(i => i.id === 's9'),
+        '重复组的项并入了默认 apps 组');
     }
 
     // —— v2.0.0：网站真实 favicon ——

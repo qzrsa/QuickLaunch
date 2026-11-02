@@ -286,20 +286,35 @@ function ensureGroup(cfg, id, name, icon, colorIdx = 4) {
   return g;
 }
 
+/* 默认组「名字 → 固定 id」。智能分类命中默认组名时，必须落到默认组（复用/补建），
+   绝不能另起一个同名的 auto 组 —— 否则「软件」会跟默认「软件」组撞名，出现两个同名组。 */
+const DEFAULT_GROUP_ID = {
+  '文件与目录': 'files',
+  '系统工具': 'tools',
+  '开发': 'dev',
+  '网站': 'web',
+  '软件': 'apps',
+};
+
 /**
  * 按**名字**找分组，没有就新建（用于智能分类：把「游戏/设计/办公」这类类别名落成组）。
- * 默认组「系统工具 / 开发」等也会被名字命中而复用，不会另起一个同名的组。
+ * ★ 默认组名（软件/开发/网站/系统工具/文件与目录）优先按固定 id 复用，绝不另起同名组；
+ *   其余类别名（游戏/设计/办公/媒体/下载/AI/社交）找不到才新建 auto 组。
  * ★ 名字命中是幂等的：组一旦建了，下次分类再按名字找就找到它，不会重复建。
  */
 function ensureGroupByName(cfg, name, icon) {
-  let g = (cfg.groups || []).find(x => x && x.name === name);
+  const fixedId = DEFAULT_GROUP_ID[name];
+  let g = fixedId ? (cfg.groups || []).find(x => x && x.id === fixedId) : null;
+  if (!g) g = (cfg.groups || []).find(x => x && x.name === name);
   if (!g) {
     g = {
-      id: uid(), name, icon: icon || '📦',
+      id: fixedId || uid(),
+      name, icon: icon || '📦',
       color: PALETTE[(cfg.groups || []).length % PALETTE.length],
       items: [],
-      auto: true,   // 智能分类生成的组：一键整理把它当「分类体系组」，不当作用户自定义组
     };
+    // 只有非默认组才标 auto（分类体系组）；默认组按默认 id 重建，不标 auto
+    if (!fixedId) g.auto = true;
     cfg.groups.push(g);
   }
   if (!Array.isArray(g.items)) g.items = [];
@@ -446,7 +461,7 @@ function ensureWebOrder(cfg) {
  * 开关 `settings.groupRev`（rev 1）—— 只跑一次。光改 buildGroups 只对新装生效，
  * 老配置落盘后再也不看默认值，所以这里补一次修正。
  */
-const GROUP_REV = 1;
+const GROUP_REV = 2;
 
 function migrateGroups(cfg) {
   const out = { changed: false, renamed: 0, merged: 0, note: '' };
@@ -480,9 +495,35 @@ function migrateGroups(cfg) {
     out.changed = true;
   }
 
+  // ③ 合并「同名默认组」（rev 2）：老数据可能同时存在默认组（apps「软件」）和智能分类
+  //    新建的同名 auto 组（「软件」），导致两个同名组。把重复组的项并入默认组、删掉重复组。
+  for (const name of Object.keys(DEFAULT_GROUP_ID)) {
+    const defId = DEFAULT_GROUP_ID[name];
+    const dups = groups.filter(g => g && g.name === name && g.id !== defId);
+    if (!dups.length) continue;
+    let target = groups.find(g => g && g.id === defId);
+    if (!target) {
+      // 默认组缺失：让第一个重复组顶替成默认组（改 id、去 auto），其余并入它
+      target = dups[0];
+      target.id = defId;
+      delete target.auto;
+      dups.shift();
+    }
+    if (!Array.isArray(target.items)) target.items = [];
+    for (const d of dups) {
+      target.items.push(...(Array.isArray(d.items) ? d.items : []));
+      out.merged += Array.isArray(d.items) ? d.items.length : 0;
+    }
+    for (const d of dups) {
+      const idx = groups.indexOf(d);
+      if (idx >= 0) groups.splice(idx, 1);
+    }
+    out.changed = true;
+  }
+
   const notes = [];
   if (out.renamed) notes.push(`常用网站→网站 ${out.renamed} 组`);
-  if (out.merged) notes.push(`易语言→开发 ${out.merged} 项`);
+  if (out.merged) notes.push(`合并重复项 ${out.merged} 项`);
   out.note = notes.join('；');
   return out;
 }
